@@ -2,6 +2,18 @@
 
 export type Id = string;
 
+/** Where a job's planned time comes from. */
+export type TimeBasis = 'measured' | 'estimated' | 'manual';
+
+/** Average real time per piece taken from the parts time list. */
+export interface PartTime {
+  minutes: number;
+  name?: string;
+}
+
+/** Part times keyed by normalized material number (see parse/partTimes.ts). */
+export type PartTimeMap = Record<string, PartTime>;
+
 /** One normalized production line ("box") coming from the BoxShelf export. */
 export interface Job {
   id: Id; // unique key (order number, de-duplicated)
@@ -187,6 +199,12 @@ export interface PlannerSettings {
   efficiencyMode: 'expected' | 'cautious';
   fanuc2UsesIdealMinutes: boolean;
   calibrationHistory: CalibrationRow[];
+
+  /** Parts found in the time list use that time as-is; efficiency and offsets never touch them. */
+  useMeasuredTimes: boolean;
+  /** Parts missing from the list are planned at NC minutes x this factor. */
+  estimateMultiplier: number;
+  settingsVersion: number;
 }
 
 export interface UserLock {
@@ -211,7 +229,11 @@ export interface ScheduledJob {
   cautiousDurationMin: number;
   idealMinutes: number; // ncMinutes * qty
   efficiencyPercent: number;
-  efficiencySource: 'part' | 'matrix' | 'material' | 'machine' | 'global' | 'manual';
+  efficiencySource: 'part' | 'matrix' | 'material' | 'machine' | 'global' | 'manual' | 'measured';
+  timeBasis: TimeBasis;
+  /** minutes per piece from the parts list (measured jobs only) */
+  measuredPerPart?: number;
+  partName?: string;
   materialOffset: number;
   segments: Segment[];
   startTime: string; // ISO
@@ -269,6 +291,8 @@ export interface Bottleneck {
 
 export interface PlanKpis {
   plannedJobs: number;
+  measuredJobs: number;
+  estimatedJobs: number;
   plannedHours: number;
   changeoverMinutes: number;
   setupSavedMinutes: number;

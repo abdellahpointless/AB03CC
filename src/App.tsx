@@ -6,6 +6,7 @@ import { ExceptionsView } from './ui/ExceptionsView';
 import { GanttView } from './ui/GanttView';
 import { Header, type View } from './ui/Header';
 import { HelpModal } from './ui/HelpModal';
+import { HourlyView } from './ui/HourlyView';
 import { ImportReportModal } from './ui/ImportReportModal';
 import { JobDetailModal } from './ui/JobDetailModal';
 import { Landing } from './ui/Landing';
@@ -53,11 +54,12 @@ export default function App() {
         ) : (
           <>
             {planError && <div className="mb-3 rounded-lg border border-rose-800 bg-rose-950/50 px-4 py-2 text-xs text-rose-200">Planning failed: {planError}. Showing the last good plan.</div>}
-            <div className={planning ? 'opacity-70 transition-opacity' : 'transition-opacity'}>
+            <div key={view} className={`anim-fade-up ${planning ? 'opacity-70 transition-opacity' : 'transition-opacity'}`}>
               {view === 'gantt' && <GanttView onSelect={it => setSelectedJob(it.job.id)} onCarpenter={() => setDialog('carpenter')} />}
               {view === 'priority' && <PriorityView />}
               {view === 'orders' && <OrdersView onSelect={it => setSelectedJob(it.job.id)} />}
               {view === 'runsheet' && <RunSheetView onPrint={() => setDialog('print')} />}
+              {view === 'hourly' && <HourlyView />}
               {view === 'exceptions' && <ExceptionsView />}
             </div>
           </>

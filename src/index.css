@@ -2,6 +2,8 @@
 
 :root {
   color-scheme: dark;
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 }
 
 html,
@@ -11,13 +13,23 @@ body,
 }
 
 body {
-  background: #020617;
   color: #e2e8f0;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  /* soft ambient light behind everything; fixed so it never scrolls with the content */
+  background-color: #020617;
+  background-image:
+    radial-gradient(900px 480px at 12% -8%, rgba(37, 99, 235, 0.14), transparent 62%),
+    radial-gradient(760px 420px at 96% 2%, rgba(124, 58, 237, 0.09), transparent 60%),
+    radial-gradient(700px 400px at 50% 112%, rgba(14, 165, 233, 0.06), transparent 60%);
+  background-attachment: fixed;
 }
 
 .mono {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+::selection {
+  background: rgba(59, 130, 246, 0.35);
 }
 
 ::-webkit-scrollbar {
@@ -27,9 +39,15 @@ body {
 ::-webkit-scrollbar-thumb {
   background: #334155;
   border-radius: 6px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+  background-clip: padding-box;
 }
 ::-webkit-scrollbar-track {
-  background: #0f172a;
+  background: transparent;
 }
 
 .hatch {
@@ -38,6 +56,132 @@ body {
 
 input[type='number']::-webkit-inner-spin-button {
   opacity: 0.4;
+}
+
+:focus-visible {
+  outline: 2px solid rgba(96, 165, 250, 0.9);
+  outline-offset: 2px;
+}
+
+button {
+  cursor: pointer;
+}
+
+/* ---------------------------------------------------------------- motion */
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes scale-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.965); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes drawer-in {
+  from { transform: translateX(36px); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+@keyframes toast-in {
+  from { opacity: 0; transform: translateX(24px) scale(0.96); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes grow-y {
+  from { transform: scaleY(0); }
+  to { transform: scaleY(1); }
+}
+@keyframes block-in {
+  from { opacity: 0; transform: scaleX(0.2) translateY(4px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes progress-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(350%); }
+}
+@keyframes float-slow {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+@keyframes orb-drift {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); }
+  50% { transform: translate3d(40px, 24px, 0) scale(1.08); }
+}
+@keyframes ping-soft {
+  0% { transform: scale(1); opacity: 0.55; }
+  80%, 100% { transform: scale(2.6); opacity: 0; }
+}
+@keyframes shine {
+  0% { transform: translateX(-120%) skewX(-18deg); }
+  60%, 100% { transform: translateX(260%) skewX(-18deg); }
+}
+
+.anim-fade-in { animation: fade-in 0.18s ease-out backwards; }
+.anim-fade-up { animation: fade-up 0.42s var(--ease-out) backwards; }
+.anim-scale-in { animation: scale-in 0.26s var(--ease-out) backwards; }
+.anim-drawer { animation: drawer-in 0.34s var(--ease-out) backwards; }
+.anim-toast { animation: toast-in 0.34s var(--ease-spring) backwards; }
+.bar-grow { transform-origin: bottom; animation: grow-y 0.6s var(--ease-out) backwards; }
+.block-in { transform-origin: left center; animation: block-in 0.5s var(--ease-out) backwards; }
+.float-slow { animation: float-slow 4.2s ease-in-out infinite; }
+
+/* Gantt boxes: glide to new positions after a re-plan, lift on hover */
+.gantt-block {
+  transition:
+    left 0.45s var(--ease-out),
+    width 0.45s var(--ease-out),
+    opacity 0.2s ease,
+    transform 0.16s ease,
+    box-shadow 0.2s ease;
+}
+.gantt-block:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 22px -8px var(--glow, rgba(59, 130, 246, 0.6)), 0 0 0 1px rgba(255, 255, 255, 0.25);
+  z-index: 12;
+}
+.gantt-block.no-glide {
+  transition: opacity 0.2s ease, transform 0.16s ease, box-shadow 0.2s ease;
+}
+
+.glass {
+  background: linear-gradient(180deg, rgba(15, 23, 42, 0.78), rgba(15, 23, 42, 0.55));
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 10px 30px -18px rgba(0, 0, 0, 0.8);
+  backdrop-filter: blur(6px);
+}
+
+.lift {
+  transition: transform 0.22s var(--ease-out), border-color 0.2s ease, box-shadow 0.25s ease;
+}
+.lift:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 18px 36px -22px rgba(59, 130, 246, 0.55);
+}
+
+.btn-glow-primary {
+  box-shadow: 0 0 0 1px rgba(96, 165, 250, 0.35), 0 8px 22px -10px rgba(37, 99, 235, 0.9);
+}
+
+.shine::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(100deg, transparent 30%, rgba(255, 255, 255, 0.28) 50%, transparent 70%);
+  animation: shine 4.5s ease-in-out infinite;
+  pointer-events: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-delay: 0ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
 }
 
 @media print {

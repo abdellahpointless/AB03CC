@@ -56,7 +56,7 @@ export function PrintSheet({ onClose }: { onClose: () => void }) {
                       <td className="border border-gray-400 px-1.5 py-1">{it.job.materialType}</td>
                       <td className="border border-gray-400 px-1.5 py-1">{it.job.qty}</td>
                       <td className="border border-gray-400 px-1.5 py-1">{it.setupBefore ? `+${it.setupBefore}m` : '–'}</td>
-                      <td className="border border-gray-400 px-1.5 py-1">{formatDuration(it.durationMin)}</td>
+                      <td className="border border-gray-400 px-1.5 py-1">{it.timeBasis === 'estimated' ? '≈ ' : ''}{formatDuration(it.durationMin)}</td>
                       <td className="border border-gray-400 px-1.5 py-1">{formatDayMonth(it.startTime)} {formatClock(it.startTime)}</td>
                       <td className="border border-gray-400 px-1.5 py-1">{formatClock(it.endTime)}</td>
                       <td className="border border-gray-400 px-1.5 py-1 text-center">☐</td>
@@ -64,6 +64,7 @@ export function PrintSheet({ onClose }: { onClose: () => void }) {
                   ))}
                 </tbody>
               </table>
+              <p className="mt-2 text-[10px] text-gray-600">≈ estimated time (NC × {settings.estimateMultiplier}); all other times are measured averages or set by hand.</p>
             </section>
           );
         })}

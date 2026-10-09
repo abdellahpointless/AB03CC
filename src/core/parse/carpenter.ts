@@ -4,7 +4,7 @@ import type {
   CarpenterPart,
   CarpenterReport,
 } from '../types';
-import { RowReader, num, str, toBool, type Row } from './workbook';
+import { RowReader, num, str, toBool, type Row } from './cells';
 
 /** Master order keys differ in formatting between exports ("123.0", spaces) - compare them normalized. */
 export function normalizeMo(raw: unknown): string {

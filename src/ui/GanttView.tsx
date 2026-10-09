@@ -1,10 +1,11 @@
-import { AlertOctagon, Gauge, Hammer, History, Lock, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
-import { useMemo, useRef, useState } from 'react';
+import { AlertOctagon, Gauge, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { WorkCalendar, formatClock, formatDuration } from '../core/calendar';
 import type { ScheduledJob, TimelineEvent } from '../core/types';
 import { swatchFor, type ColorMode } from '../lib/colors';
+import { timeBasisNote } from '../lib/timeBasis';
 import { useStore } from '../state/store';
-import { Button, Segmented } from './kit';
+import { Button, Segmented, TimeMark } from './kit';
 import { EVENT_TYPES, EventPopup, type EventDraft } from './EventPopup';
 import { KpiBar } from './KpiBar';
 
@@ -29,6 +30,12 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
   const [tip, setTip] = useState<{ item: ScheduledJob; x: number; y: number } | null>(null);
   const [dragOver, setDragOver] = useState<string | null>(null);
   const scroller = useRef<HTMLDivElement>(null);
+  // blocks glide to their new place after a re-plan, but must not lag behind the ruler while zooming
+  const lastZoom = useRef(zoom);
+  const zoomChanged = lastZoom.current !== zoom;
+  useEffect(() => {
+    lastZoom.current = zoom;
+  });
 
   const cal = useMemo(() => new WorkCalendar(settings.calendar), [settings.calendar]);
   const machines = settings.machines;
@@ -63,7 +70,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
 
   /* ruler */
   const ticks: Array<{ x: number; label: string; major: boolean }> = [];
-  const hourStep = zoom >= 1.6 ? 30 : zoom >= 0.7 ? 60 : 120;
+  const hourStep = zoom >= 1.6 ? 30 : zoom >= 0.7 ? 60 : zoom >= 0.35 ? 120 : 240;
   for (let m = 0; m <= axisMinutes; m += hourStep) {
     const d = cal.toDate(m);
     const dayStart = m % cal.dayLen === 0;
@@ -161,12 +168,23 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
           ]}
         />
         <div className="flex items-center gap-1">
-          <Button size="sm" onClick={() => setZoom(z => Math.max(0.25, +(z / 1.25).toFixed(2)))} aria-label="Zoom out">
+          <Button size="sm" onClick={() => setZoom(z => Math.max(0.1, +(z / 1.25).toFixed(2)))} aria-label="Zoom out">
             <ZoomOut className="h-3.5 w-3.5" />
           </Button>
           <span className="mono w-10 text-center text-[11px] text-slate-400">{Math.round(zoom * 100)}%</span>
           <Button size="sm" onClick={() => setZoom(z => Math.min(5, +(z * 1.25).toFixed(2)))} aria-label="Zoom in">
             <ZoomIn className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            size="sm"
+            title="Fit the whole plan on screen"
+            onClick={() => {
+              const w = (scroller.current?.clientWidth ?? 1200) - LABEL_W - 16;
+              setZoom(Math.min(5, Math.max(0.1, +(w / axisMinutes / 0.9).toFixed(2))));
+              scroller.current?.scrollTo({ left: 0, behavior: 'smooth' });
+            }}
+          >
+            <Maximize2 className="h-3.5 w-3.5" /> Fit
           </Button>
         </div>
         <Button size="sm" variant={showPrevious ? 'primary' : 'secondary'} disabled={!previousPlan} onClick={() => setShowPrevious(v => !v)} title="Overlay the schedule from before your last change">
@@ -256,7 +274,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                       <div key={ev.id}>
                         {ev.type !== 'rework' && <div
                           className="hatch pointer-events-none absolute top-0 z-[5] h-full border-x"
-                          style={{ left: ev.startMinute * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), background: `${EVENT_COLORS[ev.type]}66`, borderColor: EVENT_COLORS[ev.type] }}
+                          style={{ left: ev.startMinute * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), backgroundColor: `${EVENT_COLORS[ev.type]}66`, borderColor: EVENT_COLORS[ev.type] }}
                         />}
                         <button
                           onClick={e => editEvent(ev, machine.id, e.currentTarget)}
@@ -293,7 +311,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                         );
                       })()}
 
-                    {items.map(it => {
+                    {items.map((it, itemIdx) => {
                       const sw = swatchFor(it.job, colorMode);
                       const dim = (q && !matches(it)) || (hoverMo && hoverMo !== it.job.masterOrder);
                       const prev = showPrevious ? prevByJob.get(it.job.id) : undefined;
@@ -317,8 +335,10 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                                 onMouseEnter={e => (setHoverMo(it.job.masterOrder), setTip({ item: it, x: e.clientX, y: e.clientY }))}
                                 onMouseMove={e => setTip({ item: it, x: e.clientX, y: e.clientY })}
                                 onMouseLeave={() => (setHoverMo(null), setTip(null))}
-                                className="absolute z-10 cursor-pointer overflow-hidden rounded-md border text-left shadow-md transition-opacity"
+                                className={`gantt-block block-in absolute z-10 cursor-pointer overflow-hidden rounded-md border text-left shadow-md ${zoomChanged ? 'no-glide' : ''}`}
                                 style={{
+                                  '--glow': sw.bg,
+                                  animationDelay: `${Math.min(laneIdx * 90 + itemIdx * 5, 760)}ms`,
                                   left: seg.startMinute * pxPerMin,
                                   width: w,
                                   top: 8,
@@ -327,10 +347,17 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                                   borderColor: hoverMo === it.job.masterOrder ? '#fff' : it.job.isRework ? '#fbbf24' : sw.border,
                                   borderWidth: hoverMo === it.job.masterOrder ? 2 : 1,
                                   opacity: dim ? 0.25 : 1,
-                                }}
+                                } as React.CSSProperties}
                               >
                                 {it.isLate && <div className="absolute inset-x-0 top-0 h-[3px] bg-rose-500" />}
                                 {si === 0 && <BlockLabel it={it} width={w} showEff={showEff} />}
+                                {si === 0 && w >= 18 && it.timeBasis !== 'manual' && (
+                                  <span
+                                    className={`pointer-events-none absolute bottom-[3px] right-[3px] block h-[5px] w-[5px] rounded-full opacity-60 ${
+                                      it.timeBasis === 'measured' ? 'bg-white' : 'border border-white'
+                                    }`}
+                                  />
+                                )}
                               </div>
                             );
                           })}
@@ -352,7 +379,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                     })}
 
                     {nowMinute !== null && nowMinute < axisMinutes && (
-                      <div className="pointer-events-none absolute top-0 z-20 h-full w-px bg-orange-400" style={{ left: nowMinute * pxPerMin }} />
+                      <div className="pointer-events-none absolute top-0 z-20 h-full w-px bg-orange-400 shadow-[0_0_8px_rgba(251,146,60,0.9)]" style={{ left: nowMinute * pxPerMin }} />
                     )}
                   </div>
                 </div>
@@ -372,7 +399,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
           onDelete={draft.id ? () => (removeEvent(draft.id!), setDraft(null)) : undefined}
         />
       )}
-      <Legend mode={colorMode} />
+      <Legend mode={colorMode} multiplier={settings.estimateMultiplier} />
       {tip && <Tooltip tip={tip} />}
     </div>
   );
@@ -399,7 +426,7 @@ function BlockLabel({ it, width, showEff }: { it: ScheduledJob; width: number; s
         <div className="flex items-center gap-1 text-[9px] font-semibold leading-none">
           <span className="rounded bg-black/30 px-1 py-0.5">{it.job.materialType}</span>
           {width > 90 && <span className="truncate opacity-90">MO …{it.job.masterOrder.slice(-5)}</span>}
-          {showEff && <span className="mono rounded bg-black/30 px-1 py-0.5">{it.efficiencyPercent}%</span>}
+          {showEff && <span className="mono rounded bg-black/30 px-1 py-0.5">{it.timeBasis === 'measured' ? 'real' : `${it.efficiencyPercent}%`}</span>}
         </div>
       )}
       {width > 70 && (
@@ -414,10 +441,11 @@ function BlockLabel({ it, width, showEff }: { it: ScheduledJob; width: number; s
 
 function Tooltip({ tip }: { tip: { item: ScheduledJob; x: number; y: number } }) {
   const { item: it } = tip;
+  const { settings } = useStore();
   const left = Math.min(tip.x + 14, window.innerWidth - 300);
   const top = Math.min(tip.y + 14, window.innerHeight - 200);
   return (
-    <div style={{ left, top }} className="pointer-events-none fixed z-50 w-72 rounded-lg border border-slate-600 bg-slate-900 p-3 text-xs shadow-2xl">
+    <div style={{ left, top }} className="anim-fade-in pointer-events-none fixed z-50 w-72 rounded-lg border border-slate-600 bg-slate-900/95 p-3 text-xs shadow-2xl backdrop-blur">
       <div className="flex items-center justify-between">
         <span className="font-bold text-white">Box {it.job.boxCode}</span>
         <span className="mono text-slate-400">#{it.sequence} on {it.machineId}</span>
@@ -428,29 +456,40 @@ function Tooltip({ tip }: { tip: { item: ScheduledJob; x: number; y: number } })
         <dt>Matnr</dt><dd className="text-slate-200">{it.job.matnr} · {it.job.materialType}</dd>
         <dt>Run</dt><dd className="text-slate-200">{formatClock(it.startTime)} → {formatClock(it.endTime)} ({formatDuration(it.durationMin)})</dd>
         <dt>Setup</dt><dd className="text-slate-200">{it.setupBefore} min</dd>
-        <dt>Efficiency</dt><dd className="text-slate-200">{it.efficiencyPercent}% ({it.efficiencySource})</dd>
+        <dt>Time</dt>
+        <dd className="text-slate-200">
+          <TimeMark basis={it.timeBasis} className="-ml-1 text-slate-300" />
+          {it.timeBasis === 'measured' ? `measured · ${Math.round((it.measuredPerPart ?? 0) * 10) / 10} min/part` : it.timeBasis === 'estimated' ? `estimated · ${it.efficiencyPercent}% eff.` : 'set by you'}
+        </dd>
         <dt>Why here</dt><dd className="text-slate-200">{it.decidingRule}</dd>
       </dl>
+      {it.partName && <div className="mt-1.5 text-[11px] text-slate-400">{it.partName}</div>}
+      <div className="mt-1 text-[10px] leading-snug text-slate-500">{timeBasisNote(it, settings.estimateMultiplier)}</div>
       {it.carpenterOpen && <div className="mt-2 rounded bg-amber-950 px-2 py-1 text-amber-300">Carpenter parts still open for this module</div>}
       {it.isLate && <div className="mt-2 rounded bg-rose-950 px-2 py-1 text-rose-300">Finishes after its due date ({it.job.dueDate})</div>}
     </div>
   );
 }
 
-function Legend({ mode }: { mode: ColorMode }) {
-  if (mode !== 'material') {
-    return <p className="text-[11px] text-slate-500">Colours group boxes by {mode === 'masterOrder' ? 'master order' : 'sales order'}: boxes of the same group share a colour. Hover a box to highlight its whole module.</p>;
-  }
+function Legend({ mode, multiplier }: { mode: ColorMode; multiplier: number }) {
   const mats = ['ALU', 'POM', 'FH', 'PCGF', 'MS', 'PEEK', 'PP', 'INOX', 'FR4'];
   const fake = (m: string) => swatchFor({ materialType: m } as never, 'material');
   return (
-    <div className="flex flex-wrap items-center gap-3 text-[11px] text-slate-400">
-      {mats.map(m => (
-        <span key={m} className="flex items-center gap-1">
-          <span className="h-2.5 w-2.5 rounded" style={{ background: fake(m).bg, border: `1px solid ${fake(m).border}` }} /> {m}
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-[11px] text-slate-400">
+      {mode === 'material' ? (
+        mats.map(m => (
+          <span key={m} className="flex items-center gap-1">
+            <span className="h-2.5 w-2.5 rounded" style={{ background: fake(m).bg, border: `1px solid ${fake(m).border}` }} /> {m}
+          </span>
+        ))
+      ) : (
+        <span className="text-slate-500">
+          Colours group boxes by {mode === 'masterOrder' ? 'master order' : 'sales order'}. Hover a box to highlight its whole module.
         </span>
-      ))}
+      )}
       <span className="flex items-center gap-1"><span className="hatch h-2.5 w-4 rounded border border-slate-600 bg-slate-700/60" /> changeover</span>
+      <span className="flex items-center gap-1"><TimeMark basis="measured" /> measured time</span>
+      <span className="flex items-center gap-1"><TimeMark basis="estimated" /> estimated (NC × {multiplier})</span>
       <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded border-t-2 border-rose-500 bg-slate-700" /> past due</span>
       <span className="flex items-center gap-1"><span className="h-3 w-px bg-orange-400" /> now</span>
     </div>

@@ -56,7 +56,24 @@ export const DEFAULT_OUT_OF_SCOPE = [
   'LATHE - 1',
 ];
 
+/**
+ * Extra minutes per piece. They start at zero because the estimate (NC x 2.8) already contains
+ * the usual overhead; add an offset only for something it does not cover.
+ */
 export const DEFAULT_MATERIAL_OFFSETS: Record<string, number> = {
+  ALU: 0,
+  POM: 0,
+  FH: 0,
+  PCGF: 0,
+  MS: 0,
+  PEEK: 0,
+  PP: 0,
+  INOX: 0,
+  FR4: 0,
+};
+
+/** The offsets earlier versions shipped; saved settings still holding exactly these are reset. */
+const LEGACY_MATERIAL_OFFSETS: Record<string, number> = {
   ALU: 0,
   POM: 0,
   FH: 2,
@@ -67,6 +84,9 @@ export const DEFAULT_MATERIAL_OFFSETS: Record<string, number> = {
   INOX: 8,
   FR4: 2,
 };
+
+export const SETTINGS_VERSION = 2;
+export const DEFAULT_ESTIMATE_MULTIPLIER = 2.8;
 
 export const MATERIAL_TYPES = ['ALU', 'POM', 'FH', 'PCGF', 'MS', 'PEEK', 'PP', 'INOX', 'FR4'];
 
@@ -181,6 +201,9 @@ export function defaultSettings(): PlannerSettings {
     efficiencyMode: 'expected',
     fanuc2UsesIdealMinutes: true,
     calibrationHistory: [],
+    useMeasuredTimes: true,
+    estimateMultiplier: DEFAULT_ESTIMATE_MULTIPLIER,
+    settingsVersion: SETTINGS_VERSION,
   };
 }
 
@@ -193,5 +216,15 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
   merged.changeover = { ...base.changeover, ...(saved.changeover ?? {}) };
   if (!Array.isArray(merged.machines) || merged.machines.length === 0) merged.machines = base.machines;
   if (!Array.isArray(merged.priorityRules)) merged.priorityRules = base.priorityRules;
+
+  // Migration: version 2 introduced real-time planning (parts list + NC x 2.8). Old default offsets would
+  // be double counted on top of the estimate, so untouched legacy offsets are reset to the new defaults.
+  if ((saved.settingsVersion ?? 1) < SETTINGS_VERSION) {
+    const old = saved.materialOffsets ?? {};
+    const legacy = Object.keys(LEGACY_MATERIAL_OFFSETS).every(k => old[k] === LEGACY_MATERIAL_OFFSETS[k]);
+    if (legacy || Object.keys(old).length === 0) merged.materialOffsets = { ...base.materialOffsets };
+    merged.settingsVersion = SETTINGS_VERSION;
+  }
+  if (!(merged.estimateMultiplier > 0)) merged.estimateMultiplier = DEFAULT_ESTIMATE_MULTIPLIER;
   return merged;
 }

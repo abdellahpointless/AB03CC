@@ -8,7 +8,7 @@ export function Toasts() {
       {toasts.map(t => (
         <div
           key={t.id}
-          className={`flex items-start gap-2 rounded-lg border px-3 py-2 text-xs shadow-xl ${
+          className={`anim-toast flex items-start gap-2 rounded-lg border px-3 py-2 text-xs shadow-xl backdrop-blur ${
             t.tone === 'error'
               ? 'border-rose-800 bg-rose-950 text-rose-100'
               : t.tone === 'warn'

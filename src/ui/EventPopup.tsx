@@ -63,7 +63,7 @@ export function EventPopup({
     <div
       ref={ref}
       style={{ left, top, width: W }}
-      className="fixed z-[60] rounded-xl border border-slate-600 bg-slate-900 p-3 shadow-2xl"
+      className="anim-scale-in fixed z-[60] rounded-xl border border-slate-600 bg-slate-900 p-3 shadow-2xl"
       onMouseDown={e => e.stopPropagation()}
     >
       <div className="mb-2 flex items-baseline justify-between">

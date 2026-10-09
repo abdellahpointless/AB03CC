@@ -1,5 +1,5 @@
 import type { ImportReport, Job } from '../types';
-import { RowReader, num, str, toIsoDate, type Row } from './workbook';
+import { RowReader, num, str, toIsoDate, type Row } from './cells';
 
 export interface ProductionImport {
   jobs: Job[];

@@ -1,5 +1,6 @@
 import { WorkCalendar, formatClock } from '../calendar';
 import { buildCarpenterMap, normalizeMo } from '../parse/carpenter';
+import { partKey } from '../parse/partTimes';
 import { compareByRules, decidingRule, type RankContext } from '../priority';
 import type {
   Bottleneck,
@@ -8,6 +9,7 @@ import type {
   Job,
   MachineConfig,
   MoSync,
+  PartTimeMap,
   PlanKpis,
   PlanResult,
   PlannerSettings,
@@ -102,6 +104,7 @@ export function planProduction(
   settings: PlannerSettings,
   locksIn: Record<string, UserLock> = {},
   carpenterParts: CarpenterPart[] = [],
+  partTimes: PartTimeMap = {},
 ): PlanResult {
   let locks = locksIn;
   const aliases = settings.materialAliases ?? {};
@@ -155,7 +158,7 @@ export function planProduction(
 
   const active = settings.machines.filter(m => !m.isDown);
   const activeIds = new Set(active.map(m => m.id));
-  const ctx = new SimContext(settings, active);
+  const ctx = new SimContext(settings, active, partTimes);
   const cal = new WorkCalendar(settings.calendar);
 
   for (const [id, lock] of Object.entries(locks)) {
@@ -482,6 +485,9 @@ export function planProduction(
         idealMinutes: d.idealMinutes,
         efficiencyPercent: d.efficiencyPercent,
         efficiencySource: d.source,
+        timeBasis: d.basis,
+        measuredPerPart: d.basis === 'measured' ? ctx.measuredFor(st.job) : undefined,
+        partName: partTimes[partKey(st.job.matnr)]?.name,
         materialOffset: d.materialOffset,
         segments: st.segments,
         startTime,
@@ -579,6 +585,8 @@ export function planProduction(
   const plannedJobs = Object.values(finalQueues).reduce((a, q) => a + q.length, 0);
   const kpis: PlanKpis = {
     plannedJobs,
+    measuredJobs: Object.values(finalQueues).reduce((a, q) => a + q.filter(i => i.timeBasis === 'measured').length, 0),
+    estimatedJobs: Object.values(finalQueues).reduce((a, q) => a + q.filter(i => i.timeBasis === 'estimated').length, 0),
     plannedHours: Math.round((totalMachining / 60) * 10) / 10,
     changeoverMinutes: totalSetup,
     setupSavedMinutes: Math.max(0, unsortedSetup - totalSetup),

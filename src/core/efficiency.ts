@@ -1,4 +1,4 @@
-import type { CalibrationRow, Job, MachineConfig, PlannerSettings } from './types';
+import type { CalibrationRow, Job, MachineConfig, PlannerSettings, TimeBasis } from './types';
 
 export type EfficiencySource = 'part' | 'matrix' | 'material' | 'machine' | 'global';
 
@@ -53,18 +53,26 @@ export function resolveEfficiency(job: Job, machine: MachineConfig, s: PlannerSe
 export interface PlannedDuration {
   durationMin: number;
   cautiousDurationMin: number;
+  /** NC minutes x quantity: the machine program length, shown for reference */
   idealMinutes: number;
   efficiencyPercent: number;
-  source: EfficiencySource | 'manual';
+  source: EfficiencySource | 'manual' | 'measured';
   materialOffset: number;
+  basis: TimeBasis;
 }
 
-/** planned minutes = (NC minutes / efficiency + material offset) x qty */
+/**
+ * Planned minutes for a job on a machine.
+ *  - manual time lock       -> exactly what the user typed
+ *  - measured (in the list) -> average real minutes per part x qty. No efficiency, speed or offset applies.
+ *  - estimated (not listed) -> (NC minutes x estimate multiplier / efficiency + material offset) x qty
+ */
 export function plannedDuration(
   job: Job,
   machine: MachineConfig,
   s: PlannerSettings,
   manualDurationMin?: number,
+  measuredPerPart?: number,
 ): PlannedDuration {
   const idealMinutes = job.ncMinutes * job.qty;
   if (manualDurationMin !== undefined && manualDurationMin > 0) {
@@ -75,11 +83,26 @@ export function plannedDuration(
       efficiencyPercent: Math.round((idealMinutes / manualDurationMin) * 100),
       source: 'manual',
       materialOffset: 0,
+      basis: 'manual',
     };
   }
+  if (measuredPerPart !== undefined && measuredPerPart > 0) {
+    const durationMin = Math.max(1, Math.round(measuredPerPart * job.qty));
+    return {
+      durationMin,
+      cautiousDurationMin: durationMin,
+      idealMinutes,
+      efficiencyPercent: Math.round((idealMinutes / durationMin) * 100),
+      source: 'measured',
+      materialOffset: 0,
+      basis: 'measured',
+    };
+  }
+  const multiplier = s.estimateMultiplier > 0 ? s.estimateMultiplier : 1;
+  const base = job.ncMinutes * multiplier;
   const offset = s.materialOffsets[job.materialType] ?? 0;
   const eff = resolveEfficiency(job, machine, s);
-  const total = (percent: number) => Math.max(1, Math.round((job.ncMinutes / (percent / 100) + offset) * job.qty));
+  const total = (percent: number) => Math.max(1, Math.round((base / (percent / 100) + offset) * job.qty));
   const expected = total(eff.expectedPercent);
   const cautious = total(eff.lowerBoundPercent);
   return {
@@ -89,6 +112,7 @@ export function plannedDuration(
     efficiencyPercent: eff.percent,
     source: eff.source,
     materialOffset: offset,
+    basis: 'estimated',
   };
 }
 
@@ -153,7 +177,9 @@ export function calibrationSuggestions(history: CalibrationRow[], s: PlannerSett
     g.actualMinutes += r.actualMinutes;
     groups.set(key, g);
   }
+  // Efficiency is relative to the estimate baseline (NC x multiplier), the same baseline estimated parts are planned from.
+  const baseline = s.estimateMultiplier > 0 ? s.estimateMultiplier : 1;
   return [...groups.values()]
-    .map(g => ({ ...g, suggestedPercent: Math.max(10, Math.min(200, Math.round((g.ncMinutes / g.actualMinutes) * 100))) }))
+    .map(g => ({ ...g, suggestedPercent: Math.max(10, Math.min(200, Math.round(((g.ncMinutes * baseline) / g.actualMinutes) * 100))) }))
     .sort((a, b) => b.samples - a.samples);
 }

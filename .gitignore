@@ -4,3 +4,4 @@ dist
 *.log
 *.xlsx
 dist-single
+src/data/builtin-part-times.json

@@ -1,5 +1,6 @@
 import { plannedDuration, type PlannedDuration } from '../efficiency';
-import type { ChangeoverRules, Job, MachineConfig, PlannerSettings, Segment, TimelineEvent } from '../types';
+import { partKey } from '../parse/partTimes';
+import type { ChangeoverRules, Job, MachineConfig, PartTimeMap, PlannerSettings, Segment, TimelineEvent } from '../types';
 
 export interface Interval {
   start: number;
@@ -16,7 +17,11 @@ export class SimContext {
   readonly manualStart = new Map<string, number>();
   private readonly durCache = new Map<string, PlannedDuration>();
 
-  constructor(settings: PlannerSettings, machines: MachineConfig[]) {
+  constructor(
+    settings: PlannerSettings,
+    machines: MachineConfig[],
+    readonly partTimes: PartTimeMap = {},
+  ) {
     this.settings = settings;
     for (const m of machines) this.downtime.set(m.id, mergeIntervals(eventsFor(settings.timelineEvents, m.id)));
   }
@@ -25,11 +30,16 @@ export class SimContext {
     return this.downtime.get(machineId) ?? [];
   }
 
+  /** Average real minutes per piece from the parts list, when the list is in use and knows this part. */
+  measuredFor(job: Job): number | undefined {
+    return this.settings.useMeasuredTimes ? this.partTimes[partKey(job.matnr)]?.minutes : undefined;
+  }
+
   duration(job: Job, machine: MachineConfig): PlannedDuration {
     const key = `${job.id}|${machine.id}`;
     let d = this.durCache.get(key);
     if (!d) {
-      d = plannedDuration(job, machine, this.settings, this.manualDuration.get(job.id));
+      d = plannedDuration(job, machine, this.settings, this.manualDuration.get(job.id), this.measuredFor(job));
       this.durCache.set(key, d);
     }
     return d;

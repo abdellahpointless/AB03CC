@@ -1,4 +1,4 @@
-import { Hammer, Plus, RotateCcw, Trash2, X } from 'lucide-react';
+import { Hammer, Plus, RotateCcw, Timer, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { minutesPerDay } from '../core/calendar';
 import { EFFICIENCY_PRESETS, MATERIAL_TYPES } from '../core/defaults';
@@ -6,13 +6,15 @@ import { calibrationSuggestions, parseCalibration } from '../core/efficiency';
 import type { CarpenterCutColumn, CarpenterDelayMode, MachineConfig, PlannerSettings } from '../core/types';
 import { useStore } from '../state/store';
 import { Badge, Button, Field, NumberInput, Segmented, Toggle, inputCls } from './kit';
+import { useImport } from './useImport';
 
-type Tab = 'machines' | 'materials' | 'time' | 'rules' | 'carpenter' | 'efficiency';
+type Tab = 'machines' | 'materials' | 'time' | 'rules' | 'parttimes' | 'carpenter' | 'efficiency';
 const TABS: Array<[Tab, string]> = [
   ['machines', 'Machines'],
   ['materials', 'Materials'],
   ['time', 'Changeover & calendar'],
   ['rules', 'Planning rules'],
+  ['parttimes', 'Part times'],
   ['carpenter', 'Carpenter'],
   ['efficiency', 'Efficiency'],
 ];
@@ -28,8 +30,8 @@ export function SettingsDrawer({ onClose }: { onClose: () => void }) {
   }, [onClose]);
 
   return (
-    <div className="no-print fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onMouseDown={e => e.target === e.currentTarget && onClose()}>
-      <aside className="flex h-full w-full max-w-3xl flex-col border-l border-slate-700 bg-slate-900 shadow-2xl">
+    <div className="no-print anim-fade-in fixed inset-0 z-50 flex justify-end bg-black/60 backdrop-blur-sm" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+      <aside className="anim-drawer flex h-full w-full max-w-3xl flex-col border-l border-slate-700 bg-slate-900 shadow-2xl">
         <div className="flex items-center justify-between border-b border-slate-800 px-5 py-3">
           <div>
             <h2 className="text-sm font-bold text-white">Variable Editor</h2>
@@ -63,6 +65,7 @@ export function SettingsDrawer({ onClose }: { onClose: () => void }) {
           {tab === 'materials' && <MaterialsTab s={settings} set={updateSettings} />}
           {tab === 'time' && <TimeTab s={settings} set={updateSettings} />}
           {tab === 'rules' && <RulesTab s={settings} set={updateSettings} />}
+          {tab === 'parttimes' && <PartTimesTab s={settings} set={updateSettings} />}
           {tab === 'carpenter' && <CarpenterTab s={settings} set={updateSettings} />}
           {tab === 'efficiency' && <EfficiencyTab s={settings} set={updateSettings} />}
         </div>
@@ -182,7 +185,7 @@ function MaterialsTab({ s, set }: TabProps) {
   const mats = [...new Set([...MATERIAL_TYPES, ...Object.keys(s.materialOffsets)])];
   return (
     <>
-      <Section title="Material time offsets" hint="Fixed extra minutes added to every piece (probing, deburring, tool wear…). Planned = (NC ÷ efficiency + offset) × qty.">
+      <Section title="Material time offsets" hint="Fixed extra minutes added to every piece of an estimated part (probing, deburring, tool wear…). Parts with a measured time ignore them. Estimated = (NC × factor ÷ efficiency + offset) × qty.">
         <div className="grid gap-2 sm:grid-cols-2">
           {mats.map(m => (
             <div key={m} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
@@ -334,6 +337,81 @@ function RulesTab({ s, set }: TabProps) {
   );
 }
 
+/* ----------------------------- part times ----------------------------- */
+
+function PartTimesTab({ s, set }: TabProps) {
+  const { partList, partCoverage: cov, clearImportedPartList } = useStore();
+  const { handleFiles, inputRef, openPicker } = useImport();
+  const pct = cov.uniqueParts ? Math.round((cov.measuredParts / cov.uniqueParts) * 100) : 0;
+  return (
+    <>
+      <Section
+        title="Parts time list"
+        hint="Average real minutes per part, matched on the material number (Matnr). A part found in the list is planned at exactly that time."
+      >
+        <div className="rounded-lg border border-slate-800 bg-slate-950/50 p-3">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs">
+              <Timer className="h-4 w-4 text-sky-400" />
+              {partList.source === 'none' ? (
+                <span className="text-slate-300">No list loaded: every part is estimated.</span>
+              ) : (
+                <span className="text-slate-200">
+                  <b>{partList.source === 'builtin' ? 'Built-in list' : partList.file}</b> · {partList.count.toLocaleString()} parts
+                  {partList.source === 'imported' && <span className="text-slate-500"> (imported)</span>}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-2">
+              <input ref={inputRef} type="file" accept=".xlsx,.xls,.csv" hidden onChange={e => (handleFiles(e.target.files), (e.target.value = ''))} />
+              <Button size="sm" variant="primary" onClick={openPicker}>
+                <Upload className="h-3 w-3" /> {partList.source === 'imported' ? 'Replace list' : 'Import list'}
+              </Button>
+              {partList.source === 'imported' && (
+                <Button size="sm" variant="danger" onClick={clearImportedPartList}>
+                  {partList.hasBuiltin ? 'Use built-in list' : 'Remove list'}
+                </Button>
+              )}
+            </div>
+          </div>
+          {cov.jobs > 0 && (
+            <div className="mt-3">
+              <div className="mb-1 flex justify-between text-[11px] text-slate-400">
+                <span>
+                  {cov.measuredParts} of {cov.uniqueParts} parts in this workload have a real time
+                </span>
+                <span className="mono">{pct}%</span>
+              </div>
+              <div className="h-1.5 overflow-hidden rounded-full bg-slate-800">
+                <div className="h-full rounded-full bg-sky-500 transition-[width] duration-700 ease-out" style={{ width: `${pct}%` }} />
+              </div>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {cov.measuredJobs} of {cov.jobs} rows are measured; the rest use the estimate below.
+              </p>
+            </div>
+          )}
+        </div>
+      </Section>
+
+      <Section title="How times are decided">
+        <div className="grid gap-2">
+          <Toggle
+            checked={s.useMeasuredTimes}
+            onChange={v => set({ useMeasuredTimes: v })}
+            label="Use real times from the list"
+            hint="On: listed parts run for exactly their listed time × quantity. Efficiency %, machine speed, material defaults, cautious mode, material offsets and per-part overrides never touch them. Only a run time you type on a job beats it. Off: everything is estimated."
+          />
+        </div>
+        <div className="mt-3 w-64">
+          <Field label="Estimate for parts not in the list (× NC minutes)" hint="Planned = NC minutes × this factor × quantity. Your efficiency rules and material offsets still apply to estimated parts.">
+            <NumberInput value={s.estimateMultiplier} min={0.1} step={0.1} onChange={v => v && v > 0 && set({ estimateMultiplier: v })} />
+          </Field>
+        </div>
+      </Section>
+    </>
+  );
+}
+
 /* ----------------------------- carpenter ----------------------------- */
 
 function CarpenterTab({ s, set }: TabProps) {
@@ -438,7 +516,7 @@ function EfficiencyTab({ s, set }: TabProps) {
 
   return (
     <>
-      <Section title="Planning mode" hint="Expected uses the efficiency as entered; Cautious subtracts each cell's variability.">
+      <Section title="Planning mode" hint="Efficiency only applies to parts with an estimated time. Parts with a measured time from the list are never changed by it. Expected uses the efficiency as entered; Cautious subtracts each cell's variability.">
         <Segmented value={s.efficiencyMode} onChange={v => set({ efficiencyMode: v })} options={[{ value: 'expected', label: 'Expected' }, { value: 'cautious', label: 'Cautious' }]} />
       </Section>
       <Section title="Presets">
@@ -520,7 +598,7 @@ function EfficiencyTab({ s, set }: TabProps) {
           </table>
         </div>
       </Section>
-      <Section title="Calibrate from actuals" hint="Paste one line per box: Box Code, Machine, Actual minutes. Suggested efficiency = Σ NC minutes ÷ Σ actual minutes.">
+      <Section title="Calibrate from actuals" hint="Paste one line per box: Box Code, Machine, Actual minutes. Suggested efficiency = Σ (NC × estimate factor) ÷ Σ actual minutes, so it corrects the estimate for parts that are not in the parts list.">
         <textarea className={`${inputCls} h-24 font-mono`} placeholder={'0217, HAAS - 1, 38\n6601, FANUC - 1, 52'} value={calText} onChange={e => setCalText(e.target.value)} />
         <div className="mt-2 flex gap-2">
           <Button
@@ -544,7 +622,7 @@ function EfficiencyTab({ s, set }: TabProps) {
           <div className="mt-3 overflow-hidden rounded-lg border border-slate-800">
             <table className="w-full text-xs">
               <thead className="bg-slate-900 text-left text-slate-400">
-                <tr>{['Machine', 'Material', 'Samples', 'NC / actual', 'Current', 'Suggested'].map(h => <th key={h} className="px-3 py-2">{h}</th>)}</tr>
+                <tr>{['Machine', 'Material', 'Samples', 'Estimate / actual', 'Current', 'Suggested'].map(h => <th key={h} className="px-3 py-2">{h}</th>)}</tr>
               </thead>
               <tbody>
                 {suggestions.map(g => (
@@ -552,7 +630,7 @@ function EfficiencyTab({ s, set }: TabProps) {
                     <td className="px-3 py-1.5">{g.machineId}</td>
                     <td className="px-3">{g.materialType}</td>
                     <td className="mono px-3">{g.samples}</td>
-                    <td className="mono px-3">{g.ncMinutes}/{g.actualMinutes}</td>
+                    <td className="mono px-3">{Math.round(g.ncMinutes * s.estimateMultiplier)}/{g.actualMinutes}</td>
                     <td className="mono px-3">{g.currentPercent}%</td>
                     <td className="mono px-3 font-bold text-emerald-300">{g.suggestedPercent}%</td>
                   </tr>

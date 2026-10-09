@@ -21,9 +21,9 @@ export function Button({
   return (
     <button
       {...rest}
-      className={`inline-flex items-center justify-center gap-1.5 rounded-md border font-semibold whitespace-nowrap transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
+      className={`inline-flex items-center justify-center gap-1.5 rounded-md border font-semibold whitespace-nowrap transition-all duration-150 active:scale-[0.96] disabled:opacity-40 disabled:cursor-not-allowed disabled:active:scale-100 ${
         size === 'sm' ? 'px-2 py-1 text-[11px]' : 'px-3 py-1.5 text-xs'
-      } ${VARIANTS[variant]} ${className}`}
+      } ${VARIANTS[variant]} ${variant === 'primary' ? 'btn-glow-primary' : ''} ${className}`}
     />
   );
 }
@@ -49,8 +49,8 @@ export function Modal({
     return () => window.removeEventListener('keydown', onKey);
   }, [onClose]);
   return (
-    <div className="no-print fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onMouseDown={e => e.target === e.currentTarget && onClose()}>
-      <div className={`flex max-h-[90vh] w-full ${width} flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl`}>
+    <div className="no-print anim-fade-in fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm" onMouseDown={e => e.target === e.currentTarget && onClose()}>
+      <div className={`anim-scale-in flex max-h-[90vh] w-full ${width} flex-col overflow-hidden rounded-xl border border-slate-700 bg-slate-900 shadow-2xl`}>
         <div className="flex items-start justify-between gap-4 border-b border-slate-800 px-5 py-3">
           <div>
             <h2 className="text-sm font-bold text-white">{title}</h2>
@@ -112,6 +112,7 @@ export function NumberInput({
   step,
   className = '',
   placeholder,
+  disabled,
 }: {
   value: number | undefined;
   onChange: (v: number | undefined) => void;
@@ -120,6 +121,7 @@ export function NumberInput({
   step?: number;
   className?: string;
   placeholder?: string;
+  disabled?: boolean;
 }) {
   // Keep the raw text while the field has focus so clearing/retyping a number never snaps back.
   const [text, setText] = useState(value === undefined ? '' : String(value));
@@ -136,6 +138,7 @@ export function NumberInput({
       max={max}
       step={step}
       placeholder={placeholder}
+      disabled={disabled}
       onFocus={() => (focused.current = true)}
       onBlur={() => {
         focused.current = false;
@@ -147,6 +150,19 @@ export function NumberInput({
         if (n === undefined || Number.isFinite(n)) onChange(n);
       }}
     />
+  );
+}
+
+/**
+ * Subtle marker for where a planned time comes from: filled dot = measured (found in the parts list),
+ * hollow ring = estimated (NC x multiplier). Manual times get no marker.
+ */
+export function TimeMark({ basis, title, className = '' }: { basis: 'measured' | 'estimated' | 'manual'; title?: string; className?: string }) {
+  if (basis === 'manual') return null;
+  return (
+    <span title={title} className={`inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center align-middle ${className}`}>
+      <span className={`block h-[6px] w-[6px] rounded-full opacity-60 ${basis === 'measured' ? 'bg-current' : 'border border-current'}`} />
+    </span>
   );
 }
 
@@ -177,7 +193,7 @@ export function Segmented<T extends string>({
 }
 
 export function Card({ children, className = '' }: { children: ReactNode; className?: string }) {
-  return <div className={`rounded-xl border border-slate-800 bg-slate-900/60 ${className}`}>{children}</div>;
+  return <div className={`glass rounded-xl border border-slate-800 ${className}`}>{children}</div>;
 }
 
 export function Empty({ children }: { children: ReactNode }) {

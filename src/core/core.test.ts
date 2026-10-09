@@ -1,12 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import { WorkCalendar } from './calendar';
 import { demoCarpenterParts, demoJobs } from './demo';
-import { defaultSettings } from './defaults';
+import { defaultSettings, mergeSettings } from './defaults';
 import { plannedDuration } from './efficiency';
 import { buildCarpenterMap, normalizeMo } from './parse/carpenter';
+import { buildPartTimeIndex, looksLikePartTimes, parsePartTimes, partKey, pickPartTimes } from './parse/partTimes';
 import { parseProduction } from './parse/production';
 import { toIsoDate } from './parse/workbook';
 import { isEligible, planProduction } from './scheduler/plan';
+import { bucketIndexOf, computeThroughput, niceTicks } from './throughput';
 import { SimContext } from './scheduler/simulate';
 import type { Job } from './types';
 
@@ -57,12 +59,22 @@ describe('production parser', () => {
   });
 });
 
-describe('efficiency', () => {
-  const job = parseProduction([{ 'Box Code': '1', 'Master Order Number': 'M', 'Order Number': '1', 'Nc File Minute': 10, 'Material Type': 'FH', Qty: 2 }]).jobs[0];
-  it('applies (nc / eff + offset) x qty with the documented lookup order', () => {
+describe('timing model', () => {
+  const job = parseProduction([{ 'Box Code': '1', 'Master Order Number': 'M', 'Order Number': '1', Matnr: '200010006', 'Nc File Minute': 10, 'Material Type': 'FH', Qty: 2 }]).jobs[0];
+
+  it('estimates parts missing from the list as NC x 2.8 x qty', () => {
     const s = settings();
+    const d = plannedDuration(job, s.machines[0], s);
+    expect(d.basis).toBe('estimated');
+    expect(d.durationMin).toBe(Math.round(10 * 2.8 * 2));
+  });
+
+  it('applies efficiency rules and material offsets to estimates only, in the documented lookup order', () => {
+    const s = settings();
+    s.estimateMultiplier = 1;
+    s.materialOffsets.FH = 2;
     const m = s.machines[0];
-    expect(plannedDuration(job, m, s).durationMin).toBe(2 * (10 + 2)); // FH offset = 2
+    expect(plannedDuration(job, m, s).durationMin).toBe(2 * (10 + 2));
     s.globalEfficiencyPercent = 50;
     expect(plannedDuration(job, m, s).durationMin).toBe(2 * (20 + 2));
     s.materialEfficiency.FH = 80;
@@ -70,6 +82,102 @@ describe('efficiency', () => {
     s.efficiencyMatrix[m.id] = { FH: 100 };
     expect(plannedDuration(job, m, s).durationMin).toBe(2 * (10 + 2));
     expect(plannedDuration(job, m, s, 77).durationMin).toBe(77);
+  });
+
+  it('uses the measured time as-is and ignores every efficiency rule and offset', () => {
+    const s = settings();
+    s.globalEfficiencyPercent = 50;
+    s.materialEfficiency.FH = 40;
+    s.materialOffsets.FH = 9;
+    s.efficiencyMode = 'cautious';
+    s.machines[0].speedPercentage = 60;
+    s.partEfficiencyOverrides[job.id] = 30;
+    const d = plannedDuration(job, s.machines[0], s, undefined, 16.765);
+    expect(d.basis).toBe('measured');
+    expect(d.durationMin).toBe(Math.round(16.765 * 2));
+    expect(d.cautiousDurationMin).toBe(d.durationMin);
+    expect(d.materialOffset).toBe(0);
+  });
+
+  it('a manual run time still beats a measured time', () => {
+    const s = settings();
+    expect(plannedDuration(job, s.machines[0], s, 61, 16.765).durationMin).toBe(61);
+  });
+});
+
+describe('parts time list', () => {
+  const rows = [
+    { 'Material Number': '0200010006', 'Material Name': 'Test Bracket', 'Time per Part, avg (min)': 16.7647, 'NC File, avg (min)': 6 },
+    { 'Material Number': 2638354, 'Material Name': 'Plate', 'Time per Part, avg (min)': '10,5', 'NC File, avg (min)': 5 },
+    { 'Material Number': 'bad', 'Material Name': 'Zero', 'Time per Part, avg (min)': 0 },
+  ];
+
+  it('recognises the list by its columns and skips unusable rows', () => {
+    expect(looksLikePartTimes(rows[0])).toBe(true);
+    expect(looksLikePartTimes({ 'Box Code': 1, 'Nc File Minute': 2 })).toBe(false);
+    const { entries, skipped } = parsePartTimes(rows);
+    expect(entries.map(e => e[0])).toEqual(['200010006', '2638354']);
+    expect(entries[1][1]).toBe(10.5);
+    expect(skipped).toBe(1);
+  });
+
+  it('matches material numbers despite leading zeros and ".0" suffixes', () => {
+    expect(partKey('0200010006')).toBe('200010006');
+    expect(partKey(' 200010006.0 ')).toBe('200010006');
+    expect(partKey(200010006)).toBe('200010006');
+    const index = buildPartTimeIndex(parsePartTimes(rows).entries);
+    const jobs = parseProduction([{ 'Box Code': '1', 'Master Order Number': 'M', 'Order Number': '1', Matnr: '200010006', 'Nc File Minute': 6, 'Material Type': 'ALU' }]).jobs;
+    expect(pickPartTimes(index, jobs)['200010006'].minutes).toBeCloseTo(16.765, 2);
+  });
+});
+
+describe('throughput', () => {
+  const jobs = demoJobs();
+  const s = settings();
+  const plan = planProduction(jobs, s);
+
+  it('puts every planned part and every module in exactly one bucket, for any granularity', () => {
+    const moCount = new Set(Object.values(plan.queues).flat().map(i => i.job.masterOrder)).size;
+    for (const g of ['hour', 'shift', 'day'] as const) {
+      const t = computeThroughput(plan, s.calendar, g);
+      expect(t.buckets.reduce((a, b) => a + b.parts.length, 0)).toBe(plan.kpis.plannedJobs);
+      expect(t.totals.mos + t.totals.heldMos).toBe(moCount);
+      expect(t.buckets.at(-1)!.cumulativeParts).toBe(plan.kpis.plannedJobs);
+      expect(t.days.reduce((a, d) => a + d.parts, 0)).toBe(plan.kpis.plannedJobs);
+    }
+  });
+
+  it('counts a part ending exactly on the hour in the hour that just closed', () => {
+    expect(bucketIndexOf(60, 60)).toBe(0);
+    expect(bucketIndexOf(61, 60)).toBe(1);
+    expect(bucketIndexOf(960, 480)).toBe(1);
+  });
+
+  it('holds modules with open carpenter parts out of the finished count', () => {
+    const mo = jobs.find(j => !j.masterOrder.startsWith('30000') && !j.erpMachine)!.masterOrder;
+    const s2 = settings();
+    s2.simulatedUncutMasterOrders = [mo];
+    const p2 = planProduction(jobs, s2);
+    const t = computeThroughput(p2, s2.calendar, 'hour');
+    expect(t.buckets.flatMap(b => b.heldMos).some(m => m.masterOrder === mo && m.hold === 'carpenter')).toBe(true);
+    expect(t.buckets.flatMap(b => b.mos).some(m => m.masterOrder === mo)).toBe(false);
+  });
+
+  it('makes round axis ticks', () => {
+    expect(niceTicks(0)).toEqual([0, 1]);
+    expect(niceTicks(3)).toEqual([0, 1, 2, 3, 4].slice(0, niceTicks(3).length));
+    expect(niceTicks(23).at(-1)!).toBeGreaterThanOrEqual(23);
+    expect(niceTicks(23).every(v => Number.isInteger(v))).toBe(true);
+  });
+});
+
+describe('settings migration', () => {
+  it('resets untouched legacy offsets but keeps custom ones', () => {
+    const legacy = { ALU: 0, POM: 0, FH: 2, PCGF: 3, MS: 4, PEEK: 5, PP: 1, INOX: 8, FR4: 2 };
+    expect(mergeSettings({ materialOffsets: legacy }).materialOffsets.FH).toBe(0);
+    expect(mergeSettings({ materialOffsets: { ...legacy, FH: 7 } }).materialOffsets.FH).toBe(7);
+    const fresh = mergeSettings({ settingsVersion: 2, materialOffsets: { ...legacy } });
+    expect(fresh.materialOffsets.FH).toBe(2);
   });
 });
 
@@ -156,6 +264,23 @@ describe('scheduler', () => {
       q.forEach((x, k) => k > 0 && expect(x.startMinute).toBeGreaterThanOrEqual(q[k - 1].endMinute));
       expect(q.find(x => x.job.id === anchor.job.id)!.segments).toHaveLength(1);
     }
+  });
+
+  it('plans measured parts at their listed time on any machine and counts them', () => {
+    const s = settings();
+    s.globalEfficiencyPercent = 50;
+    const target = jobs.find(j => j.materialType === 'ALU' && !j.erpMachine && !j.masterOrder.startsWith('30000'))!;
+    const times = { [partKey(target.matnr)]: { minutes: 33.3, name: 'Known part' } };
+    const plan = planProduction(jobs, s, {}, [], times);
+    const it = Object.values(plan.queues).flat().find(i => i.job.id === target.id)!;
+    expect(it.timeBasis).toBe('measured');
+    expect(it.durationMin).toBe(Math.round(33.3 * target.qty));
+    expect(it.partName).toBe('Known part');
+    expect(plan.kpis.measuredJobs).toBeGreaterThanOrEqual(1);
+    expect(plan.kpis.measuredJobs + plan.kpis.estimatedJobs).toBeLessThanOrEqual(plan.kpis.plannedJobs);
+    s.useMeasuredTimes = false;
+    const off = Object.values(planProduction(jobs, s, {}, [], times).queues).flat().find(i => i.job.id === target.id)!;
+    expect(off.timeBasis).toBe('estimated');
   });
 
   it('keeps machines that are down empty', () => {

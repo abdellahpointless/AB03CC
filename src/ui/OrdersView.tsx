@@ -3,7 +3,8 @@ import { useMemo, useState } from 'react';
 import { formatClock, formatDayMonth, formatDuration } from '../core/calendar';
 import type { ScheduledJob } from '../core/types';
 import { useStore } from '../state/store';
-import { Badge, Button, Empty, MaterialBadge, NumberInput, Segmented } from './kit';
+import { timeBasisNote } from '../lib/timeBasis';
+import { Badge, Button, Empty, MaterialBadge, NumberInput, Segmented, TimeMark } from './kit';
 
 type Group = 'masterOrder' | 'salesOrder';
 
@@ -57,15 +58,24 @@ export function OrdersView({ onSelect }: { onSelect: (it: ScheduledJob) => void 
   const allSelected = items.length > 0 && items.every(i => selected.has(i.job.id));
   const overrides = settings.partEfficiencyOverrides;
 
+  // Parts with a measured time ignore efficiency entirely, so bulk edits skip them.
+  const measuredIds = new Set(items.filter(i => i.timeBasis === 'measured').map(i => i.job.id));
+  const editable = () => [...selected].filter(id => !measuredIds.has(id));
+  const skippedNote = () => {
+    const skipped = selected.size - editable().length;
+    return skipped ? ` ${skipped} part${skipped === 1 ? ' has' : 's have'} a measured time and ${skipped === 1 ? 'was' : 'were'} skipped.` : '';
+  };
   const applyBulk = () => {
     if (!bulk || bulk <= 0) return;
-    setPartEfficiency([...selected], bulk);
-    notify(`Efficiency ${bulk}% applied to ${selected.size} operations.`);
+    const ids = editable();
+    setPartEfficiency(ids, bulk);
+    notify(`Efficiency ${bulk}% applied to ${ids.length} operations.${skippedNote()}`);
     setSelected(new Set());
   };
   const clearBulk = () => {
-    setPartEfficiency([...selected], undefined);
-    notify(`Efficiency overrides removed from ${selected.size} operations.`);
+    const ids = editable();
+    setPartEfficiency(ids, undefined);
+    notify(`Efficiency overrides removed from ${ids.length} operations.${skippedNote()}`);
     setSelected(new Set());
   };
 
@@ -89,9 +99,18 @@ export function OrdersView({ onSelect }: { onSelect: (it: ScheduledJob) => void 
         )}
       </td>
       <td className="mono px-2 text-right text-slate-400">{formatDuration(it.idealMinutes)}</td>
-      <td className="mono px-2 text-right font-bold text-white">{formatDuration(it.durationMin)}</td>
+      <td className="mono px-2 text-right font-bold text-white">
+        <span className="inline-flex items-center justify-end gap-1">
+          <TimeMark basis={it.timeBasis} title={timeBasisNote(it, settings.estimateMultiplier)} className="text-slate-400" />
+          {formatDuration(it.durationMin)}
+        </span>
+      </td>
       <td className="px-2 text-center">
-        <span className={`mono rounded px-1.5 py-0.5 text-[11px] ${overrides[it.job.id] ? 'bg-blue-900 text-blue-200' : 'bg-slate-800 text-slate-300'}`}>{it.efficiencyPercent}%</span>
+        {it.timeBasis === 'measured' ? (
+          <span className="text-[11px] text-slate-600" title="Measured time: efficiency rules do not apply">—</span>
+        ) : (
+          <span className={`mono rounded px-1.5 py-0.5 text-[11px] ${overrides[it.job.id] ? 'bg-blue-900 text-blue-200' : 'bg-slate-800 text-slate-300'}`}>{it.efficiencyPercent}%</span>
+        )}
       </td>
       <td className="px-2 text-slate-300">{it.machineId}</td>
       <td className="mono px-2 text-slate-400">{formatDayMonth(it.endTime)} {formatClock(it.endTime)}</td>
@@ -116,7 +135,8 @@ export function OrdersView({ onSelect }: { onSelect: (it: ScheduledJob) => void 
         <div className="flex flex-wrap items-center gap-3 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2.5 text-xs">
           <span className="mono text-slate-400">Selected {selected.size} of {items.length} operations</span>
           <Button size="sm" onClick={() => setSelected(allSelected ? new Set() : new Set(items.map(i => i.job.id)))}>{allSelected ? 'Clear selection' : 'Select all'}</Button>
-          <span className="ml-auto text-slate-400">Bulk set “Runs at”:</span>
+          <span className="ml-auto text-[11px] text-slate-500">Parts with a measured time (●) keep it and ignore efficiency.</span>
+          <span className="text-slate-400">Bulk set “Runs at”:</span>
           <div className="w-20"><NumberInput value={bulk} min={10} max={200} onChange={setBulk} /></div>
           <span className="text-slate-400">%</span>
           <Button variant="primary" disabled={selected.size === 0 || !bulk} onClick={applyBulk}><Check className="h-3.5 w-3.5" /> Apply override</Button>

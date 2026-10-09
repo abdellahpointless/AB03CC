@@ -2,6 +2,14 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { demoCarpenterParts, demoJobs } from '../core/demo';
 import { defaultSettings, mergeSettings } from '../core/defaults';
 import { parseCarpenter } from '../core/parse/carpenter';
+import {
+  buildPartTimeIndex,
+  parsePartTimes,
+  partTimeCoverage,
+  pickPartTimes,
+  type PartTimeCoverage,
+  type PartTimeEntry,
+} from '../core/parse/partTimes';
 import { missingProductionColumns, parseProduction } from '../core/parse/production';
 import { detectKind, readRows } from '../core/parse/workbook';
 import { planProduction } from '../core/scheduler/plan';
@@ -23,7 +31,30 @@ const KEYS = {
   jobs: 'cnc-planner.v2.jobs',
   report: 'cnc-planner.v2.report',
   carpenter: 'cnc-planner.v2.carpenter',
+  partTimes: 'cnc-planner.v2.parttimes',
 };
+
+interface StoredPartList {
+  file: string | null;
+  entries: PartTimeEntry[];
+}
+
+/**
+ * Optional list shipped with a private build (src/data/builtin-part-times.json, never committed).
+ * Without that file the glob is empty and the list has to be imported once.
+ */
+const builtinList: StoredPartList | null =
+  (Object.values(import.meta.glob<StoredPartList>('../data/builtin-part-times.json', { eager: true, import: 'default' }))[0] as
+    | StoredPartList
+    | undefined) ?? null;
+
+export interface PartListInfo {
+  source: 'builtin' | 'imported' | 'none';
+  file: string | null;
+  count: number;
+  hasBuiltin: boolean;
+  builtinCount: number;
+}
 
 function load<T>(key: string, fallback: T): T {
   try {
@@ -51,7 +82,7 @@ export interface Toast {
 
 export interface ImportOutcome {
   ok: boolean;
-  kind: 'production' | 'carpenter' | 'unknown';
+  kind: 'production' | 'carpenter' | 'parttimes' | 'unknown';
   message: string;
 }
 
@@ -67,11 +98,14 @@ interface Store {
   planning: boolean;
   planError: string | null;
   toasts: Toast[];
+  partList: PartListInfo;
+  partCoverage: PartTimeCoverage;
 
   importFile(file: File): Promise<ImportOutcome>;
   loadDemo(): void;
   clearData(): void;
   clearCarpenter(): void;
+  clearImportedPartList(): void;
   updateSettings(patch: Partial<PlannerSettings> | ((s: PlannerSettings) => PlannerSettings)): void;
   resetSettings(): void;
   setLock(jobId: string, patch: Partial<UserLock>): void;
@@ -106,6 +140,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [planning, setPlanning] = useState(false);
   const [planError, setPlanError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
+  const [importedList, setImportedList] = useState<StoredPartList | null>(() => load<StoredPartList | null>(KEYS.partTimes, null));
+
+  const activeList = importedList ?? builtinList;
+  const partIndex = useMemo(() => buildPartTimeIndex(activeList?.entries ?? []), [activeList]);
+  const partTimes = useMemo(() => pickPartTimes(partIndex, jobs), [partIndex, jobs]);
+  const partCoverage = useMemo(() => partTimeCoverage(partIndex, jobs), [partIndex, jobs]);
+  const partList: PartListInfo = useMemo(
+    () => ({
+      source: importedList ? 'imported' : builtinList ? 'builtin' : 'none',
+      file: activeList?.file ?? null,
+      count: activeList?.entries.length ?? 0,
+      hasBuiltin: Boolean(builtinList),
+      builtinCount: builtinList?.entries.length ?? 0,
+    }),
+    [importedList, activeList],
+  );
+  const jobsRef = useRef<Job[]>(jobs);
+  jobsRef.current = jobs;
 
   const toastId = useRef(0);
   const notify = useCallback((text: string, tone: Toast['tone'] = 'ok') => {
@@ -121,6 +173,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => save(KEYS.jobs, jobs.length ? jobs : null), [jobs]);
   useEffect(() => save(KEYS.report, report), [report]);
   useEffect(() => save(KEYS.carpenter, carpenter.parts.length ? carpenter : null), [carpenter]);
+  useEffect(() => save(KEYS.partTimes, importedList), [importedList]);
 
   /* ---- planning (web worker with synchronous fallback) ---- */
   const workerRef = useRef<Worker | null>(null);
@@ -163,7 +216,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       return;
     }
     const id = ++requestId.current;
-    const req: PlanRequest = { id, jobs, settings, locks, carpenterParts: carpenter.parts };
+    const req: PlanRequest = { id, jobs, settings, locks, carpenterParts: carpenter.parts, partTimes };
     setPlanning(true);
     if (workerRef.current) {
       workerRef.current.postMessage(req);
@@ -172,7 +225,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       setTimeout(() => {
         if (id !== requestId.current) return;
         try {
-          const result = planProduction(jobs, settings, locks, carpenter.parts);
+          const result = planProduction(jobs, settings, locks, carpenter.parts, partTimes);
           setPlanError(null);
           setPreviousPlan(resetPrevious.current ? null : planRef.current);
           resetPrevious.current = false;
@@ -183,7 +236,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setPlanning(false);
       }, 0);
     }
-  }, [jobs, settings, locks, carpenter.parts]);
+  }, [jobs, settings, locks, carpenter.parts, partTimes]);
 
   useEffect(() => {
     if (lastJobs.current !== jobs) {
@@ -220,10 +273,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             message: `Loaded ${parsed.parts.length} carpenter parts across ${parsed.uniqueMasterOrders} master orders.`,
           };
         }
+        if (kind === 'parttimes') {
+          const parsed = parsePartTimes(rows);
+          if (parsed.entries.length === 0) return { ok: false, kind, message: 'No usable rows (material number + time per part) found in the parts time list.' };
+          setImportedList({ file: file.name, entries: parsed.entries });
+          const cov = partTimeCoverage(buildPartTimeIndex(parsed.entries), jobsRef.current);
+          const tail = cov.jobs ? ` ${cov.measuredParts} of ${cov.uniqueParts} parts in the current workload have a real time.` : '';
+          return { ok: true, kind, message: `Loaded real times for ${parsed.entries.length.toLocaleString()} parts from ${file.name}.${tail}` };
+        }
         return {
           ok: false,
           kind,
-          message: `Could not recognise "${file.name}". Expected a production export (Box Code, Nc File Minute...) or a carpenter list (Master Order No, Cutted Status...).`,
+          message: `Could not recognise "${file.name}". Expected a production export (Box Code, Nc File Minute...), a carpenter list (Master Order No, Cutted Status...) or the parts time list (Material Number, Time per Part).`,
         };
       } catch (err) {
         return { ok: false, kind: 'unknown', message: `Failed to read "${file.name}": ${err instanceof Error ? err.message : err}` };
@@ -272,10 +333,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       planning,
       planError,
       toasts,
+      partList,
+      partCoverage,
       importFile,
       loadDemo,
       clearData,
       clearCarpenter: () => setCarpenter({ parts: [], file: null }),
+      clearImportedPartList: () => setImportedList(null),
       updateSettings: patch => setSettings(s => mergeSettings(typeof patch === 'function' ? patch(s) : { ...s, ...patch })),
       resetSettings: () => setSettings(defaultSettings()),
       setLock: (jobId, patch) =>
@@ -309,7 +373,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       notify,
       dismissToast,
     }),
-    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, planError, toasts, importFile, loadDemo, clearData, replan, notify, dismissToast],
+    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, planError, toasts, partList, partCoverage, importFile, loadDemo, clearData, replan, notify, dismissToast],
   );
 
   return <Ctx.Provider value={store}>{children}</Ctx.Provider>;

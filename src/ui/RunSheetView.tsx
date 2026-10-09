@@ -3,7 +3,8 @@ import { useState } from 'react';
 import { formatClock, formatDayMonth, formatDuration } from '../core/calendar';
 import type { MachineConfig, PlanResult } from '../core/types';
 import { useStore } from '../state/store';
-import { Button, MaterialBadge, inputCls } from './kit';
+import { timeBasisNote } from '../lib/timeBasis';
+import { Button, MaterialBadge, TimeMark, inputCls } from './kit';
 
 export function RunSheetView({ onPrint }: { onPrint: () => void }) {
   const { plan, settings } = useStore();
@@ -31,13 +32,13 @@ export function RunSheetView({ onPrint }: { onPrint: () => void }) {
         </div>
       </div>
       {machines.map(m => (
-        <MachineTable key={m.id} machine={m} plan={plan} />
+        <MachineTable key={m.id} machine={m} plan={plan} multiplier={settings.estimateMultiplier} />
       ))}
     </div>
   );
 }
 
-function MachineTable({ machine, plan }: { machine: MachineConfig; plan: PlanResult }) {
+function MachineTable({ machine, plan, multiplier }: { machine: MachineConfig; plan: PlanResult; multiplier: number }) {
   const items = plan.queues[machine.id] ?? [];
   const load = plan.kpis.loadPerMachine[machine.id];
   return (
@@ -80,7 +81,12 @@ function MachineTable({ machine, plan }: { machine: MachineConfig; plan: PlanRes
                   <td className="mono px-3 text-slate-300">{it.job.qty}</td>
                   <td className="mono px-3 text-slate-400">{formatDuration(it.idealMinutes)}</td>
                   <td className={`mono px-3 ${it.setupBefore ? 'text-amber-300' : 'text-emerald-400'}`}>{it.setupBefore ? `+${it.setupBefore}m` : '0m'}</td>
-                  <td className="mono px-3 font-bold text-white">{formatDuration(it.durationMin)}</td>
+                  <td className="mono px-3 font-bold text-white">
+                    <span className="inline-flex items-center gap-1">
+                      <TimeMark basis={it.timeBasis} title={timeBasisNote(it, multiplier)} className="text-slate-400" />
+                      {formatDuration(it.durationMin)}
+                    </span>
+                  </td>
                   <td className="mono px-3 text-slate-400">{formatDayMonth(it.startTime)} {formatClock(it.startTime)} → {formatClock(it.endTime)}</td>
                   <td className="max-w-[240px] truncate px-3 text-slate-400">{it.job.customer}</td>
                 </tr>

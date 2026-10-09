@@ -3,10 +3,12 @@ import { useMemo, useState } from 'react';
 import { formatClock, formatDayMonth, formatDuration } from '../core/calendar';
 import type { ScheduledJob } from '../core/types';
 import { useStore } from '../state/store';
-import { Badge, Button, Field, MaterialBadge, Modal, NumberInput, inputCls } from './kit';
+import { timeBasisLabel, timeBasisNote } from '../lib/timeBasis';
+import { Badge, Button, Field, MaterialBadge, Modal, NumberInput, TimeMark, inputCls } from './kit';
 
 export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () => void }) {
   const { plan, settings, locks, setLock, clearLock, setPartEfficiency } = useStore();
+  const mult = settings.estimateMultiplier;
   const item: ScheduledJob | undefined = useMemo(
     () => (plan ? Object.values(plan.queues).flat().find(i => i.job.id === jobId) : undefined),
     [plan, jobId],
@@ -42,7 +44,7 @@ export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () 
     else delete next.startMinute;
     if (Object.keys(next).length) setLock(jobId, { machine: undefined, durationMin: undefined, startMinute: undefined, ...next });
     else clearLock(jobId);
-    setPartEfficiency([jobId], eff);
+    if (item.timeBasis !== 'measured') setPartEfficiency([jobId], eff);
     onClose();
   };
   const reset = () => {
@@ -100,14 +102,24 @@ export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () 
             {row('Duration', formatDuration(item.durationMin))}
             {row('Changeover before', `${item.setupBefore} min`)}
             {row('Ideal NC time', `${j.ncMinutes} min × ${j.qty} = ${item.idealMinutes} min`)}
-            {row('Efficiency', `${item.efficiencyPercent}% (${item.efficiencySource})`)}
-            {row('Material offset', `${item.materialOffset} min / piece`)}
+            {row(
+              'Time basis',
+              <span className="inline-flex items-center justify-end gap-1">
+                <TimeMark basis={item.timeBasis} />
+                {timeBasisLabel(item.timeBasis)}
+                {item.timeBasis === 'measured' && ` · ${Math.round((item.measuredPerPart ?? 0) * 10) / 10} min/part`}
+              </span>,
+            )}
+            {item.timeBasis === 'estimated' && row('Efficiency', `${item.efficiencyPercent}% (${item.efficiencySource})`)}
+            {item.timeBasis === 'estimated' && row('Material offset', `${item.materialOffset} min / piece`)}
             {row('Priority rank', `#${item.rank}`)}
             {row('Why here', item.decidingRule)}
           </dl>
+          <p className="mt-2 text-[11px] leading-snug text-slate-500">{timeBasisNote(item, mult)}</p>
           <h3 className="mb-1 mt-4 text-[11px] font-bold uppercase tracking-wider text-slate-400">Order data</h3>
           <dl>
             {row('Matnr (drawing)', j.matnr)}
+            {item.partName && row('Part name', item.partName)}
             {row('Material no. (stock)', j.materialNo)}
             {row('Sales order', j.salesOrder || '—')}
             {row('Schedule no.', j.scheduleNo ?? '—')}
@@ -131,14 +143,17 @@ export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () 
                   ))}
                 </select>
               </Field>
-              <Field label="Run time (minutes)" hint={`Automatic: ${formatDuration(item.manualDuration ? item.idealMinutes : item.durationMin)}`}>
+              <Field label="Run time (minutes)" hint={item.manualDuration ? 'Set by you. Clear the field to return to automatic.' : `Automatic: ${formatDuration(item.durationMin)}`}>
                 <NumberInput value={duration} min={1} placeholder="automatic" onChange={setDuration} />
               </Field>
               <Field label="Earliest start (working minutes from plan start)">
                 <NumberInput value={start} min={0} placeholder="automatic" onChange={setStart} />
               </Field>
-              <Field label="Runs-at efficiency for this part (%)" hint="Overrides the matrix / material / global efficiency.">
-                <NumberInput value={eff} min={10} max={200} placeholder="from settings" onChange={setEff} />
+              <Field
+                label="Runs-at efficiency for this part (%)"
+                hint={item.timeBasis === 'measured' ? 'Not used: this part has a real time in your parts list.' : 'Overrides the matrix / material / global efficiency.'}
+              >
+                <NumberInput value={item.timeBasis === 'measured' ? undefined : eff} min={10} max={200} placeholder={item.timeBasis === 'measured' ? 'measured time' : 'from settings'} onChange={setEff} disabled={item.timeBasis === 'measured'} />
               </Field>
             </div>
           </div>

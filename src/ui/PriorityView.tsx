@@ -84,7 +84,7 @@ function RuleCard({ rule, jobs, levelCount, onChange, onRemove }: { rule: Priori
     <div
       draggable
       onDragStart={(e: DragEvent) => e.dataTransfer.setData('application/x-rule-id', rule.id)}
-      className={`rounded-lg border bg-slate-950/70 p-3 ${rule.enabled ? 'border-slate-700' : 'border-slate-800 opacity-60'}`}
+      className={`anim-fade-up rounded-lg border bg-slate-950/70 p-3 ${rule.enabled ? 'border-slate-700' : 'border-slate-800 opacity-60'}`}
     >
       <div className="flex flex-wrap items-center gap-2">
         <input

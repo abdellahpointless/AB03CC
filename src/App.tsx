@@ -1,9 +1,7 @@
 import { useMemo, useState } from 'react';
 import { downloadPlan } from './core/export';
-import type { TimelineEvent } from './core/types';
 import { useStore } from './state/store';
 import { CarpenterPanel } from './ui/CarpenterPanel';
-import { EventModal } from './ui/EventModal';
 import { ExceptionsView } from './ui/ExceptionsView';
 import { GanttView } from './ui/GanttView';
 import { Header, type View } from './ui/Header';
@@ -25,7 +23,6 @@ export default function App() {
   const [view, setView] = useState<View>('gantt');
   const [dialog, setDialog] = useState<Dialog>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
-  const [event, setEvent] = useState<Partial<TimelineEvent> | null>(null);
 
   const exceptionCount = useMemo(() => {
     if (!plan) return 0;
@@ -57,7 +54,7 @@ export default function App() {
           <>
             {planError && <div className="mb-3 rounded-lg border border-rose-800 bg-rose-950/50 px-4 py-2 text-xs text-rose-200">Planning failed: {planError}. Showing the last good plan.</div>}
             <div className={planning ? 'opacity-70 transition-opacity' : 'transition-opacity'}>
-              {view === 'gantt' && <GanttView onSelect={it => setSelectedJob(it.job.id)} onEditEvent={setEvent} onCarpenter={() => setDialog('carpenter')} />}
+              {view === 'gantt' && <GanttView onSelect={it => setSelectedJob(it.job.id)} onCarpenter={() => setDialog('carpenter')} />}
               {view === 'priority' && <PriorityView />}
               {view === 'orders' && <OrdersView onSelect={it => setSelectedJob(it.job.id)} />}
               {view === 'runsheet' && <RunSheetView onPrint={() => setDialog('print')} />}
@@ -77,7 +74,6 @@ export default function App() {
       {dialog === 'report' && <ImportReportModal onClose={() => setDialog(null)} />}
       {dialog === 'carpenter' && <CarpenterPanel onClose={() => setDialog(null)} />}
       {selectedJob && <JobDetailModal jobId={selectedJob} onClose={() => setSelectedJob(null)} />}
-      {event && <EventModal initial={event} onClose={() => setEvent(null)} />}
       <Toasts />
     </div>
   );

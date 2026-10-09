@@ -1,35 +1,25 @@
-import { AlertOctagon, Gauge, Hammer, History, Lock, Pencil, Plus, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertOctagon, Gauge, Hammer, History, Lock, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
 import { useMemo, useRef, useState } from 'react';
 import { WorkCalendar, formatClock, formatDuration } from '../core/calendar';
 import type { ScheduledJob, TimelineEvent } from '../core/types';
 import { swatchFor, type ColorMode } from '../lib/colors';
 import { useStore } from '../state/store';
 import { Button, Segmented } from './kit';
+import { EVENT_TYPES, EventPopup, type EventDraft } from './EventPopup';
 import { KpiBar } from './KpiBar';
 
 const LABEL_W = 176;
 const LANE_H = 76;
 const DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-const EVENT_COLORS: Record<TimelineEvent['type'], string> = {
-  breakdown: '#dc2626',
-  rework: '#d97706',
-  absent: '#7c3aed',
-  maintenance: '#0891b2',
-  material_shortage: '#db2777',
-  other: '#64748b',
-};
+const EVENT_COLORS = Object.fromEntries(EVENT_TYPES.map(t => [t.value, t.color])) as Record<TimelineEvent['type'], string>;
+const STRIP_H = 18;
+const SNAP = 5;
 
-export function GanttView({
-  onSelect,
-  onEditEvent,
-  onCarpenter,
-}: {
-  onSelect: (item: ScheduledJob) => void;
-  onEditEvent: (event: Partial<TimelineEvent>) => void;
-  onCarpenter: () => void;
-}) {
-  const { plan, previousPlan, settings, setLock, updateSettings, notify } = useStore();
+export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: ScheduledJob) => void; onCarpenter: () => void }) {
+  const { plan, previousPlan, settings, setLock, updateSettings, notify, saveEvent, removeEvent } = useStore();
+  const [draft, setDraft] = useState<EventDraft | null>(null);
+  const [drag, setDrag] = useState<{ lane: string; a: number; b: number } | null>(null);
   const [zoom, setZoom] = useState(1);
   const [colorMode, setColorMode] = useState<ColorMode>('material');
   const [query, setQuery] = useState('');
@@ -86,6 +76,46 @@ export function GanttView({
     });
   }
 
+  const snap = (v: number) => Math.max(0, Math.round(v / SNAP) * SNAP);
+  const minuteAt = (e: React.PointerEvent<HTMLElement>) => snap((e.clientX - e.currentTarget.getBoundingClientRect().left) / pxPerMin);
+
+  const startDrag = (lane: string, e: React.PointerEvent<HTMLElement>) => {
+    if (e.button !== 0 || draft) return;
+    e.currentTarget.setPointerCapture(e.pointerId);
+    const m = minuteAt(e);
+    setDrag({ lane, a: m, b: m });
+  };
+  const moveDrag = (e: React.PointerEvent<HTMLElement>) => drag && setDrag({ ...drag, b: minuteAt(e) });
+  const endDrag = (e: React.PointerEvent<HTMLElement>) => {
+    if (!drag) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    let start = Math.min(drag.a, drag.b);
+    let len = Math.abs(drag.b - drag.a);
+    if (len < SNAP) len = 60; // a plain click adds a one-hour disruption
+    const type = EVENT_TYPES[0];
+    setDraft({
+      lane: drag.lane,
+      machineId: drag.lane,
+      type: type.value,
+      title: type.label,
+      startMinute: start,
+      durationMinutes: len,
+      anchor: { x: rect.left + (start + len / 2) * pxPerMin, top: rect.top, bottom: rect.bottom },
+    });
+    setDrag(null);
+  };
+  const editEvent = (ev: TimelineEvent, lane: string, el: HTMLElement) => {
+    const r = el.getBoundingClientRect();
+    setDraft({ ...ev, lane, anchor: { x: r.left + r.width / 2, top: r.top, bottom: r.bottom } });
+  };
+  const saveDraft = () => {
+    if (!draft || draft.durationMinutes < 1) return;
+    const { lane: _l, anchor: _a, ...rest } = draft;
+    const label = EVENT_TYPES.find(t => t.value === draft.type)?.label ?? 'Disruption';
+    saveEvent({ ...rest, id: draft.id ?? `ev-${Date.now().toString(36)}`, title: draft.title.trim() || label });
+    setDraft(null);
+  };
+
   const onDrop = (machineId: string, jobId: string | null) => {
     setDragOver(null);
     if (!jobId) return;
@@ -104,7 +134,7 @@ export function GanttView({
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2.5">
         <div className="mr-2">
           <div className="text-[11px] font-bold uppercase tracking-wider text-slate-300">Machine timeline</div>
-          <div className="text-[11px] text-slate-500">Click a box for details · drag a box onto another machine to pin it there</div>
+          <div className="text-[11px] text-slate-500">Click a box for details · drag a box onto another machine to pin it · drag along a machine's bottom strip to add a disruption</div>
         </div>
         <div className="relative">
           <Search className="pointer-events-none absolute left-2 top-1.5 h-3.5 w-3.5 text-slate-500" />
@@ -148,13 +178,11 @@ export function GanttView({
           >
             {settings.restartJobOnEvent ? 'Restart on event' : 'Pause & resume'}
           </Button>
-          <Button size="sm" variant="danger" onClick={() => onEditEvent({ machineId: 'ALL', startMinute: Math.round(nowMinute ?? 0) })}>
-            <Plus className="h-3.5 w-3.5" /> Add event
-          </Button>
         </div>
       </div>
 
-      <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+      {draft && <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm" onMouseDown={() => setDraft(null)} />}
+      <div className={`overflow-hidden rounded-xl border bg-slate-950 ${draft ? 'relative z-50 border-blue-500 shadow-2xl' : 'border-slate-800'}`}>
         <div ref={scroller} className="max-h-[calc(100vh-290px)] min-h-[360px] overflow-auto">
           <div style={{ width: width + LABEL_W, minWidth: '100%' }}>
             {/* ruler */}
@@ -198,12 +226,6 @@ export function GanttView({
                         <span className={`h-2 w-2 rounded-full ${down ? 'bg-rose-500' : 'bg-emerald-400'}`} />
                         <span className="text-sm font-bold text-white">{machine.name}</span>
                       </div>
-                      <button
-                        onClick={() => onEditEvent({ machineId: machine.id, startMinute: Math.round(nowMinute ?? 0) })}
-                        className="rounded border border-slate-700 px-1.5 py-0.5 text-[10px] text-slate-300 hover:bg-slate-800"
-                      >
-                        + Event
-                      </button>
                     </div>
                     <div className="mono text-[11px] text-slate-400">
                       {down ? (
@@ -224,24 +246,46 @@ export function GanttView({
                       <div key={i} style={{ left: t.x }} className={`absolute top-0 h-full border-l ${t.major ? 'border-slate-700' : 'border-slate-900'}`} />
                     ))}
 
-                    {events.map(ev => (
-                      <button
-                        key={ev.id}
-                        onClick={() => onEditEvent(ev)}
-                        title={`${ev.title} (${formatDuration(ev.durationMinutes)})`}
-                        className="hatch absolute top-0 z-[5] flex h-full items-start overflow-hidden border-x text-left text-[10px] font-bold text-white"
-                        style={{
-                          left: ev.startMinute * pxPerMin,
-                          width: Math.max(4, ev.durationMinutes * pxPerMin),
-                          background: `${EVENT_COLORS[ev.type]}99`,
-                          borderColor: EVENT_COLORS[ev.type],
-                        }}
-                      >
-                        <span className="m-1 flex items-center gap-1 whitespace-nowrap">
-                          <AlertOctagon className="h-3 w-3" /> {ev.title}
-                        </span>
-                      </button>
+                    {events.filter(ev => ev.id !== draft?.id).map(ev => (
+                      <div key={ev.id}>
+                        <div
+                          className="hatch pointer-events-none absolute top-0 z-[5] h-full border-x"
+                          style={{ left: ev.startMinute * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), background: `${EVENT_COLORS[ev.type]}66`, borderColor: EVENT_COLORS[ev.type] }}
+                        />
+                        <button
+                          onClick={e => editEvent(ev, machine.id, e.currentTarget)}
+                          title={`${ev.title} (${formatDuration(ev.durationMinutes)}) · click to edit`}
+                          className="absolute z-[12] flex items-center gap-1 overflow-hidden whitespace-nowrap rounded-sm px-1 text-left text-[10px] font-bold text-white"
+                          style={{ left: ev.startMinute * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), bottom: 0, height: STRIP_H, background: EVENT_COLORS[ev.type] }}
+                        >
+                          <AlertOctagon className="h-3 w-3 shrink-0" /> {ev.title}
+                        </button>
+                      </div>
                     ))}
+
+                    {/* disruption strip: drag here to select a time range */}
+                    <div
+                      onPointerDown={e => startDrag(machine.id, e)}
+                      onPointerMove={moveDrag}
+                      onPointerUp={endDrag}
+                      onPointerCancel={() => setDrag(null)}
+                      className="absolute inset-x-0 bottom-0 z-[11] cursor-crosshair border-t border-dashed border-slate-700/70 bg-slate-900/30 hover:bg-slate-800/50"
+                      style={{ height: STRIP_H }}
+                      title="Drag to add a disruption"
+                    />
+                    {((drag && drag.lane === machine.id) || (draft && draft.lane === machine.id)) &&
+                      (() => {
+                        const s0 = drag ? Math.min(drag.a, drag.b) : draft!.startMinute;
+                        const len = drag ? Math.abs(drag.b - drag.a) : draft!.durationMinutes;
+                        return (
+                          <div
+                            className="pointer-events-none absolute top-0 z-[13] h-full border-x-2 border-blue-400 bg-blue-500/25"
+                            style={{ left: s0 * pxPerMin, width: Math.max(2, len * pxPerMin) }}
+                          >
+                            <span className="mono absolute left-1 top-1 rounded bg-blue-600 px-1 text-[10px] font-bold text-white">{formatDuration(len)}</span>
+                          </div>
+                        );
+                      })()}
 
                     {items.map(it => {
                       const sw = swatchFor(it.job, colorMode);
@@ -312,6 +356,16 @@ export function GanttView({
         </div>
       </div>
 
+      {draft && (
+        <EventPopup
+          draft={draft}
+          cal={cal}
+          onChange={p => setDraft(d => (d ? { ...d, ...p } : d))}
+          onSave={saveDraft}
+          onCancel={() => setDraft(null)}
+          onDelete={draft.id ? () => (removeEvent(draft.id!), setDraft(null)) : undefined}
+        />
+      )}
       <Legend mode={colorMode} />
       {tip && <Tooltip tip={tip} />}
     </div>

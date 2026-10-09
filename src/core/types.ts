@@ -108,6 +108,8 @@ export interface TimelineEvent {
   startMinute: number; // working-minute axis (0 = plan start)
   durationMinutes: number;
   boxCode?: string; // rework only: the box being produced again (optional)
+  anchorJobId?: string; // rework only: the part it was dropped next to
+  placement?: 'before' | 'after'; // rework only: which side of the anchor part
   note?: string;
 }
 

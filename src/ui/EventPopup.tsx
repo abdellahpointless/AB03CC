@@ -17,6 +17,8 @@ export interface EventDraft extends Omit<TimelineEvent, 'id'> {
   id?: string;
   /** lane the user dragged in (the event itself may apply to ALL machines) */
   lane: string;
+  /** part under the selection (rework can go before or after it) */
+  overlap?: { jobId: string; boxCode: string };
   anchor: { x: number; top: number; bottom: number };
 }
 
@@ -79,7 +81,11 @@ export function EventPopup({
               key={t.value}
               onClick={() => {
                 const wasDefault = EVENT_TYPES.some(x => x.label === draft.title) || draft.title === '';
-                onChange({ type: t.value, title: wasDefault ? t.label : draft.title });
+                onChange({
+                  type: t.value,
+                  title: wasDefault ? t.label : draft.title,
+                  ...(t.value === 'rework' ? { machineId: draft.lane, anchorJobId: draft.overlap?.jobId, placement: draft.placement ?? 'after' } : {}),
+                });
               }}
               className={`rounded-md border px-1.5 py-1.5 text-[11px] font-semibold leading-tight transition-colors ${
                 on ? 'text-white' : 'border-slate-700 text-slate-300 hover:bg-slate-800'
@@ -102,9 +108,30 @@ export function EventPopup({
       />
 
       {draft.type === 'rework' && (
-        <div className="mt-2 space-y-1">
+        <div className="mt-2 space-y-2">
           <input className={inputCls} placeholder="Box code being reworked (optional)" value={draft.boxCode ?? ''} onChange={e => onChange({ boxCode: e.target.value.trim() })} aria-label="Box code" />
-          <p className="text-[11px] leading-snug text-slate-500">Planned as a new part: it starts no earlier than the selection and runs for the length below. The original box is unchanged.</p>
+          {draft.overlap ? (
+            <div>
+              <p className="mb-1 text-[11px] text-slate-400">
+                This lands on <b className="text-white">Box {draft.overlap.boxCode}</b>. Parts are never split, so the rework goes:
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {(['before', 'after'] as const).map(side => (
+                  <button
+                    key={side}
+                    onClick={() => onChange({ anchorJobId: draft.overlap!.jobId, placement: side })}
+                    className={`rounded-md border px-2 py-1.5 text-[11px] font-semibold ${
+                      (draft.placement ?? 'after') === side ? 'border-amber-500 bg-amber-600 text-white' : 'border-slate-700 text-slate-300 hover:bg-slate-800'
+                    }`}
+                  >
+                    {side === 'before' ? '← Before it' : 'After it →'}
+                  </button>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <p className="text-[11px] leading-snug text-slate-500">Planned as its own part in the free time at the selection. Nothing else is moved apart from what it pushes back.</p>
+          )}
         </div>
       )}
 
@@ -122,6 +149,7 @@ export function EventPopup({
           />
           min
         </label>
+        {draft.type !== 'rework' && (
         <div className="ml-auto flex rounded-md border border-slate-700 p-0.5 text-[11px]">
           {[
             ['This machine', draft.lane],
@@ -136,8 +164,9 @@ export function EventPopup({
             </button>
           ))}
         </div>
+        )}
       </div>
-      <p className="mt-1 truncate text-[11px] text-slate-500">{draft.machineId === 'ALL' ? 'Applies to every machine' : draft.lane}</p>
+      <p className="mt-1 truncate text-[11px] text-slate-500">{draft.type !== 'rework' && draft.machineId === 'ALL' ? 'Applies to every machine' : draft.lane}</p>
 
       <div className="mt-3 flex items-center gap-2">
         {onDelete && (

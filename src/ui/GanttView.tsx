@@ -89,11 +89,17 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
   const endDrag = (e: React.PointerEvent<HTMLElement>) => {
     if (!drag) return;
     const rect = e.currentTarget.getBoundingClientRect();
-    let start = Math.min(drag.a, drag.b);
+    const start = Math.min(drag.a, drag.b);
     let len = Math.abs(drag.b - drag.a);
     if (len < SNAP) len = 60; // a plain click adds a one-hour disruption
     const type = EVENT_TYPES[0];
+    const end = start + len;
+    const hit = (plan?.queues[drag.lane] ?? []).filter(it => it.segments.some(sg => sg.startMinute < end && sg.endMinute > start && !it.job.isRework));
+    const under = hit.find(it => it.segments.some(sg => sg.startMinute <= start && sg.endMinute > start)) ?? hit[0];
+    const mid = under ? (under.startMinute + under.endMinute) / 2 : 0;
     setDraft({
+      overlap: under ? { jobId: under.job.id, boxCode: under.job.boxCode } : undefined,
+      placement: under && start < mid ? 'before' : 'after',
       lane: drag.lane,
       machineId: drag.lane,
       type: type.value,
@@ -110,9 +116,9 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
   };
   const saveDraft = () => {
     if (!draft || draft.durationMinutes < 1) return;
-    const { lane: _l, anchor: _a, ...rest } = draft;
+    const { lane: _l, anchor: _a, overlap: _o, ...rest } = draft;
     const label = EVENT_TYPES.find(t => t.value === draft.type)?.label ?? 'Disruption';
-    saveEvent({ ...rest, id: draft.id ?? `ev-${Date.now().toString(36)}`, title: draft.title.trim() || label });
+    saveEvent({ ...rest, ...(draft.type === 'rework' ? { machineId: draft.lane } : { anchorJobId: undefined, placement: undefined }), id: draft.id ?? `ev-${Date.now().toString(36)}`, title: draft.title.trim() || label });
     setDraft(null);
   };
 
@@ -248,10 +254,10 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
 
                     {events.filter(ev => ev.id !== draft?.id).map(ev => (
                       <div key={ev.id}>
-                        <div
+                        {ev.type !== 'rework' && <div
                           className="hatch pointer-events-none absolute top-0 z-[5] h-full border-x"
                           style={{ left: ev.startMinute * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), background: `${EVENT_COLORS[ev.type]}66`, borderColor: EVENT_COLORS[ev.type] }}
-                        />
+                        />}
                         <button
                           onClick={e => editEvent(ev, machine.id, e.currentTarget)}
                           title={`${ev.title} (${formatDuration(ev.durationMinutes)}) · click to edit`}
@@ -318,7 +324,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                                   top: 8,
                                   height: LANE_H - 16,
                                   background: sw.bg,
-                                  borderColor: hoverMo === it.job.masterOrder ? '#fff' : sw.border,
+                                  borderColor: hoverMo === it.job.masterOrder ? '#fff' : it.job.isRework ? '#fbbf24' : sw.border,
                                   borderWidth: hoverMo === it.job.masterOrder ? 2 : 1,
                                   opacity: dim ? 0.25 : 1,
                                 }}

@@ -109,8 +109,9 @@ export function planProduction(
 
   // Rework events become new parts: they are produced in addition to the imported workload,
   // starting no earlier than the event and running for its length. They never add time to the original box.
-  const reworkLocks: Record<string, UserLock> = {};
+  const reworkPlacement = new Map<string, { machineId?: string; anchorJobId?: string; placement: 'before' | 'after' }>();
   const reworkJobs: Job[] = [];
+  const reworkLocks: Record<string, UserLock> = {};
   for (const ev of settings.timelineEvents) {
     if (ev.type !== 'rework' || ev.durationMinutes <= 0) continue;
     const src = ev.boxCode ? jobs.find(j => j.boxCode === ev.boxCode || j.id === ev.boxCode || j.orderNumber === ev.boxCode) : undefined;
@@ -146,7 +147,8 @@ export function planProduction(
       blockedReason: null,
       isRework: true,
     });
-    reworkLocks[id] = { durationMin: ev.durationMinutes, startMinute: ev.startMinute, ...(lane ? { machine: lane.id } : {}) };
+    reworkLocks[id] = { durationMin: ev.durationMinutes, startMinute: ev.startMinute };
+    reworkPlacement.set(id, { machineId: lane?.id, anchorJobId: ev.anchorJobId, placement: ev.placement ?? 'after' });
   }
   jobs.push(...reworkJobs);
   locks = { ...locks, ...reworkLocks };
@@ -185,7 +187,12 @@ export function planProduction(
   const free: Job[] = [];
   const outOfScope = new Set(settings.outOfScopeMachines);
 
+  const reworkParts: Job[] = [];
   for (const job of jobs) {
+    if (job.isRework) {
+      reworkParts.push(job); // placed by hand after the optimizer has finished
+      continue;
+    }
     if (job.blocked) {
       exceptions.blocked.push(job);
       continue;
@@ -406,6 +413,30 @@ export function planProduction(
   /* ---- polish (seeded local search) ------------------------------------- */
   polish(active, queues, isLocked, eligible, ctx, plannable.length);
 
+  /* ---- rework parts: own blocks, placed before/after the part they were dropped next to ---- */
+  for (const rw of reworkParts) {
+    const plan = reworkPlacement.get(rw.id)!;
+    let machineId = plan.machineId;
+    if (!machineId) {
+      const options = active.filter(m => isEligible(rw, m, settings, ctx));
+      if (options.length === 0) {
+        exceptions.noEligibleMachine.push(rw);
+        continue;
+      }
+      machineId = options.reduce((best, m) =>
+        simulateQueue(queues[m.id], m, ctx).finish < simulateQueue(queues[best.id], best, ctx).finish ? m : best,
+      ).id;
+    }
+    const q = queues[machineId];
+    const at = plan.anchorJobId ? q.findIndex(j => j.id === plan.anchorJobId) : -1;
+    if (at >= 0) {
+      ctx.manualStart.delete(rw.id); // position decided by the anchor, not by the clock
+      q.splice(plan.placement === 'before' ? at : at + 1, 0, rw);
+    } else {
+      q.push(rw); // no anchor: slotted by its start time below
+    }
+  }
+
   /* ---- pinned start times: slot manual-start jobs by time ---------------- */
   for (const m of active) queues[m.id] = slotPinnedJobs(queues[m.id], m, ctx);
 
@@ -456,7 +487,7 @@ export function planProduction(
         startTime,
         endTime,
         rank: rankFor(st.job),
-        decidingRule: decidingRule(st.job, rules, rankCtx, rankFor(st.job)),
+        decidingRule: st.job.isRework ? 'Rework: placed by you' : decidingRule(st.job, rules, rankCtx, rankFor(st.job)),
         isLate,
         closesBox,
         userLocked: lockedBy.get(st.job.id) === 'user',

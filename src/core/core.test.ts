@@ -139,20 +139,23 @@ describe('scheduler', () => {
       for (const i of q) for (const seg of i.segments) expect(seg.endMinute <= 30 || seg.startMinute >= 150).toBe(true);
   });
 
-  it('plans a rework event as an extra part without changing the original box', () => {
+  it('places a rework part as its own block before or after the part it was dropped on', () => {
     const s = settings();
-    const src = jobs.find(j => j.materialType === 'ALU' && !j.erpMachine && !j.masterOrder.startsWith('30000'))!;
     const base = planProduction(jobs, s);
-    const orig = Object.values(base.queues).flat().find(i => i.job.id === src.id)!;
-    s.timelineEvents = [{ id: 'rw', machineId: 'HAAS - 1', type: 'rework', title: 'Rework', startMinute: 200, durationMinutes: 40, boxCode: src.boxCode }];
-    const plan = planProduction(jobs, s);
-    const rw = plan.queues['HAAS - 1'].find(i => i.job.isRework)!;
-    expect(rw.durationMin).toBe(40);
-    expect(rw.startMinute).toBeGreaterThanOrEqual(200);
-    expect(rw.job.boxCode).toBe(src.boxCode);
-    const after = Object.values(plan.queues).flat().find(i => i.job.id === src.id)!;
-    expect(after.durationMin).toBe(orig.durationMin);
-    expect(plan.kpis.plannedJobs).toBe(base.kpis.plannedJobs + 1);
+    const anchor = base.queues['HAAS - 1'][5];
+    for (const placement of ['before', 'after'] as const) {
+      s.timelineEvents = [{ id: 'rw', machineId: 'HAAS - 1', type: 'rework', title: 'Rework', startMinute: anchor.startMinute + 1, durationMinutes: 40, boxCode: anchor.job.boxCode, anchorJobId: anchor.job.id, placement }];
+      const plan = planProduction(jobs, s);
+      const q = plan.queues['HAAS - 1'];
+      const i = q.findIndex(x => x.job.isRework);
+      const a = q.findIndex(x => x.job.id === anchor.job.id);
+      expect(i).toBe(placement === 'before' ? a - 1 : a + 1);
+      expect(q[i].durationMin).toBe(40);
+      expect(q[i].segments).toHaveLength(1);
+      expect(plan.kpis.plannedJobs).toBe(base.kpis.plannedJobs + 1);
+      q.forEach((x, k) => k > 0 && expect(x.startMinute).toBeGreaterThanOrEqual(q[k - 1].endMinute));
+      expect(q.find(x => x.job.id === anchor.job.id)!.segments).toHaveLength(1);
+    }
   });
 
   it('keeps machines that are down empty', () => {

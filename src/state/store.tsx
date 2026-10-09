@@ -5,6 +5,7 @@ import { parseCarpenter } from '../core/parse/carpenter';
 import { missingProductionColumns, parseProduction } from '../core/parse/production';
 import { detectKind, readRows } from '../core/parse/workbook';
 import { planProduction } from '../core/scheduler/plan';
+import PlanWorker from '../core/worker?worker&inline';
 import type { PlanRequest } from '../core/worker';
 import type {
   CarpenterPart,
@@ -130,7 +131,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     try {
-      const w = new Worker(new URL('../core/worker.ts', import.meta.url), { type: 'module' });
+      const w = new PlanWorker();
       workerRef.current = w;
       w.onmessage = (e: MessageEvent<{ id: number; plan?: PlanResult; error?: string }>) => {
         if (e.data.id !== requestId.current) return; // stale result

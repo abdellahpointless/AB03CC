@@ -382,7 +382,7 @@ function BlockLabel({ it, width, showEff }: { it: ScheduledJob; width: number; s
   return (
     <div className="flex h-full flex-col justify-between p-1 text-white">
       <div className="flex items-center justify-between gap-1">
-        <span className="truncate text-[11px] font-bold leading-none">{width > 52 ? `Box ${it.job.boxCode}` : it.job.boxCode}</span>
+        <span className="truncate text-[11px] font-bold leading-none">{it.job.isRework ? '↻ ' : ''}{width > 52 ? `Box ${it.job.boxCode}` : it.job.boxCode}</span>
         <span className="flex shrink-0 items-center gap-0.5">
           {it.carpenterOpen && width > 40 && <Hammer className="h-2.5 w-2.5 text-amber-300" />}
           {(it.userLocked || it.manualDuration || it.manualStart) && width > 40 && (it.userLocked ? <Lock className="h-2.5 w-2.5" /> : <Pencil className="h-2.5 w-2.5" />)}

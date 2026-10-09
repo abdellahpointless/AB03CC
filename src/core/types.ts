@@ -30,6 +30,8 @@ export interface Job {
   discontinuedText: string | null;
   blocked: boolean;
   blockedReason: string | null;
+  /** Synthetic part created from a rework event; not part of the imported workload. */
+  isRework?: boolean;
 }
 
 export interface MachineConfig {
@@ -105,8 +107,7 @@ export interface TimelineEvent {
   title: string;
   startMinute: number; // working-minute axis (0 = plan start)
   durationMinutes: number;
-  boxCode?: string; // rework only: which box gets the extra minutes
-  extraMinutes?: number; // rework only
+  boxCode?: string; // rework only: the box being produced again (optional)
   note?: string;
 }
 

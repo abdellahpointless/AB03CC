@@ -11,8 +11,6 @@ export class SimContext {
   readonly settings: PlannerSettings;
   /** Downtime per machine, merged into disjoint sorted intervals. */
   private readonly downtime = new Map<string, Interval[]>();
-  /** Extra minutes added to a box by "rework" events. */
-  private readonly rework = new Map<string, number>();
   /** User supplied durations / start minutes. */
   readonly manualDuration = new Map<string, number>();
   readonly manualStart = new Map<string, number>();
@@ -21,11 +19,6 @@ export class SimContext {
   constructor(settings: PlannerSettings, machines: MachineConfig[]) {
     this.settings = settings;
     for (const m of machines) this.downtime.set(m.id, mergeIntervals(eventsFor(settings.timelineEvents, m.id)));
-    for (const e of settings.timelineEvents) {
-      if (e.type === 'rework' && e.boxCode && e.extraMinutes) {
-        this.rework.set(e.boxCode, (this.rework.get(e.boxCode) ?? 0) + e.extraMinutes);
-      }
-    }
   }
 
   downtimeOf(machineId: string): Interval[] {
@@ -41,15 +34,11 @@ export class SimContext {
     }
     return d;
   }
-
-  reworkMinutes(job: Job): number {
-    return (this.rework.get(job.boxCode) ?? 0) + (this.rework.get(job.id) ?? 0);
-  }
 }
 
 function eventsFor(events: TimelineEvent[], machineId: string): Interval[] {
   return events
-    .filter(e => (e.machineId === machineId || e.machineId === 'ALL') && e.durationMinutes > 0)
+    .filter(e => e.type !== 'rework' && (e.machineId === machineId || e.machineId === 'ALL') && e.durationMinutes > 0)
     .map(e => ({ start: e.startMinute, end: e.startMinute + e.durationMinutes }));
 }
 
@@ -138,7 +127,7 @@ export function step(
   const setup = changeoverMinutes(state.prev, job, ctx.settings.changeover);
   if (setup > 0) t = placeSplit(t, setup, down).end;
 
-  const durationMin = ctx.duration(job, machine).durationMin + ctx.reworkMinutes(job);
+  const durationMin = ctx.duration(job, machine).durationMin;
   let segments: Segment[];
   if (ctx.settings.restartJobOnEvent) {
     segments = [placeContiguous(t, durationMin, down)];

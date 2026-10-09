@@ -102,23 +102,15 @@ export function EventPopup({
       />
 
       {draft.type === 'rework' && (
-        <div className="mt-2 grid grid-cols-2 gap-2">
-          <input className={inputCls} placeholder="Box code" value={draft.boxCode ?? ''} onChange={e => onChange({ boxCode: e.target.value.trim() })} aria-label="Box code" />
-          <input
-            className={inputCls}
-            type="number"
-            min={0}
-            placeholder="Extra min"
-            value={draft.extraMinutes ?? ''}
-            onChange={e => onChange({ extraMinutes: e.target.value === '' ? undefined : Number(e.target.value) })}
-            aria-label="Extra minutes"
-          />
+        <div className="mt-2 space-y-1">
+          <input className={inputCls} placeholder="Box code being reworked (optional)" value={draft.boxCode ?? ''} onChange={e => onChange({ boxCode: e.target.value.trim() })} aria-label="Box code" />
+          <p className="text-[11px] leading-snug text-slate-500">Planned as a new part: it starts no earlier than the selection and runs for the length below. The original box is unchanged.</p>
         </div>
       )}
 
       <div className="mt-2 flex items-center gap-2">
         <label className="flex items-center gap-1 text-[11px] text-slate-400">
-          Length
+          {draft.type === 'rework' ? 'Run time' : 'Length'}
           <input
             type="number"
             min={5}

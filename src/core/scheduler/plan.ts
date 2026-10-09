@@ -100,11 +100,56 @@ const tieBreak = (a: Job, b: Job) =>
 export function planProduction(
   inputJobs: Job[],
   settings: PlannerSettings,
-  locks: Record<string, UserLock> = {},
+  locksIn: Record<string, UserLock> = {},
   carpenterParts: CarpenterPart[] = [],
 ): PlanResult {
+  let locks = locksIn;
   const aliases = settings.materialAliases ?? {};
-  const jobs = inputJobs.map(j => (aliases[j.materialType] ? { ...j, materialType: aliases[j.materialType] } : j));
+  const jobs: Job[] = inputJobs.map(j => (aliases[j.materialType] ? { ...j, materialType: aliases[j.materialType] } : j));
+
+  // Rework events become new parts: they are produced in addition to the imported workload,
+  // starting no earlier than the event and running for its length. They never add time to the original box.
+  const reworkLocks: Record<string, UserLock> = {};
+  const reworkJobs: Job[] = [];
+  for (const ev of settings.timelineEvents) {
+    if (ev.type !== 'rework' || ev.durationMinutes <= 0) continue;
+    const src = ev.boxCode ? jobs.find(j => j.boxCode === ev.boxCode || j.id === ev.boxCode || j.orderNumber === ev.boxCode) : undefined;
+    const lane = ev.machineId !== 'ALL' ? settings.machines.find(m => m.id === ev.machineId && !m.isDown) : undefined;
+    const id = `rework-${ev.id}`;
+    const material = src?.materialType ?? lane?.allowedMaterials[0] ?? 'ALU';
+    reworkJobs.push({
+      id,
+      boxCode: src?.boxCode ?? ev.boxCode ?? 'RW',
+      masterOrder: `RW-${src?.masterOrder ?? ev.id}`,
+      orderNumber: `${src?.orderNumber ?? ev.id}-RW`,
+      matnr: src?.matnr ?? 'REWORK',
+      materialNo: src?.materialNo ?? 'UNKNOWN',
+      materialType: material,
+      ncMinutes: ev.durationMinutes,
+      qty: 1,
+      waitingDays: src?.waitingDays ?? 0,
+      salesOrder: src?.salesOrder ?? '',
+      customer: src?.customer ?? 'Rework',
+      scheduleNo: src?.scheduleNo ?? null,
+      plannedDate: src?.plannedDate ?? null,
+      ocd: src?.ocd ?? null,
+      dueDate: src?.dueDate ?? null,
+      warehousePickDate: src?.warehousePickDate ?? 'rework',
+      cuttingCount: 1,
+      finishedCount: 0,
+      boxRemaining: 1,
+      erpMachine: null,
+      productionStatus: null,
+      discontinuedReason: null,
+      discontinuedText: null,
+      blocked: false,
+      blockedReason: null,
+      isRework: true,
+    });
+    reworkLocks[id] = { durationMin: ev.durationMinutes, startMinute: ev.startMinute, ...(lane ? { machine: lane.id } : {}) };
+  }
+  jobs.push(...reworkJobs);
+  locks = { ...locks, ...reworkLocks };
 
   const active = settings.machines.filter(m => !m.isDown);
   const activeIds = new Set(active.map(m => m.id));

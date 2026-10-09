@@ -139,6 +139,22 @@ describe('scheduler', () => {
       for (const i of q) for (const seg of i.segments) expect(seg.endMinute <= 30 || seg.startMinute >= 150).toBe(true);
   });
 
+  it('plans a rework event as an extra part without changing the original box', () => {
+    const s = settings();
+    const src = jobs.find(j => j.materialType === 'ALU' && !j.erpMachine && !j.masterOrder.startsWith('30000'))!;
+    const base = planProduction(jobs, s);
+    const orig = Object.values(base.queues).flat().find(i => i.job.id === src.id)!;
+    s.timelineEvents = [{ id: 'rw', machineId: 'HAAS - 1', type: 'rework', title: 'Rework', startMinute: 200, durationMinutes: 40, boxCode: src.boxCode }];
+    const plan = planProduction(jobs, s);
+    const rw = plan.queues['HAAS - 1'].find(i => i.job.isRework)!;
+    expect(rw.durationMin).toBe(40);
+    expect(rw.startMinute).toBeGreaterThanOrEqual(200);
+    expect(rw.job.boxCode).toBe(src.boxCode);
+    const after = Object.values(plan.queues).flat().find(i => i.job.id === src.id)!;
+    expect(after.durationMin).toBe(orig.durationMin);
+    expect(plan.kpis.plannedJobs).toBe(base.kpis.plannedJobs + 1);
+  });
+
   it('keeps machines that are down empty', () => {
     const s = settings();
     s.machines[0].isDown = true;

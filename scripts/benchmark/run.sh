@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One command from a workload to a report: parallel searches, optional exact-solver polish, HTML report.
 #
-#   scripts/benchmark/run.sh --out-dir DIR [--export app-plan.xlsx] [--settings run.json] [--iters 40000000]
+#   scripts/benchmark/run.sh --out-dir DIR [--export app-plan.xlsx] [--upgraded standard] [--settings run.json] [--iters 40000000]
 #                            [--seeds "1 2 3 4"] [--polish-seconds 600] [--start-date 2026-10-09]
 #                            -- workload.xlsx [carpenter.xlsx] [parts-time-list.xlsx]
 #
@@ -10,12 +10,15 @@
 #
 # The polish step needs OR-Tools:  python3 -m venv VENV && VENV/bin/pip install ortools   (set VENV=path)
 set -euo pipefail
-OUT=""; EXPORT=""; SETTINGS=""; ITERS=40000000; SEEDS="1 2 3 4"; POLISH=0; START="2026-10-09"
+OUT=""; EXPORT=""; SETTINGS=""; UPGRADED=""; HEAT=""; COOLBY=""; ITERS=40000000; SEEDS="1 2 3 4"; POLISH=0; START="2026-10-09"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --out-dir) OUT="$2"; shift 2;;
     --export) EXPORT="$2"; shift 2;;
     --settings) SETTINGS="$2"; shift 2;;
+    --upgraded) UPGRADED="$2"; shift 2;;
+    --heat) HEAT="$2"; shift 2;;
+    --cool-by) COOLBY="$2"; shift 2;;
     --iters) ITERS="$2"; shift 2;;
     --seeds) SEEDS="$2"; shift 2;;
     --polish-seconds) POLISH="$2"; shift 2;;
@@ -30,11 +33,14 @@ mkdir -p "$OUT"
 cd "$(dirname "$0")/../.."
 SET=()
 [[ -n "$SETTINGS" ]] && SET=(--settings "$SETTINGS")
+TUNE=()
+[[ -n "$HEAT" ]] && TUNE+=(--heat "$HEAT")
+[[ -n "$COOLBY" ]] && TUNE+=(--cool-by "$COOLBY")
 
 echo "== searching ($SEEDS) =="
 pids=()
 for s in $SEEDS; do
-  npx tsx scripts/benchmark/solve.ts --seed "$s" --iters "$ITERS" --restarts 1 --start-date "$START" "${SET[@]}" --out "$OUT/best-$s.json" -- "${FILES[@]}" > "$OUT/log-$s.txt" 2>&1 &
+  npx tsx scripts/benchmark/solve.ts --seed "$s" --iters "$ITERS" --restarts 1 --start-date "$START" "${SET[@]}" "${TUNE[@]}" --out "$OUT/best-$s.json" -- "${FILES[@]}" > "$OUT/log-$s.txt" 2>&1 &
   pids+=($!)
 done
 for p in "${pids[@]}"; do wait "$p"; done
@@ -58,4 +64,5 @@ fi
 echo "== report =="
 EXTRA=()
 [[ -n "$EXPORT" ]] && EXTRA+=(--export "$EXPORT")
+[[ -n "$UPGRADED" ]] && EXTRA+=(--upgraded "$UPGRADED")
 npx tsx scripts/benchmark/report.ts "${BESTARGS[@]}" "${EXTRA[@]}" --start-date "$START" "${SET[@]}" --out "$OUT/report.html" -- "${FILES[@]}"

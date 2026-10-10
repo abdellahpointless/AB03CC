@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { minutesPerDay } from '../core/calendar';
 import { EFFICIENCY_PRESETS, MATERIAL_TYPES } from '../core/defaults';
 import { calibrationSuggestions, parseCalibration } from '../core/efficiency';
-import type { CarpenterCutColumn, CarpenterDelayMode, MachineConfig, PlannerSettings } from '../core/types';
+import type { CarpenterCutColumn, CarpenterDelayMode, MachineConfig, PlannerSettings, PlanningEffort, PlanningMode } from '../core/types';
 import { useStore } from '../state/store';
 import { Badge, Button, Field, NumberInput, Segmented, Toggle, inputCls } from './kit';
 import { useImport } from './useImport';
@@ -309,6 +309,34 @@ function TimeTab({ s, set }: TabProps) {
 function RulesTab({ s, set }: TabProps) {
   return (
     <>
+      <Section
+        title="Planning engine"
+        hint="The optimizer searches for the plan that finishes the most master orders soonest. A basic plan appears at once and is replaced when the search is done. Classic is the earlier heuristic, which balances the machines first."
+      >
+        <Segmented
+          value={s.planningMode}
+          onChange={(v: PlanningMode) => set({ planningMode: v })}
+          options={[
+            { value: 'modules_first', label: 'Optimizer: finish orders first' },
+            { value: 'classic', label: 'Classic' },
+          ]}
+        />
+        {s.planningMode === 'modules_first' && (
+          <div className="mt-3 text-xs">
+            <span className="mb-1 block font-semibold text-slate-300">Search effort</span>
+            <Segmented
+              value={s.planningEffort}
+              onChange={(v: PlanningEffort) => set({ planningEffort: v })}
+              options={[
+                { value: 'quick', label: 'Quick' },
+                { value: 'standard', label: 'Standard' },
+                { value: 'thorough', label: 'Thorough' },
+              ]}
+            />
+            <span className="mt-1 block text-[11px] text-slate-500">More effort searches longer for a slightly better plan: roughly 2, 7 and 25 seconds for 500 parts.</span>
+          </div>
+        )}
+      </Section>
       <Section title="Assignment rules">
         <div className="grid gap-2">
           <Toggle checked={s.keepErpAssignments} onChange={v => set({ keepErpAssignments: v })} label="Keep ERP machine assignments" hint="Jobs already assigned to one of your machines in the ERP stay there, at the head of its queue." />
@@ -448,13 +476,13 @@ function CarpenterTab({ s, set }: TabProps) {
           onChange={(v: CarpenterDelayMode) => set({ carpenterDelayMode: v })}
           options={[
             { value: 'off', label: 'Off: ignore for ordering' },
-            { value: 'soft', label: 'Soft: tie-break only' },
+            { value: 'soft', label: 'Soft: prefer ready modules' },
             { value: 'hard', label: 'Hard: ready modules first' },
           ]}
         />
         {s.carpenterDelayMode === 'hard' && (
           <div className="mt-3 w-64">
-            <Field label="Maximum delay (hours)" hint="A waiting module is released after being held back this long.">
+            <Field label="Maximum delay (hours)" hint="The classic planner releases a waiting module after being held back this long. The optimizer keeps waiting modules from finishing later than that plan does.">
               <NumberInput value={s.carpenterMaxDelayHours} min={0} onChange={v => v !== undefined && set({ carpenterMaxDelayHours: v })} />
             </Field>
           </div>

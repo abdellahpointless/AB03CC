@@ -17,12 +17,14 @@ const seed = Number(flags.get('seed', '1'));
 const iters = Number(flags.get('iters', '2000000'));
 const restarts = Number(flags.get('restarts', '1'));
 const orderIters = Number(flags.get('order-iters', '100000'));
+const heat = flags.has('heat') ? Number(flags.get('heat')) : undefined;
+const coolBy = flags.has('cool-by') ? Number(flags.get('cool-by')) : undefined;
 const out = flags.get('out', 'best.json')!;
 
 const { inst, appQueues } = prepare(flags);
 const app = evaluate(inst, appQueues);
 const t0 = Date.now();
-const res = optimize(inst, { seed, queueIters: iters, orderIters, restarts, starts: [appQueues] });
+const res = optimize(inst, { seed, queueIters: iters, orderIters, restarts, heat, coolBy, starts: [appQueues] });
 const problems = validate(inst, res.queues);
 const secs = (Date.now() - t0) / 1000;
 console.log(`seed ${seed}: sumC ${res.sumC} (app ${app.sumC}, ${(((res.sumC - app.sumC) / app.sumC) * 100).toFixed(2)}%) makespan ${res.makespan} setup ${res.setupTotal} in ${secs.toFixed(0)}s${problems.length ? ' PROBLEMS ' + problems.length : ''}`);

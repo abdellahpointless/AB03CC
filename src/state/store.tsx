@@ -14,7 +14,7 @@ import { missingProductionColumns, parseProduction } from '../core/parse/product
 import { detectKind, readRows } from '../core/parse/workbook';
 import { planProduction } from '../core/scheduler/plan';
 import PlanWorker from '../core/worker?worker&inline';
-import type { PlanRequest } from '../core/worker';
+import type { PlanReply, PlanRequest } from '../core/worker';
 import type {
   CarpenterPart,
   ImportReport,
@@ -95,7 +95,12 @@ interface Store {
   locks: Record<string, UserLock>;
   plan: PlanResult | null;
   previousPlan: PlanResult | null;
+  /** waiting for the first plan of this request */
   planning: boolean;
+  /** a quick plan is on screen and the optimizer is still improving it */
+  improving: boolean;
+  /** how far the optimizer is (0..1) */
+  progress: number;
   planError: string | null;
   toasts: Toast[];
   partList: PartListInfo;
@@ -138,6 +143,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const [plan, setPlan] = useState<PlanResult | null>(null);
   const [previousPlan, setPreviousPlan] = useState<PlanResult | null>(null);
   const [planning, setPlanning] = useState(false);
+  const [improving, setImproving] = useState(false);
+  const [progress, setProgress] = useState(0);
   const [planError, setPlanError] = useState<string | null>(null);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [importedList, setImportedList] = useState<StoredPartList | null>(() => load<StoredPartList | null>(KEYS.partTimes, null));
@@ -182,61 +189,107 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const resetPrevious = useRef(true);
   planRef.current = plan;
 
-  useEffect(() => {
+  const busy = useRef(false); // a request is still being worked on by the current worker
+
+  const shownFor = useRef(0); // the request whose plan is on screen
+
+  const accept = useCallback((result: PlanResult, requestIdOf: number) => {
+    setPlanError(null);
+    // "Previous plan" means the plan from before the change: the quick and the optimized plan of one request share it
+    if (shownFor.current !== requestIdOf) setPreviousPlan(resetPrevious.current ? null : planRef.current);
+    shownFor.current = requestIdOf;
+    resetPrevious.current = false;
+    setPlan(result);
+  }, []);
+
+  const spawnWorker = useCallback((): Worker | null => {
     try {
       const w = new PlanWorker();
-      workerRef.current = w;
-      w.onmessage = (e: MessageEvent<{ id: number; plan?: PlanResult; error?: string }>) => {
-        if (e.data.id !== requestId.current) return; // stale result
-        setPlanning(false);
-        if (e.data.error) {
-          setPlanError(e.data.error);
+      w.onmessage = (e: MessageEvent<PlanReply>) => {
+        const m = e.data;
+        if (m.id !== requestId.current) return; // stale result of a request that was replaced
+        if ('progress' in m) {
+          setProgress(m.progress);
           return;
         }
-        setPlanError(null);
-        setPreviousPlan(resetPrevious.current ? null : planRef.current);
-        resetPrevious.current = false;
-        setPlan(e.data.plan!);
+        if ('error' in m) {
+          busy.current = false;
+          setPlanning(false);
+          setImproving(false);
+          setPlanError(m.error);
+          return;
+        }
+        setPlanning(false);
+        accept(m.plan, m.id);
+        if (m.final) {
+          busy.current = false;
+          setImproving(false);
+          setProgress(1);
+        } else {
+          setImproving(true);
+        }
       };
       w.onerror = () => {
+        // the worker died: later requests run on the main thread, and this one is reported instead of hanging
         workerRef.current = null;
+        if (busy.current) setPlanError('The background planner stopped unexpectedly. Press Re-optimize to plan again.');
+        busy.current = false;
+        setPlanning(false);
+        setImproving(false);
       };
+      return w;
     } catch {
-      workerRef.current = null;
+      return null;
     }
+  }, [accept]);
+
+  useEffect(() => {
+    workerRef.current = spawnWorker();
     return () => workerRef.current?.terminate();
-  }, []);
+  }, [spawnWorker]);
 
   const lastJobs = useRef<Job[] | null>(null);
   const replan = useCallback(() => {
     if (jobs.length === 0) {
+      requestId.current++; // whatever a worker is still computing is no longer wanted
+      if (workerRef.current && busy.current) {
+        workerRef.current.terminate();
+        workerRef.current = spawnWorker();
+        busy.current = false;
+      }
       setPlan(null);
       setPreviousPlan(null);
       setPlanning(false);
+      setImproving(false);
       return;
     }
     const id = ++requestId.current;
     const req: PlanRequest = { id, jobs, settings, locks, carpenterParts: carpenter.parts, partTimes };
     setPlanning(true);
+    setImproving(false);
+    setProgress(0);
+    // The search runs in one go and cannot be interrupted, so a new request throws the busy worker away.
+    if (workerRef.current && busy.current) {
+      workerRef.current.terminate();
+      workerRef.current = spawnWorker();
+    }
     if (workerRef.current) {
+      busy.current = true;
       workerRef.current.postMessage(req);
     } else {
-      // Fallback: run on the main thread after paint.
+      // Fallback: run on the main thread after paint. Without a worker the screen would freeze while the optimizer
+      // works, so it only gets its quickest effort here.
       setTimeout(() => {
         if (id !== requestId.current) return;
         try {
-          const result = planProduction(jobs, settings, locks, carpenter.parts, partTimes);
-          setPlanError(null);
-          setPreviousPlan(resetPrevious.current ? null : planRef.current);
-          resetPrevious.current = false;
-          setPlan(result);
+          accept(planProduction(jobs, { ...settings, planningEffort: 'quick' }, locks, carpenter.parts, partTimes), id);
         } catch (err) {
           setPlanError(err instanceof Error ? err.message : String(err));
         }
         setPlanning(false);
       }, 0);
     }
-  }, [jobs, settings, locks, carpenter.parts, partTimes]);
+  }, [jobs, settings, locks, carpenter.parts, partTimes, spawnWorker, accept]);
 
   useEffect(() => {
     if (lastJobs.current !== jobs) {
@@ -331,6 +384,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       plan,
       previousPlan,
       planning,
+      improving,
+      progress,
       planError,
       toasts,
       partList,
@@ -373,7 +428,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       notify,
       dismissToast,
     }),
-    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, planError, toasts, partList, partCoverage, importFile, loadDemo, clearData, replan, notify, dismissToast],
+    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, improving, progress, planError, toasts, partList, partCoverage, importFile, loadDemo, clearData, replan, notify, dismissToast],
   );
 
   return <Ctx.Provider value={store}>{children}</Ctx.Provider>;

@@ -1,6 +1,7 @@
 import { WorkCalendar, formatClock } from '../calendar';
 import { buildCarpenterMap, normalizeMo } from '../parse/carpenter';
 import { partKey } from '../parse/partTimes';
+import { MAX_OPTIMIZED_JOBS } from '../optimizer/budget';
 import { compareByRules, decidingRule, type RankContext } from '../priority';
 import type {
   Bottleneck,
@@ -9,6 +10,7 @@ import type {
   Job,
   MachineConfig,
   MoSync,
+  OptimizationInfo,
   PartTimeMap,
   PlanKpis,
   PlanResult,
@@ -18,6 +20,7 @@ import type {
   WaitingOnCarpenter,
 } from '../types';
 import { isEligible } from './eligibility';
+import { improveQueues } from './improve';
 import { SimContext, simulateQueue, step, type MachineState, type QueueSim } from './simulate';
 
 export { isEligible };
@@ -83,12 +86,20 @@ const tieBreak = (a: Job, b: Job) =>
 /* Main entry                                                          */
 /* ------------------------------------------------------------------ */
 
+export interface PlanOptions {
+  /** called with the plan the fast heuristic made, before the optimizer starts, so it can be shown right away */
+  onQuick?: (plan: PlanResult) => void;
+  /** called now and then with the share of the optimizer's work that is done (0..1) */
+  onProgress?: (fraction: number) => void;
+}
+
 export function planProduction(
   inputJobs: Job[],
   settings: PlannerSettings,
   locksIn: Record<string, UserLock> = {},
   carpenterParts: CarpenterPart[] = [],
   partTimes: PartTimeMap = {},
+  opts: PlanOptions = {},
 ): PlanResult {
   let locks = locksIn;
   const aliases = settings.materialAliases ?? {};
@@ -400,207 +411,257 @@ export function planProduction(
   /* ---- polish (seeded local search) ------------------------------------- */
   polish(active, queues, isLocked, eligible, ctx, plannable.length);
 
-  /* ---- rework parts: own blocks, placed before/after the part they were dropped next to ---- */
-  for (const rw of reworkParts) {
-    const plan = reworkPlacement.get(rw.id)!;
-    let machineId = plan.machineId;
-    if (!machineId) {
-      const options = active.filter(m => isEligible(rw, m, settings, ctx));
-      if (options.length === 0) {
-        exceptions.noEligibleMachine.push(rw);
-        continue;
+  /* ---- everything after the search: rework parts, pinned starts, exact timing, KPIs ---- */
+  // `assemble` can run more than once (first for the fast plan, then for the optimized one), so it works on copies.
+  const assemble = (base: Record<string, Job[]>): PlanResult => {
+    const queues: Record<string, Job[]> = {};
+    for (const m of active) queues[m.id] = [...base[m.id]];
+    const exceptionsOut: PlanResult['exceptions'] = { ...exceptions, noEligibleMachine: [...exceptions.noEligibleMachine] };
+    const droppedStarts = new Map<string, number>();
+    /* ---- rework parts: own blocks, placed before/after the part they were dropped next to ---- */
+    for (const rw of reworkParts) {
+      const plan = reworkPlacement.get(rw.id)!;
+      let machineId = plan.machineId;
+      if (!machineId) {
+        const options = active.filter(m => isEligible(rw, m, settings, ctx));
+        if (options.length === 0) {
+          exceptionsOut.noEligibleMachine.push(rw);
+          continue;
+        }
+        machineId = options.reduce((best, m) =>
+          simulateQueue(queues[m.id], m, ctx).finish < simulateQueue(queues[best.id], best, ctx).finish ? m : best,
+        ).id;
       }
-      machineId = options.reduce((best, m) =>
-        simulateQueue(queues[m.id], m, ctx).finish < simulateQueue(queues[best.id], best, ctx).finish ? m : best,
-      ).id;
+      const q = queues[machineId];
+      const at = plan.anchorJobId ? q.findIndex(j => j.id === plan.anchorJobId) : -1;
+      if (at >= 0) {
+        // position decided by the anchor, not by the clock (put back once this plan is built)
+        if (ctx.manualStart.has(rw.id)) droppedStarts.set(rw.id, ctx.manualStart.get(rw.id)!);
+        ctx.manualStart.delete(rw.id);
+        q.splice(plan.placement === 'before' ? at : at + 1, 0, rw);
+      } else {
+        q.push(rw); // no anchor: slotted by its start time below
+      }
     }
-    const q = queues[machineId];
-    const at = plan.anchorJobId ? q.findIndex(j => j.id === plan.anchorJobId) : -1;
-    if (at >= 0) {
-      ctx.manualStart.delete(rw.id); // position decided by the anchor, not by the clock
-      q.splice(plan.placement === 'before' ? at : at + 1, 0, rw);
-    } else {
-      q.push(rw); // no anchor: slotted by its start time below
-    }
-  }
 
-  /* ---- pinned start times: slot manual-start jobs by time ---------------- */
-  for (const m of active) queues[m.id] = slotPinnedJobs(queues[m.id], m, ctx);
+    /* ---- pinned start times: slot manual-start jobs by time ---------------- */
+    for (const m of active) queues[m.id] = slotPinnedJobs(queues[m.id], m, ctx);
 
-  /* ---- final simulation & result objects -------------------------------- */
-  const finalQueues: Record<string, ScheduledJob[]> = {};
-  const finish: Record<string, number> = {};
-  const loads: PlanKpis['loadPerMachine'] = {};
-  let totalSetup = 0;
-  let totalMachining = 0;
-  let cautiousExtraMax = 0;
-  let unsortedSetup = 0;
-  const firstShiftEnd = settings.calendar.continuous247 ? 8 * 60 : settings.calendar.hoursPerShift * 60;
-  let boxesClosed = 0;
-  let lateJobs = 0;
+    /* ---- final simulation & result objects -------------------------------- */
+    const finalQueues: Record<string, ScheduledJob[]> = {};
+    const finish: Record<string, number> = {};
+    const loads: PlanKpis['loadPerMachine'] = {};
+    let totalSetup = 0;
+    let totalMachining = 0;
+    let cautiousExtraMax = 0;
+    let unsortedSetup = 0;
+    const firstShiftEnd = settings.calendar.continuous247 ? 8 * 60 : settings.calendar.hoursPerShift * 60;
+    let boxesClosed = 0;
+    let lateJobs = 0;
 
-  const rankFor = (j: Job) => rankOf.get(j.id) ?? 0;
+    const rankFor = (j: Job) => rankOf.get(j.id) ?? 0;
 
-  for (const m of active) {
-    const sim = simulateQueue(queues[m.id], m, ctx, { record: true, respectManualStart: true });
-    finish[m.id] = sim.finish;
-    let cautiousExtra = 0;
-    const items: ScheduledJob[] = sim.steps!.map((st, idx) => {
-      const d = ctx.duration(st.job, m);
-      cautiousExtra += d.cautiousDurationMin - d.durationMin;
-      const closesBox = st.job.boxRemaining <= 1;
-      const blockedByCarpenter = carpenterBlocked(st.job.masterOrder);
-      if (closesBox && st.endMinute <= firstShiftEnd && !blockedByCarpenter) boxesClosed++;
-      const startTime = cal.toIso(st.startMinute);
-      const endTime = cal.toIso(st.endMinute, true);
-      const isLate = Boolean(st.job.dueDate && endTime.slice(0, 10) > st.job.dueDate);
-      if (isLate) lateJobs++;
-      totalSetup += st.setup;
-      totalMachining += st.durationMin;
-      return {
-        job: st.job,
-        machineId: m.id,
-        sequence: idx + 1,
-        setupBefore: st.setup,
-        startMinute: st.startMinute,
-        endMinute: st.endMinute,
-        durationMin: st.durationMin,
-        cautiousDurationMin: d.cautiousDurationMin,
-        idealMinutes: d.idealMinutes,
-        efficiencyPercent: d.efficiencyPercent,
-        efficiencySource: d.source,
-        timeBasis: d.basis,
-        measuredPerPart: d.basis === 'measured' ? ctx.measuredFor(st.job) : undefined,
-        partName: partTimes[partKey(st.job.matnr)]?.name,
-        materialOffset: d.materialOffset,
-        segments: st.segments,
-        startTime,
-        endTime,
-        rank: rankFor(st.job),
-        decidingRule: st.job.isRework ? 'Rework: placed by you' : decidingRule(st.job, rules, rankCtx, rankFor(st.job)),
-        isLate,
-        closesBox,
-        userLocked: lockedBy.get(st.job.id) === 'user',
-        erpLocked: lockedBy.get(st.job.id) === 'erp',
-        manualDuration: ctx.manualDuration.has(st.job.id),
-        manualStart: ctx.manualStart.has(st.job.id),
-        carpenterOpen: blockedByCarpenter,
+    for (const m of active) {
+      const sim = simulateQueue(queues[m.id], m, ctx, { record: true, respectManualStart: true });
+      finish[m.id] = sim.finish;
+      let cautiousExtra = 0;
+      const items: ScheduledJob[] = sim.steps!.map((st, idx) => {
+        const d = ctx.duration(st.job, m);
+        cautiousExtra += d.cautiousDurationMin - d.durationMin;
+        const closesBox = st.job.boxRemaining <= 1;
+        const blockedByCarpenter = carpenterBlocked(st.job.masterOrder);
+        if (closesBox && st.endMinute <= firstShiftEnd && !blockedByCarpenter) boxesClosed++;
+        const startTime = cal.toIso(st.startMinute);
+        const endTime = cal.toIso(st.endMinute, true);
+        const isLate = Boolean(st.job.dueDate && endTime.slice(0, 10) > st.job.dueDate);
+        if (isLate) lateJobs++;
+        totalSetup += st.setup;
+        totalMachining += st.durationMin;
+        return {
+          job: st.job,
+          machineId: m.id,
+          sequence: idx + 1,
+          setupBefore: st.setup,
+          startMinute: st.startMinute,
+          endMinute: st.endMinute,
+          durationMin: st.durationMin,
+          cautiousDurationMin: d.cautiousDurationMin,
+          idealMinutes: d.idealMinutes,
+          efficiencyPercent: d.efficiencyPercent,
+          efficiencySource: d.source,
+          timeBasis: d.basis,
+          measuredPerPart: d.basis === 'measured' ? ctx.measuredFor(st.job) : undefined,
+          partName: partTimes[partKey(st.job.matnr)]?.name,
+          materialOffset: d.materialOffset,
+          segments: st.segments,
+          startTime,
+          endTime,
+          rank: rankFor(st.job),
+          decidingRule: st.job.isRework ? 'Rework: placed by you' : decidingRule(st.job, rules, rankCtx, rankFor(st.job)),
+          isLate,
+          closesBox,
+          userLocked: lockedBy.get(st.job.id) === 'user',
+          erpLocked: lockedBy.get(st.job.id) === 'erp',
+          manualDuration: ctx.manualDuration.has(st.job.id),
+          manualStart: ctx.manualStart.has(st.job.id),
+          carpenterOpen: blockedByCarpenter,
+        };
+      });
+      finalQueues[m.id] = items;
+      cautiousExtraMax = Math.max(cautiousExtraMax, sim.finish + cautiousExtra);
+      loads[m.id] = {
+        jobs: items.length,
+        machineMinutes: items.reduce((a, i) => a + i.durationMin, 0),
+        setupMinutes: items.reduce((a, i) => a + i.setupBefore, 0),
       };
-    });
-    finalQueues[m.id] = items;
-    cautiousExtraMax = Math.max(cautiousExtraMax, sim.finish + cautiousExtra);
-    loads[m.id] = {
-      jobs: items.length,
-      machineMinutes: items.reduce((a, i) => a + i.durationMin, 0),
-      setupMinutes: items.reduce((a, i) => a + i.setupBefore, 0),
-    };
-    // baseline: same jobs run in plain priority order
-    const baseline = [...queues[m.id]].sort((a, b) => rankFor(a) - rankFor(b));
-    unsortedSetup += simulateQueue(baseline, m, ctx).setup;
-  }
+      // baseline: same jobs run in plain priority order
+      const baseline = [...queues[m.id]].sort((a, b) => rankFor(a) - rankFor(b));
+      unsortedSetup += simulateQueue(baseline, m, ctx).setup;
+    }
 
-  /* ---- master order sync & carpenter waiting list ------------------------ */
-  const byMo = new Map<string, ScheduledJob[]>();
-  Object.values(finalQueues)
-    .flat()
-    .forEach(i => (byMo.get(i.job.masterOrder) ?? byMo.set(i.job.masterOrder, []).get(i.job.masterOrder)!).push(i));
+    /* ---- master order sync & carpenter waiting list ------------------------ */
+    const byMo = new Map<string, ScheduledJob[]>();
+    Object.values(finalQueues)
+      .flat()
+      .forEach(i => (byMo.get(i.job.masterOrder) ?? byMo.set(i.job.masterOrder, []).get(i.job.masterOrder)!).push(i));
 
-  const moSync: Record<string, MoSync> = {};
-  const waiting: WaitingOnCarpenter[] = [];
-  let syncCount = 0;
-  let sumMo = 0;
-  byMo.forEach((items, mo) => {
-    const ends = items.map(i => i.endMinute);
-    const first = Math.min(...ends);
-    const last = Math.max(...ends);
-    const lastItem = items.find(i => i.endMinute === last)!;
-    const blocked = carpenterBlocked(mo);
-    const sync = last - first <= settings.syncToleranceMin && !blocked;
-    if (sync) syncCount++;
-    sumMo += last;
-    moSync[mo] = {
-      masterOrder: mo,
-      customer: lastItem.job.customer,
-      parts: items.length,
-      firstFinish: first,
-      lastFinish: last,
-      spread: last - first,
-      synchronized: sync,
-      machines: [...new Set(items.map(i => i.machineId))],
-      finishTime: formatClock(lastItem.endTime),
-      carpenterBlocked: blocked,
-    };
-    const info = carpenterOf(mo);
-    if (blocked && info) {
-      waiting.push({
+    const moSync: Record<string, MoSync> = {};
+    const waiting: WaitingOnCarpenter[] = [];
+    let syncCount = 0;
+    let sumMo = 0;
+    byMo.forEach((items, mo) => {
+      const ends = items.map(i => i.endMinute);
+      const first = Math.min(...ends);
+      const last = Math.max(...ends);
+      const lastItem = items.find(i => i.endMinute === last)!;
+      const blocked = carpenterBlocked(mo);
+      const sync = last - first <= settings.syncToleranceMin && !blocked;
+      if (sync) syncCount++;
+      sumMo += last;
+      moSync[mo] = {
         masterOrder: mo,
         customer: lastItem.job.customer,
-        boxCodes: items.map(i => i.job.boxCode),
-        openParts: info.openPartsList,
-        totalParts: info.totalParts,
-        openQty: info.openQty,
-        lastFinishMinute: last,
-        lastFinishTime: lastItem.endTime,
-        hasAlert: info.hasMaterialAlert,
-      });
+        parts: items.length,
+        firstFinish: first,
+        lastFinish: last,
+        spread: last - first,
+        synchronized: sync,
+        machines: [...new Set(items.map(i => i.machineId))],
+        finishTime: formatClock(lastItem.endTime),
+        carpenterBlocked: blocked,
+      };
+      const info = carpenterOf(mo);
+      if (blocked && info) {
+        waiting.push({
+          masterOrder: mo,
+          customer: lastItem.job.customer,
+          boxCodes: items.map(i => i.job.boxCode),
+          openParts: info.openPartsList,
+          totalParts: info.totalParts,
+          openQty: info.openQty,
+          lastFinishMinute: last,
+          lastFinishTime: lastItem.endTime,
+          hasAlert: info.hasMaterialAlert,
+        });
+      }
+    });
+    waiting.sort((a, b) => a.lastFinishMinute - b.lastFinishMinute);
+
+    /* ---- kpis ----------------------------------------------------------------- */
+    const makespan = Math.max(0, ...Object.values(finish));
+    const util: Record<string, number> = {};
+    const avgLoad = totalMachining / Math.max(1, active.length);
+    const bottlenecks: Bottleneck[] = [];
+    for (const m of active) {
+      util[m.id] = makespan > 0 ? Math.round((loads[m.id].machineMinutes / makespan) * 100) : 0;
+      const load = loads[m.id].machineMinutes + loads[m.id].setupMinutes;
+      if (avgLoad > 0 && load > avgLoad * 1.3 && load > 300) {
+        const pct = Math.round((load / avgLoad) * 100);
+        bottlenecks.push({
+          machineId: m.id,
+          loadMinutes: load,
+          loadPercent: pct,
+          severity: load > avgLoad * 1.5 ? 'critical' : 'warning',
+          message: `${m.name} carries ${pct}% of the average machine load.`,
+        });
+      }
     }
+    const plannedJobs = Object.values(finalQueues).reduce((a, q) => a + q.length, 0);
+    const kpis: PlanKpis = {
+      plannedJobs,
+      measuredJobs: Object.values(finalQueues).reduce((a, q) => a + q.filter(i => i.timeBasis === 'measured').length, 0),
+      estimatedJobs: Object.values(finalQueues).reduce((a, q) => a + q.filter(i => i.timeBasis === 'estimated').length, 0),
+      plannedHours: Math.round((totalMachining / 60) * 10) / 10,
+      changeoverMinutes: totalSetup,
+      setupSavedMinutes: Math.max(0, unsortedSetup - totalSetup),
+      overdueJobs: lateJobs,
+      boxesClosedFirstShift: boxesClosed,
+      synchronizedMos: syncCount,
+      totalMos: byMo.size,
+      makespanMinutes: makespan,
+      cautiousMakespanMinutes: Math.max(makespan, cautiousExtraMax),
+      sumMoCompletion: sumMo,
+      avgMoCompletion: byMo.size ? Math.round((sumMo / byMo.size) * 10) / 10 : 0,
+      waitingOnCarpenter: waiting.length,
+      finishPerMachine: finish,
+      loadPerMachine: loads,
+      utilizationPerMachine: util,
+      bottlenecks,
+    };
+
+    const result: PlanResult = {
+      generatedAt: new Date().toISOString(),
+      queues: finalQueues,
+      moSync,
+      carpenter: carpenter.map,
+      carpenterReport: carpenterParts.length || settings.simulatedUncutMasterOrders.length ? carpenter.report : null,
+      waitingOnCarpenter: waiting,
+      exceptions: exceptionsOut,
+      kpis,
+      summary: `Scheduled ${plannedJobs} jobs on ${active.length} machines; ${syncCount} of ${byMo.size} master orders finish together.`,
+    };
+    droppedStarts.forEach((v, k) => ctx.manualStart.set(k, v));
+    return result;
+  };
+
+  /* ---- the optimizer: finish master orders as early as possible ------------ */
+  const fast = assemble(queues);
+  const jobCount = active.reduce((n, m) => n + queues[m.id].length, 0);
+  if (settings.planningMode === 'classic' || jobCount < 3 || jobCount > MAX_OPTIMIZED_JOBS) return fast;
+
+  opts.onQuick?.(fast);
+  const startModuleEnd = new Map(Object.values(fast.moSync).map(m => [m.masterOrder, m.lastFinish]));
+  const improved = improveQueues({
+    active,
+    queues,
+    tied: finalLocked,
+    settings,
+    ctx,
+    rankOf,
+    carpenterBlocked,
+    startModuleEnd,
+    onProgress: opts.onProgress,
   });
-  waiting.sort((a, b) => a.lastFinishMinute - b.lastFinishMinute);
-
-  /* ---- kpis ----------------------------------------------------------------- */
-  const makespan = Math.max(0, ...Object.values(finish));
-  const util: Record<string, number> = {};
-  const avgLoad = totalMachining / Math.max(1, active.length);
-  const bottlenecks: Bottleneck[] = [];
-  for (const m of active) {
-    util[m.id] = makespan > 0 ? Math.round((loads[m.id].machineMinutes / makespan) * 100) : 0;
-    const load = loads[m.id].machineMinutes + loads[m.id].setupMinutes;
-    if (avgLoad > 0 && load > avgLoad * 1.3 && load > 300) {
-      const pct = Math.round((load / avgLoad) * 100);
-      bottlenecks.push({
-        machineId: m.id,
-        loadMinutes: load,
-        loadPercent: pct,
-        severity: load > avgLoad * 1.5 ? 'critical' : 'warning',
-        message: `${m.name} carries ${pct}% of the average machine load.`,
-      });
-    }
-  }
-  const plannedJobs = Object.values(finalQueues).reduce((a, q) => a + q.length, 0);
-  const kpis: PlanKpis = {
-    plannedJobs,
-    measuredJobs: Object.values(finalQueues).reduce((a, q) => a + q.filter(i => i.timeBasis === 'measured').length, 0),
-    estimatedJobs: Object.values(finalQueues).reduce((a, q) => a + q.filter(i => i.timeBasis === 'estimated').length, 0),
-    plannedHours: Math.round((totalMachining / 60) * 10) / 10,
-    changeoverMinutes: totalSetup,
-    setupSavedMinutes: Math.max(0, unsortedSetup - totalSetup),
-    overdueJobs: lateJobs,
-    boxesClosedFirstShift: boxesClosed,
-    synchronizedMos: syncCount,
-    totalMos: byMo.size,
-    makespanMinutes: makespan,
-    cautiousMakespanMinutes: Math.max(makespan, cautiousExtraMax),
-    sumMoCompletion: sumMo,
-    avgMoCompletion: byMo.size ? Math.round((sumMo / byMo.size) * 10) / 10 : 0,
-    waitingOnCarpenter: waiting.length,
-    finishPerMachine: finish,
-    loadPerMachine: loads,
-    utilizationPerMachine: util,
-    bottlenecks,
+  const effort = settings.planningEffort ?? 'standard';
+  const info = (better: PlanResult): OptimizationInfo => {
+    const dayLen = new WorkCalendar(settings.calendar).dayLen;
+    const doneBy = (p: PlanResult, day: number) => Object.values(p.moSync).filter(m => !m.carpenterBlocked && m.lastFinish <= day * dayLen).length;
+    return {
+      effort,
+      classicSumMo: fast.kpis.sumMoCompletion,
+      classicMakespan: fast.kpis.makespanMinutes,
+      classicChangeover: fast.kpis.changeoverMinutes,
+      doneByDay: [1, 2, 3].map(d => [doneBy(fast, d), doneBy(better, d)] as [number, number]),
+    };
   };
+  if (!improved) return { ...fast, optimization: info(fast) };
 
-  return {
-    generatedAt: new Date().toISOString(),
-    queues: finalQueues,
-    moSync,
-    carpenter: carpenter.map,
-    carpenterReport: carpenterParts.length || settings.simulatedUncutMasterOrders.length ? carpenter.report : null,
-    waitingOnCarpenter: waiting,
-    exceptions,
-    kpis,
-    summary: `Scheduled ${plannedJobs} jobs on ${active.length} machines; ${syncCount} of ${byMo.size} master orders finish together.`,
-  };
-
+  const final = assemble(improved.queues);
+  // Judge both plans the way the search did, on the real timing (rework parts and pinned starts included).
+  const worth = (p: PlanResult) =>
+    Object.values(p.moSync).reduce((sum, m) => sum + (improved.weights.get(m.masterOrder) ?? 1) * m.lastFinish, 0);
+  if (worth(final) > worth(fast)) return { ...fast, optimization: info(fast) };
+  return { ...final, optimization: info(final) };
 }
 
 function lexLess(a: number[], b: number[]) {

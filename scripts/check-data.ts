@@ -49,8 +49,12 @@ settings.calendar.startDate = '2026-10-09';
 const t0 = Date.now();
 const plan = planProduction(jobs, settings, {}, parts, partTimes);
 const ms = Date.now() - t0;
+const tc = Date.now();
+const classic = planProduction(jobs, { ...settings, planningMode: 'classic' }, {}, parts, partTimes);
+console.log(`classic heuristic: ${Date.now() - tc} ms, sum of master order completion ${classic.kpis.sumMoCompletion}, last machine ${classic.kpis.makespanMinutes}, changeover ${classic.kpis.changeoverMinutes}`);
 const k = plan.kpis;
-console.log(`planned in ${ms} ms`);
+const k0 = plan.kpis;
+console.log(`optimizer (${settings.planningEffort} effort): ${ms} ms, sum of master order completion ${k0.sumMoCompletion} (${(((classic.kpis.sumMoCompletion - k0.sumMoCompletion) / classic.kpis.sumMoCompletion) * 100).toFixed(1)}% sooner than the classic heuristic)`);
 console.log({ jobs: k.plannedJobs, measured: k.measuredJobs, estimated: k.estimatedJobs, hours: k.plannedHours, changeover: k.changeoverMinutes, saved: k.setupSavedMinutes, makespan: k.makespanMinutes, sumMo: k.sumMoCompletion, sync: `${k.synchronizedMos}/${k.totalMos}`, late: k.overdueJobs, carpenterWaiting: k.waitingOnCarpenter });
 for (const [id, q] of Object.entries(plan.queues)) console.log(id.padEnd(10), String(q.length).padStart(4), 'jobs  finish', k.finishPerMachine[id], ' util', k.utilizationPerMachine[id] + '%');
 const ex = plan.exceptions;
@@ -59,20 +63,22 @@ console.log('exceptions:', { blocked: ex.blocked.length, noEligible: ex.noEligib
 // ---- invariants ----
 const problems: string[] = [];
 const ctx = new SimContext(settings, settings.machines);
+for (const [name, subject] of [['optimizer', plan], ['classic', classic]] as const) {
 const seen = new Set<string>();
-for (const [id, q] of Object.entries(plan.queues)) {
+for (const [id, q] of Object.entries(subject.queues)) {
   const machine = settings.machines.find(m => m.id === id)!;
   let prevEnd = 0;
   for (const it of q) {
-    if (seen.has(it.job.id)) problems.push(`duplicate ${it.job.id}`);
+    if (seen.has(it.job.id)) problems.push(`${name}: duplicate ${it.job.id}`);
     seen.add(it.job.id);
-    if (it.startMinute < prevEnd) problems.push(`overlap on ${id} at ${it.job.id}`);
+    if (it.startMinute < prevEnd) problems.push(`${name}: overlap on ${id} at ${it.job.id}`);
     prevEnd = it.endMinute;
-    if (!it.erpLocked && !it.userLocked && !isEligible(it.job, machine, settings, ctx)) problems.push(`ineligible ${it.job.id} on ${id}`);
-    if (it.erpLocked && it.job.erpMachine !== id) problems.push(`ERP lock broken ${it.job.id}`);
+    if (!it.erpLocked && !it.userLocked && !isEligible(it.job, machine, settings, ctx)) problems.push(`${name}: ineligible ${it.job.id} on ${id}`);
+    if (it.erpLocked && it.job.erpMachine !== id) problems.push(`${name}: ERP lock broken ${it.job.id}`);
   }
 }
 const expected = jobs.length - ex.blocked.length - ex.outOfScope.length - ex.manual30000.length - ex.noEligibleMachine.length;
-if (seen.size !== expected) problems.push(`scheduled ${seen.size} but expected ${expected}`);
+if (seen.size !== expected) problems.push(`${name}: scheduled ${seen.size} but expected ${expected}`);
+}
 console.log(problems.length ? `PROBLEMS:\n${problems.slice(0, 20).join('\n')}` : 'all invariants hold');
 process.exit(problems.length ? 1 : 0);

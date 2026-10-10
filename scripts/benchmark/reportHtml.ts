@@ -10,8 +10,19 @@ export interface ModuleRow {
   customer: string;
   parts: number;
   work: number;
-  appEnd: number;
-  bestEnd: number;
+}
+
+/** One schedule in the comparison: the perfect timeline first, the plan being judged last. */
+export interface PlanView {
+  label: string;
+  /** short name used in tiles and tooltips */
+  short: string;
+  /** CSS colour variable of its line in the curve */
+  color: string;
+  view: ScheduleView;
+  summary: Summary;
+  /** completion minute of every module (same order as `modules`) */
+  ends: number[];
 }
 
 export interface ReportData {
@@ -23,18 +34,14 @@ export interface ReportData {
   jobMaterials: string[];
   jobMatnr: string[];
   modules: ModuleRow[];
-  perfect: ScheduleView;
-  app: ScheduleView;
+  /** [perfect, (upgraded app,) the app plan being judged] */
+  plans: PlanView[];
   dayLen: number;
   shiftStartHour: number;
   dayLabels: string[];
-  /** disruptions both schedules had to work around: [machineIndex, startMinute, endMinute] */
+  /** disruptions every plan had to work around: [machineIndex, startMinute, endMinute] */
   downtime: number[][];
-  summary: {
-    app: Summary;
-    perfect: Summary;
-    lowerBound: number;
-  };
+  lowerBound: number;
   notes: string[];
 }
 
@@ -115,6 +122,12 @@ p { margin: 0; }
 .delta-bad { color: var(--bad); font-weight: 600; }
 .legend { display: flex; gap: 16px; flex-wrap: wrap; font-size: 12px; color: var(--fg-2); margin-bottom: 8px; }
 .legend i { display: inline-block; width: 18px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+.g-title { margin: 14px 0 8px; }
+.g-title:first-child { margin-top: 0; }
+.sec-sub { color: var(--fg-3); font-size: 12px; margin: -4px 0 10px; text-transform: none; letter-spacing: 0; font-weight: 400; }
+.cmp b.p0 { color: var(--accent); }
+.cmp b.p1 { color: var(--good); }
+.cmp b.p2 { color: var(--accent-2); }
 svg text { fill: var(--fg-3); font: 11px var(--sans); }
 #curve { width: 100%; height: auto; display: block; }
 .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; flex-wrap: wrap; }
@@ -161,21 +174,16 @@ td.num, th.num { text-align: right; }
   <section class="tiles" id="tiles"></section>
   <section class="card">
     <h2>Master orders finished over time</h2>
-    <div class="legend"><span><i style="background:var(--accent)"></i>Perfect timeline</span><span><i style="background:var(--accent-2)"></i>What the app planned</span></div>
-    <svg id="curve" viewBox="0 0 1000 330" role="img" aria-label="Cumulative master orders finished, perfect timeline versus app plan"></svg>
+    <div class="legend" id="legend"></div>
+    <svg id="curve" viewBox="0 0 1000 330" role="img" aria-label="Cumulative master orders finished over time for each plan"></svg>
   </section>
-  <section class="card">
-    <h2>Perfect timeline</h2>
-    <div class="toolbar"><button data-z="out" aria-label="Zoom out">−</button><button data-z="in" aria-label="Zoom in">+</button><button data-z="fit">Fit width</button><span class="hint">Colour = when the box's master order finishes (light = early). Outlined box = the one that closes its order. Hatched red = a disruption both plans had to work around. Hover to follow an order.</span></div>
-    <div class="gantt-scroll" id="scrollA"><div class="gantt" id="ganttA"></div></div>
-  </section>
-  <section class="card">
-    <h2>What the app planned (same scale)</h2>
-    <div class="gantt-scroll" id="scrollB"><div class="gantt" id="ganttB"></div></div>
+  <section class="card" id="ganttCard">
+    <div class="toolbar"><button data-z="out" aria-label="Zoom out">−</button><button data-z="in" aria-label="Zoom in">+</button><button data-z="fit">Fit width</button><span class="hint">Colour = when the box's master order finishes (light = early). Outlined box = the one that closes its order. Hatched red = a disruption every plan had to work around. Hover to follow an order.</span></div>
+    <div id="gantts"></div>
   </section>
   <section class="card">
     <h2>Every master order</h2>
-    <div class="tablewrap"><table id="mods"><thead><tr><th>Master order</th><th>Customer</th><th class="num">Parts</th><th class="num">Work (min)</th><th class="num">Perfect done</th><th class="num">App done</th><th class="num">App later by</th></tr></thead><tbody></tbody></table></div>
+    <div class="tablewrap"><table id="mods"><thead></thead><tbody></tbody></table></div>
   </section>
   <section class="card notes" id="notes"></section>
 </div>
@@ -191,72 +199,82 @@ function clock(min, asEnd) {
   const h = D.shiftStartHour + Math.floor(within / 60), m = Math.round(within % 60);
   return (D.dayLabels[day] || 'Day ' + (day + 1)) + ' ' + String(h % 24).padStart(2, '0') + ':' + String(m).padStart(2, '0');
 }
-const S = D.summary;
-const pct = (a, b) => ((a - b) / b * 100);
-function good(x) { return '<span class="delta-good">' + x + '</span>'; }
+const P = D.plans, PERFECT = P[0], BASE = P[P.length - 1], MID = P.length > 2 ? P[1] : null;
+const M = D.modules.length;
+const tmaxAll = Math.max.apply(null, P.map(p => p.summary.makespan));
 
 /* ---------- headline ---------- */
 (function head() {
-  const imp = pct(S.app.avgC, S.perfect.avgC);
-  const gain = (S.app.sumC - S.perfect.sumC) / S.app.sumC * 100;
-  const d2 = S.perfect.byDay[1] - S.app.byDay[1];
-  $('#verdict').innerHTML = 'The perfect timeline finishes the average master order in <b>' + hours(S.perfect.avgC) + '</b> instead of <b>' + hours(S.app.avgC) + '</b> (' + gain.toFixed(1) + '% sooner). After two working days it has <b>' + S.perfect.byDay[1] + '</b> orders done against ' + S.app.byDay[1] + (d2 > 0 ? ' (+' + d2 + ')' : '') + '. Changeover time is ' + fmtInt(S.perfect.setupTotal) + ' min against ' + fmtInt(S.app.setupTotal) + ' min, and the last machine finishes at ' + hours(S.perfect.makespan) + ' against ' + hours(S.app.makespan) + '.';
-  const tiles = [
-    ['Average master order finished at', hours(S.perfect.avgC), hours(S.app.avgC), gain, 'sooner'],
-    ['Orders finished after day 2', S.perfect.byDay[1], S.app.byDay[1], S.perfect.byDay[1] - S.app.byDay[1], 'count'],
-    ['Half of all orders finished by', hours(S.perfect.quartiles[1]), hours(S.app.quartiles[1]), (S.app.quartiles[1] - S.perfect.quartiles[1]) / S.app.quartiles[1] * 100, 'sooner'],
-    ['Total changeover time', fmtInt(S.perfect.setupTotal) + ' min', fmtInt(S.app.setupTotal) + ' min', (S.app.setupTotal - S.perfect.setupTotal) / S.app.setupTotal * 100, 'less'],
-    ['Last machine finishes', hours(S.perfect.makespan), hours(S.app.makespan), (S.app.makespan - S.perfect.makespan) / S.app.makespan * 100, 'sooner'],
-    ['Parts finishing after their production date', S.perfect.lateParts, S.app.lateParts, S.app.lateParts - S.perfect.lateParts, 'late'],
+  const pe = PERFECT.summary, ba = BASE.summary;
+  const gainPerfect = (ba.sumC - pe.sumC) / ba.sumC * 100;
+  let v;
+  if (MID) {
+    const mi = MID.summary, gainMid = (ba.sumC - mi.sumC) / ba.sumC * 100, gap = (mi.sumC - pe.sumC) / pe.sumC * 100;
+    v = BASE.short + ' finishes the average master order at <b>' + hours(ba.avgC) + '</b>. The ' + MID.short.toLowerCase() + ' now finishes it at <b>' + hours(mi.avgC) + '</b> (' + gainMid.toFixed(1) + '% sooner), only ' + gap.toFixed(1) + '% from the perfect timeline at ' + hours(pe.avgC) + '. After two working days: <b>' + mi.byDay[1] + '</b> orders done against ' + ba.byDay[1] + ' before (perfect: ' + pe.byDay[1] + ').';
+  } else {
+    v = 'The perfect timeline finishes the average master order in <b>' + hours(pe.avgC) + '</b> instead of <b>' + hours(ba.avgC) + '</b> (' + gainPerfect.toFixed(1) + '% sooner). After two working days it has <b>' + pe.byDay[1] + '</b> orders done against ' + ba.byDay[1] + '. Changeover time is ' + fmtInt(pe.setupTotal) + ' min against ' + fmtInt(ba.setupTotal) + ' min, and the last machine finishes at ' + hours(pe.makespan) + ' against ' + hours(ba.makespan) + '.';
+  }
+  $('#verdict').innerHTML = v;
+  const front = MID || PERFECT;
+  const rows = [
+    ['Average master order finished at', s => hours(s.avgC), s => s.avgC, 'less', 'sooner'],
+    ['Orders finished after day 2', s => String(s.byDay[1]), s => s.byDay[1], 'more', 'orders'],
+    ['Half of all orders finished by', s => hours(s.quartiles[1]), s => s.quartiles[1], 'less', 'sooner'],
+    ['Total changeover time', s => fmtInt(s.setupTotal) + ' min', s => s.setupTotal, 'less', 'less'],
+    ['Last machine finishes', s => hours(s.makespan), s => s.makespan, 'less', 'sooner'],
+    ['Parts finishing after their production date', s => String(s.lateParts), s => s.lateParts, 'less', 'late']
   ];
-  $('#tiles').innerHTML = tiles.map(t => {
-    const better = t[4] === 'count' || t[4] === 'late' ? t[3] > 0 : t[3] > 0.05;
-    const label = t[4] === 'late' ? (t[3] > 0 ? t[3] + ' fewer than the app' : t[3] < 0 ? '<span class="delta-bad">' + (-t[3]) + ' more than the app</span>' : 'same as the app') : !better ? 'same as the app' : t[4] === 'count' ? '+' + t[3] + ' orders more than the app' : t[3].toFixed(1) + '% ' + t[4] + ' than the app';
-    return '<div class="tile"><div class="k">' + t[0] + '</div><div class="v">' + t[1] + '</div><div class="cmp"><span>App <b>' + t[2] + '</b></span><span>' + (better ? good(label) : label.indexOf('delta-bad') > 0 ? label : '<span>' + label + '</span>') + '</span></div></div>';
+  $('#tiles').innerHTML = rows.map(r => {
+    const f = r[1](front.summary), fv = r[2](front.summary), bv = r[2](BASE.summary);
+    let chip = 'same as ' + BASE.short.toLowerCase();
+    if (r[3] === 'less' && bv > 0 && fv < bv - 1e-9) chip = r[4] === 'late' ? (bv - fv) + ' fewer than ' + BASE.short.toLowerCase() : ((bv - fv) / bv * 100).toFixed(1) + '% ' + r[4] + ' than ' + BASE.short.toLowerCase();
+    else if (r[3] === 'more' && fv > bv) chip = '+' + (fv - bv) + ' ' + r[4] + ' more than ' + BASE.short.toLowerCase();
+    else if (fv > bv + 1e-9) chip = '<span class="delta-bad">worse than ' + BASE.short.toLowerCase() + '</span>';
+    const good = chip.indexOf('same') !== 0 && chip.indexOf('delta-bad') < 0;
+    const others = P.filter(p => p !== front).map((p, i) => '<span>' + p.short + ' <b class="p' + (p === PERFECT ? 0 : 2) + '">' + r[1](p.summary) + '</b></span>').join('');
+    return '<div class="tile"><div class="k">' + r[0] + '</div><div class="v">' + f + '</div><div class="cmp">' + others + '<span>' + (good ? '<span class="delta-good">' + chip + '</span>' : chip) + '</span></div></div>';
   }).join('');
 })();
 
 /* ---------- cumulative curve ---------- */
 (function curve() {
   const svg = $('#curve'), W = 1000, H = 330, L = 44, R = 18, T = 14, B = 34;
-  const M = D.modules.length;
-  const tmax = Math.ceil(Math.max(S.app.makespan, S.perfect.makespan) / 60 / 4) * 4 * 60;
+  const tmax = Math.ceil(tmaxAll / 60 / 4) * 4 * 60;
   const x = t => L + t / tmax * (W - L - R), y = c => T + (1 - c / M) * (H - T - B);
-  const ends = k => D.modules.map(m => m[k]).sort((a, b) => a - b);
-  const path = k => {
-    const e = ends(k); let d = 'M' + x(0) + ' ' + y(0);
+  const path = ends => {
+    const e = ends.slice().sort((a, b) => a - b); let d = 'M' + x(0) + ' ' + y(0);
     e.forEach((t, i) => { d += 'L' + x(t) + ' ' + y(i) + 'L' + x(t) + ' ' + y(i + 1); });
     return d + 'L' + x(tmax) + ' ' + y(M);
   };
   let g = '';
   for (let c = 0; c <= M; c += (M > 60 ? 10 : 5)) g += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(c) + '" y2="' + y(c) + '" stroke="var(--grid)"/><text x="' + (L - 8) + '" y="' + (y(c) + 4) + '" text-anchor="end">' + c + '</text>';
   for (let t = 0; t <= tmax; t += D.dayLen) { const di = t / D.dayLen; g += '<line x1="' + x(t) + '" x2="' + x(t) + '" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--grid)"/><text x="' + (x(t) + 4) + '" y="' + (H - 14) + '">' + (D.dayLabels[di] || '') + '</text>'; }
-  g += '<path d="' + path('appEnd') + '" fill="none" stroke="var(--accent-2)" stroke-width="2" stroke-linejoin="round"/>';
-  g += '<path d="' + path('bestEnd') + '" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>';
-  g += '<line id="cross" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--fg-3)" visibility="hidden"/><g id="crossTxt"></g><rect id="hit" x="' + L + '" y="' + T + '" width="' + (W - L - R) + '" height="' + (H - T - B) + '" fill="transparent"/>';
+  const order = P.slice().reverse(); // draw the perfect line last so it stays visible
+  order.forEach(p => { g += '<path d="' + path(p.ends) + '" fill="none" stroke="var(' + p.color + ')" stroke-width="' + (p === PERFECT ? 2.5 : 2) + '" stroke-linejoin="round"/>'; });
+  g += '<line id="cross" y1="' + T + '" y2="' + (H - B) + '" stroke="var(--fg-3)" visibility="hidden"/><rect id="hit" x="' + L + '" y="' + T + '" width="' + (W - L - R) + '" height="' + (H - T - B) + '" fill="transparent"/>';
   svg.innerHTML = g;
-  const count = (k, t) => D.modules.filter(m => m[k] <= t + 1e-9).length;
+  $('#legend').innerHTML = P.map(p => '<span><i style="background:var(' + p.color + ')"></i>' + p.label + '</span>').join('');
+  const count = (ends, t) => ends.filter(e => e <= t + 1e-9).length;
   const hit = $('#hit'), cross = $('#cross'), tip = $('#tip');
   hit.addEventListener('pointermove', ev => {
     const r = svg.getBoundingClientRect(), px = (ev.clientX - r.left) / r.width * W;
     const t = Math.max(0, Math.min(tmax, (px - L) / (W - L - R) * tmax));
     cross.setAttribute('x1', x(t)); cross.setAttribute('x2', x(t)); cross.setAttribute('visibility', 'visible');
-    const a = count('appEnd', t), b = count('bestEnd', t);
     tip.hidden = false;
-    tip.innerHTML = '<b>' + clock(Math.round(t)) + '</b><dl><dt>Perfect</dt><dd>' + b + ' orders done</dd><dt>App</dt><dd>' + a + ' orders done</dd><dt>Difference</dt><dd>' + (b - a >= 0 ? '+' : '') + (b - a) + '</dd></dl>';
+    tip.innerHTML = '<b>' + clock(Math.round(t)) + '</b><dl>' + P.map(p => '<dt>' + p.short + '</dt><dd>' + count(p.ends, t) + ' orders done</dd>').join('') + '</dl>';
     tip.style.left = Math.min(ev.clientX + 14, innerWidth - 320) + 'px'; tip.style.top = (ev.clientY + 14) + 'px';
   });
   hit.addEventListener('pointerleave', () => { cross.setAttribute('visibility', 'hidden'); tip.hidden = true; });
 })();
 
 /* ---------- gantt ---------- */
-const modOrder = (k) => { const idx = D.modules.map((m, i) => i).sort((a, b) => D.modules[a][k] - D.modules[b][k]); const rank = new Array(idx.length); idx.forEach((m, r) => rank[m] = r); return rank; };
+const modRank = ends => { const idx = ends.map((e, i) => i).sort((a, b) => ends[a] - ends[b]); const rank = new Array(idx.length); idx.forEach((m, r) => rank[m] = r); return rank; };
 function hex(c) { const s = getComputedStyle(document.documentElement).getPropertyValue(c).trim(); return [1, 3, 5].map(i => parseInt(s.substr(i, 2), 16)); }
 function ramp(p) { const a = hex('--ramp-early'), b = hex('--ramp-late'); return 'rgb(' + a.map((v, i) => Math.round(v + (b[i] - v) * p)).join(',') + ')'; }
 const ganttState = { scale: 0.3 };
-const tmaxG = Math.ceil((Math.max(S.app.makespan, S.perfect.makespan) + 120) / 60) * 60;
-function renderGantt(el, view, endKey) {
-  const sc = ganttState.scale, rank = modOrder(endKey), M = D.modules.length;
+const tmaxG = Math.ceil((tmaxAll + 120) / 60) * 60;
+function renderGantt(el, plan) {
+  const sc = ganttState.scale, rank = modRank(plan.ends);
   const width = Math.ceil(tmaxG * sc) + 112;
   let h = '<div style="width:' + width + 'px"><div class="axis">';
   const step = sc >= 0.55 ? 60 : sc >= 0.28 ? 120 : 240;
@@ -266,9 +284,9 @@ function renderGantt(el, view, endKey) {
   D.machines.forEach((name, k) => {
     h += '<div class="lane"><span class="name">' + name + '</span>';
     for (let t = 0; t <= tmaxG; t += D.dayLen) h += '<div class="day-line" style="left:' + (112 + t * sc) + 'px"></div>';
-    D.downtime.filter(d => d[0] === k).forEach(d => h += '<div class="down" title="Disruption ' + clock(d[1]) + ' to ' + clock(d[2], true) + '" style="left:' + (112 + d[1] * sc) + 'px;width:' + Math.max(2, (d[2] - d[1]) * sc) + 'px"></div>');
-    view.jobs.filter(j => j[0] === k).forEach(j => {
-      const [, ji, s, e, su, m, closes, meas] = j;
+    D.downtime.filter(d => d[0] === k).forEach(d => h += '<div class="down" style="left:' + (112 + d[1] * sc) + 'px;width:' + Math.max(2, (d[2] - d[1]) * sc) + 'px"></div>');
+    plan.view.jobs.filter(j => j[0] === k).forEach(j => {
+      const ji = j[1], s = j[2], e = j[3], su = j[4], m = j[5], closes = j[6], meas = j[7];
       if (su > 0) h += '<div class="setup" style="left:' + (112 + (s - su) * sc) + 'px;width:' + su * sc + 'px"></div>';
       const w = Math.max(2, (e - s) * sc);
       h += '<div class="blk' + (closes ? ' close' : '') + (meas ? ' mea' : ' est') + '" data-m="' + m + '" data-j="' + ji + '" data-s="' + s + '" data-e="' + e + '" data-su="' + su + '" data-k="' + k + '" style="left:' + (112 + s * sc) + 'px;width:' + w + 'px;background:' + ramp(rank[m] / Math.max(1, M - 1)) + '">' + (w > 34 ? D.jobBoxes[ji] : '') + '</div>';
@@ -282,32 +300,36 @@ function wire(el) {
   const tip = $('#tip');
   el.addEventListener('pointerover', ev => {
     const b = ev.target.closest('.blk'); if (!b) return;
-    const m = +b.dataset.m; el.classList.add('dim');
+    const m = +b.dataset.m; document.querySelectorAll('.gantt').forEach(g => g.classList.add('dim'));
     document.querySelectorAll('.gantt .blk').forEach(x => x.classList.toggle('hl', +x.dataset.m === m));
-    const ji = +b.dataset.j, mod = D.modules[m];
+    const ji = +b.dataset.j;
     tip.hidden = false;
-    tip.innerHTML = '<b>Box ' + D.jobBoxes[ji] + '</b> · ' + D.jobMaterials[ji] + '<dl><dt>Machine</dt><dd>' + D.machines[+b.dataset.k] + '</dd><dt>Runs</dt><dd>' + clock(+b.dataset.s) + ' → ' + clock(+b.dataset.e, true) + '</dd><dt>Length</dt><dd>' + (+b.dataset.e - +b.dataset.s) + ' min' + (+b.dataset.su ? ' (+' + b.dataset.su + ' changeover)' : '') + '</dd><dt>Order</dt><dd class="mono">' + mod.id + '</dd><dt>Order done</dt><dd>' + clock(mod.bestEnd, true) + ' (perfect) · ' + clock(mod.appEnd, true) + ' (app)</dd></dl>';
+    tip.innerHTML = '<b>Box ' + D.jobBoxes[ji] + '</b> · ' + D.jobMaterials[ji] + '<dl><dt>Machine</dt><dd>' + D.machines[+b.dataset.k] + '</dd><dt>Runs</dt><dd>' + clock(+b.dataset.s) + ' → ' + clock(+b.dataset.e, true) + '</dd><dt>Length</dt><dd>' + (+b.dataset.e - +b.dataset.s) + ' min' + (+b.dataset.su ? ' (+' + b.dataset.su + ' changeover)' : '') + '</dd><dt>Order</dt><dd class="mono">' + D.modules[m].id + '</dd>' + P.map(p => '<dt>Order done, ' + p.short.toLowerCase() + '</dt><dd>' + clock(p.ends[m], true) + '</dd>').join('') + '</dl>';
   });
-  el.addEventListener('pointermove', ev => { tip.style.left = Math.min(ev.clientX + 14, innerWidth - 320) + 'px'; tip.style.top = Math.min(ev.clientY + 14, innerHeight - 200) + 'px'; });
+  el.addEventListener('pointermove', ev => { tip.style.left = Math.min(ev.clientX + 14, innerWidth - 320) + 'px'; tip.style.top = Math.min(ev.clientY + 14, innerHeight - 220) + 'px'; });
   el.addEventListener('pointerout', ev => { if (ev.target.closest('.blk')) { document.querySelectorAll('.gantt').forEach(g => g.classList.remove('dim')); tip.hidden = true; } });
 }
-function drawAll() { renderGantt($('#ganttA'), D.perfect, 'bestEnd'); renderGantt($('#ganttB'), D.app, 'appEnd'); }
-drawAll(); wire($('#ganttA')); wire($('#ganttB'));
+const gantts = $('#gantts');
+gantts.innerHTML = P.map((p, i) => '<h2 class="g-title">' + p.label + (i === 0 ? '' : ' (same scale)') + '</h2><div class="gantt-scroll" id="scroll' + i + '"><div class="gantt" id="gantt' + i + '"></div></div>').join('');
+function drawAll() { P.forEach((p, i) => renderGantt($('#gantt' + i), p)); }
+drawAll(); P.forEach((p, i) => wire($('#gantt' + i)));
 document.querySelectorAll('.toolbar button').forEach(b => b.addEventListener('click', () => {
   const z = b.dataset.z;
   if (z === 'in') ganttState.scale = Math.min(2, ganttState.scale * 1.3);
   else if (z === 'out') ganttState.scale = Math.max(0.08, ganttState.scale / 1.3);
-  else ganttState.scale = Math.max(0.08, ($('#scrollA').clientWidth - 130) / tmaxG);
+  else ganttState.scale = Math.max(0.08, ($('#scroll0').clientWidth - 130) / tmaxG);
   drawAll();
 }));
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', drawAll);
 
 /* ---------- table + notes ---------- */
 (function table() {
-  const rows = D.modules.map((m, i) => [m, i]).sort((a, b) => a[0].bestEnd - b[0].bestEnd);
-  $('#mods tbody').innerHTML = rows.map(([m]) => {
-    const d = m.appEnd - m.bestEnd;
-    return '<tr><td class="mono">' + m.id + '</td><td>' + m.customer + '</td><td class="num">' + m.parts + '</td><td class="num">' + fmtInt(m.work) + '</td><td class="num">' + clock(m.bestEnd, true) + '</td><td class="num">' + clock(m.appEnd, true) + '</td><td class="num">' + (d > 0 ? '<span class="delta-good">' + fmtInt(d) + ' min</span>' : d < 0 ? '<span class="delta-bad">' + fmtInt(-d) + ' min sooner</span>' : '—') + '</td></tr>';
+  const order = D.modules.map((m, i) => i).sort((a, b) => PERFECT.ends[a] - PERFECT.ends[b]);
+  const gainCol = MID ? ['Gain vs ' + BASE.short.toLowerCase(), i => BASE.ends[i] - MID.ends[i]] : ['Later than perfect by', i => BASE.ends[i] - PERFECT.ends[i]];
+  $('#mods thead').innerHTML = '<tr><th>Master order</th><th>Customer</th><th class="num">Parts</th><th class="num">Work (min)</th>' + P.map(p => '<th class="num">' + p.short + ' done</th>').join('') + '<th class="num">' + gainCol[0] + '</th></tr>';
+  $('#mods tbody').innerHTML = order.map(i => {
+    const m = D.modules[i], d = gainCol[1](i);
+    return '<tr><td class="mono">' + m.id + '</td><td>' + m.customer + '</td><td class="num">' + m.parts + '</td><td class="num">' + fmtInt(m.work) + '</td>' + P.map(p => '<td class="num">' + clock(p.ends[i], true) + '</td>').join('') + '<td class="num">' + (d > 0 ? '<span class="delta-good">' + fmtInt(d) + ' min sooner</span>' : d < 0 ? '<span class="delta-bad">' + fmtInt(-d) + ' min later</span>' : '—') + '</td></tr>';
   }).join('');
   $('#notes').innerHTML = D.notes.map(n => '<p>' + n + '</p>').join('');
 })();

@@ -55,7 +55,8 @@ export function Header({
   onHelp: () => void;
   onReport: () => void;
 }) {
-  const { jobs, planning, replanNow, clearData, report } = useStore();
+  const { jobs, planning, improving, progress, replanNow, clearData, report } = useStore();
+  const busy = planning || improving;
   const { handleFiles, inputRef, openPicker } = useImport();
   const hasData = jobs.length > 0;
 
@@ -83,7 +84,7 @@ export function Header({
       <div className="flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2 lg:px-6">
         <div className="flex shrink-0 items-center gap-3">
           <div className="relative">
-            {planning && <span className="absolute inset-0 rounded-lg bg-blue-500" style={{ animation: 'ping-soft 1.4s ease-out infinite' }} />}
+            {busy && <span className="absolute inset-0 rounded-lg bg-blue-500" style={{ animation: 'ping-soft 1.4s ease-out infinite' }} />}
             <div className="shine relative flex h-9 w-9 items-center justify-center overflow-hidden rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 text-[11px] font-bold text-white shadow-[0_0_24px_-4px_rgba(59,130,246,0.85)]">
               CNC
             </div>
@@ -132,10 +133,10 @@ export function Header({
           </Button>
           {hasData && (
             <>
-              <Button onClick={onPrint} title="Print run sheets">
+              <Button onClick={onPrint} disabled={improving} title={improving ? 'Available when the optimizer has finished' : 'Print run sheets'}>
                 <Printer className="h-3.5 w-3.5 text-emerald-400" /> <span className="hidden 2xl:inline">Print</span>
               </Button>
-              <Button onClick={onExport} title="Export the plan to Excel">
+              <Button onClick={onExport} disabled={improving} title={improving ? 'Available when the optimizer has finished' : 'Export the plan to Excel'}>
                 <Download className="h-3.5 w-3.5 text-sky-400" /> <span className="hidden 2xl:inline">Export</span>
               </Button>
             </>
@@ -148,9 +149,9 @@ export function Header({
               <Button onClick={onReport} title={report?.fileName ?? 'Import report'}>
                 Report
               </Button>
-              <Button variant="primary" onClick={replanNow} disabled={planning} title="Re-run the scheduler">
-                <RotateCcw className={`h-3.5 w-3.5 ${planning ? 'animate-spin' : ''}`} />
-                {planning ? 'Planning…' : 'Re-optimize'}
+              <Button variant="primary" onClick={replanNow} disabled={busy} title="Re-run the scheduler">
+                <RotateCcw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
+                {improving ? `Optimizing ${Math.round(progress * 100)}%` : planning ? 'Planning…' : 'Re-optimize'}
               </Button>
               <Button
                 variant="ghost"
@@ -169,6 +170,11 @@ export function Header({
       {planning && (
         <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden">
           <div className="h-full w-1/4 bg-gradient-to-r from-transparent via-blue-400 to-transparent" style={{ animation: 'progress-slide 1.1s linear infinite' }} />
+        </div>
+      )}
+      {improving && (
+        <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden" role="progressbar" aria-label="Optimizing the plan" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
+          <div className="h-full bg-gradient-to-r from-blue-500 to-emerald-400" style={{ width: `${Math.max(2, progress * 100)}%`, transition: 'width .25s linear' }} />
         </div>
       )}
     </header>

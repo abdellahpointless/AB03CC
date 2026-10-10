@@ -16,7 +16,7 @@ export const TIER = 25;
 /** The earliest production date counts this much more than the latest one (a gentle nudge, not a rule). */
 export const DATE_SPREAD = 0.2;
 /** A master order that cannot be completed yet because the carpenter is not done counts for less. */
-export const CARPENTER_WEIGHT: Record<CarpenterDelayMode, number> = { off: 1, soft: 0.15, hard: 0.04 };
+export const CARPENTER_WEIGHT: Record<CarpenterDelayMode, number> = { off: 1, soft: 0.85, hard: 0.04 };
 
 const dateKey = (j: Job) => {
   const d = j.plannedDate ?? j.dueDate;

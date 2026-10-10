@@ -43,8 +43,9 @@ export function loadInputs(paths: string[], builtinPartList?: string): Inputs {
   return { jobs, carpenter, partEntries, partTimes };
 }
 
-export function runApp(inp: Inputs, settings: PlannerSettings = defaultSettings()): PlanResult {
-  return planProduction(inp.jobs, settings, {}, inp.carpenter, inp.partTimes);
+/** The app's plan. By default the earlier heuristic ("classic"), which is what the exports being judged were made with. */
+export function runApp(inp: Inputs, settings: PlannerSettings = defaultSettings(), engine: PlannerSettings['planningMode'] = 'classic'): PlanResult {
+  return planProduction(inp.jobs, { ...settings, planningMode: engine }, {}, inp.carpenter, inp.partTimes);
 }
 
 export { instanceFromPlan };
@@ -76,7 +77,7 @@ export function loadSettings(flags: Flags): PlannerSettings {
 export function prepare(flags: Flags) {
   const inp = loadInputs(flags.files, 'src/data/builtin-part-times.json');
   const settings = loadSettings(flags);
-  const plan = runApp(inp, settings);
+  const plan = runApp(inp, settings, (flags.get('engine', 'classic') as PlannerSettings['planningMode']) ?? 'classic');
   const { inst, appQueues } = instanceFromPlan(plan, settings, inp.partTimes);
   return { inp, settings, plan, inst, appQueues };
 }

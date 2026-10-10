@@ -137,7 +137,7 @@ export interface QueueSearch {
   weighted(): number;
   anneal(iters: number, T0: number, T1: number, rng: Rng, log?: (s: string) => void, tick?: (done: number) => void): void;
   /** deterministic steepest-descent sweeps over every relocation; returns the number of improvements */
-  descend(maxPasses: number, rng: Rng): number;
+  descend(maxPasses: number, rng: Rng, maxEvals?: number): number;
   best(): { queues: Queues; cost: number };
   load(q: Queues): void;
   /** recompute everything from scratch and compare with the incremental values (for tests) */
@@ -555,8 +555,9 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
     return s;
   }
 
-  function descend(maxPasses: number, rng: Rng): number {
+  function descend(maxPasses: number, rng: Rng, maxEvals = Infinity): number {
     let improvements = 0;
+    let evals = 0;
     for (let pass = 0; pass < maxPasses; pass++) {
       let improved = false;
       const order = freeJobs.slice();
@@ -567,6 +568,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
         order[x] = t;
       }
       for (const j of order) {
+        if (evals >= maxEvals) return improvements;
         const base = objective();
         let bestD = -1e-9;
         let bestK = -1;
@@ -597,6 +599,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
             finishModules();
             const d = objective() - base;
             restoreSnaps();
+            evals++;
             if (d < bestD) {
               bestD = d;
               bestK = k2;
@@ -693,6 +696,13 @@ export interface OptimizeOptions {
   log?: (s: string) => void;
   /** called now and then with the share of the planned work that is done (0..1) */
   onProgress?: (fraction: number) => void;
+  /** annealing starts at this share of the typical uphill step (default 0.15) and cools to 1/coolBy of that (default 100) */
+  heat?: number;
+  coolBy?: number;
+  /** stage A: how many of the starting module orders get annealed (best first); default all */
+  orderStarts?: number;
+  /** at most this many candidate moves in the final descent (it grows with the cube of the part count); default 150000 */
+  descendEvals?: number;
 }
 
 export interface OptimizeResult {
@@ -735,7 +745,7 @@ export function optimize(inst: Instance, opts: OptimizeOptions = {}): OptimizeRe
   const queueIters = opts.queueIters ?? 600000;
   const restarts = opts.restarts ?? 3;
   const orders = startingOrders(inst);
-  const total = orders.length * orderIters * ORDER_COST + restarts * queueIters;
+  const total = Math.min(orders.length, opts.orderStarts ?? orders.length) * orderIters * ORDER_COST + restarts * queueIters;
   let done = 0;
   let reported = -1;
   const report = (work: number) => {
@@ -747,8 +757,16 @@ export function optimize(inst: Instance, opts: OptimizeOptions = {}): OptimizeRe
     }
   };
 
+  if (inst.n === 0 || inst.fixed.every(f => f >= 0)) {
+    // every part is tied to a machine: only the order of the tied parts could change, which the decoder already settles
+    const q = candidates[0] ?? makeDecoder(inst).decode(Int32Array.from({ length: inst.M }, (_, i) => i));
+    const m = evaluate(inst, q);
+    return { queues: q, objective: objectiveValue(inst, q, weights), sumW: m.sumW, sumC: m.sumC, makespan: m.makespan, setupTotal: m.setupTotal };
+  }
+
   // stage A: module orders
-  for (const init of orders) {
+  const ranked = orders.map(o => ({ o, c: dec.cost(o) })).sort((a, b) => a.c - b.c).map(x => x.o);
+  for (const init of ranked.slice(0, opts.orderStarts ?? ranked.length)) {
     const r = annealOrder(inst, init, orderIters, rng, undefined, n => report(n * ORDER_COST));
     log?.(`stage A start -> weighted sum ${r.cost.toFixed(0)}`);
     candidates.push(dec.decode(r.order));
@@ -762,10 +780,10 @@ export function optimize(inst: Instance, opts: OptimizeOptions = {}): OptimizeRe
   for (let r = 0; r < restarts; r++) {
     const startQ = r === 0 ? scored[0].q : r === 1 && scored[1] ? scored[1].q : overallBest.queues;
     search.load(startQ);
-    const T0 = search.sampleTemperature(rng) * 0.5;
-    search.anneal(queueIters, Math.max(1, T0), Math.max(0.05, T0 / 300), rng, log, report);
+    const T0 = search.sampleTemperature(rng) * (opts.heat ?? 0.15);
+    search.anneal(queueIters, Math.max(1, T0), Math.max(0.05, T0 / (opts.coolBy ?? 100)), rng, log, report);
     search.load(search.best().queues);
-    search.descend(4, rng);
+    search.descend(4, rng, opts.descendEvals ?? 150000);
     const b = search.best();
     log?.(`restart ${r}: objective ${b.cost.toFixed(1)}`);
     if (b.cost < overallBest.cost) overallBest = { queues: b.queues, cost: b.cost };

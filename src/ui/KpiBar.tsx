@@ -1,5 +1,6 @@
 import { Hammer } from 'lucide-react';
-import { formatDuration } from '../core/calendar';
+import { WorkCalendar, formatDuration } from '../core/calendar';
+import { useStore } from '../state/store';
 import { CountUp } from './CountUp';
 import type { PlanResult } from '../core/types';
 
@@ -16,13 +17,37 @@ function Kpi({ label, value, sub, tone = 'text-white' }: { label: string; value:
 }
 
 export function KpiBar({ plan, onCarpenter }: { plan: PlanResult; onCarpenter: () => void }) {
+  const { settings, improving } = useStore();
   const k = plan.kpis;
   const busiest = Object.entries(k.finishPerMachine).sort((a, b) => b[1] - a[1])[0];
+  const dayLen = new WorkCalendar(settings.calendar).dayLen;
+  const mos = Object.values(plan.moSync).filter(m => !m.carpenterBlocked);
+  const doneBy = (day: number) => mos.filter(m => m.lastFinish <= day * dayLen).length;
+  const opt = plan.optimization;
+  const gain = opt && opt.classicSumMo > 0 ? ((opt.classicSumMo - k.sumMoCompletion) / opt.classicSumMo) * 100 : 0;
+  const day2Gain = opt ? opt.doneByDay[1][1] - opt.doneByDay[1][0] : 0;
   return (
     <div className="flex flex-wrap items-center gap-x-8 gap-y-3 glass rounded-xl border border-slate-800 px-5 py-3">
       <Kpi label="Busiest machine" value={<CountUp value={k.makespanMinutes} suffix="m" />} sub={busiest ? `${busiest[0]} · ${(k.makespanMinutes / 60).toFixed(1)}h` : undefined} tone="text-rose-400" />
       <Kpi label="Jobs planned" value={<CountUp value={k.plannedJobs} />} sub={`${k.plannedHours}h · ${k.measuredJobs} real / ${k.estimatedJobs} est.`} />
-      <Kpi label="Sum MO completion" value={<CountUp value={k.sumMoCompletion} suffix="m" />} sub={`avg ${k.avgMoCompletion}m`} tone="text-sky-300" />
+      <Kpi
+        label="Sum MO completion"
+        value={<CountUp value={k.sumMoCompletion} suffix="m" />}
+        sub={
+          <>
+            avg {k.avgMoCompletion}m
+            {opt && gain >= 0.05 && <span className="ml-1.5 font-semibold text-emerald-400">{gain.toFixed(1)}% sooner than the basic plan</span>}
+            {improving && <span className="ml-1.5 text-slate-400">still improving…</span>}
+          </>
+        }
+        tone="text-sky-300"
+      />
+      <Kpi
+        label="Orders done by day 1 / 2"
+        value={<><CountUp value={doneBy(1)} /> / <CountUp value={doneBy(2)} /></>}
+        sub={<>of {mos.length}{day2Gain > 0 && <span className="ml-1.5 font-semibold text-emerald-400">+{day2Gain} by day 2 vs the basic plan</span>}</>}
+        tone="text-emerald-300"
+      />
       <Kpi label="Total changeover" value={<CountUp value={k.changeoverMinutes} suffix="m" />} tone="text-amber-300" />
       <Kpi label="Setup saved" value={<CountUp value={k.setupSavedMinutes} prefix="+" suffix="m" />} tone="text-emerald-400" />
       <Kpi label="Synchronized MOs" value={<><CountUp value={k.synchronizedMos} />/{k.totalMos}</>} tone="text-emerald-300" />

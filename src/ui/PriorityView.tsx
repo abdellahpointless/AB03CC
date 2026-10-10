@@ -198,7 +198,8 @@ export function PriorityView() {
         <div>
           <h2 className="text-lg font-extrabold uppercase tracking-wide text-white">Priority matrix</h2>
           <p className="mt-0.5 max-w-3xl text-xs text-slate-400">
-            Levels are evaluated top-down: a job matching a level-1 rule always beats one that doesn't; only when jobs tie does level 2 decide, and so on. Several rules can share a level.
+            A master order matching a level-1 rule is finished before the ones that don't; level 2 decides among the rest, and so on, like digits in a number. Several rules can share a level.
+            Ranking rules fine-tune the rest: production date gives closer dates a slight edge, while finishing the cheapest orders first is what the optimizer does anyway.
             Drag cards between levels or use the buttons. Changes re-plan automatically.
           </p>
         </div>

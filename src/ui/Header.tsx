@@ -14,7 +14,7 @@ import {
   Upload,
 } from 'lucide-react';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
-import { useStore } from '../state/store';
+import { useProgress, useStore } from '../state/store';
 import { Button } from './kit';
 import { useImport } from './useImport';
 
@@ -55,7 +55,8 @@ export function Header({
   onHelp: () => void;
   onReport: () => void;
 }) {
-  const { jobs, planning, improving, progress, replanNow, clearData, report } = useStore();
+  const { jobs, planning, improving, replanNow, clearData, report } = useStore();
+  const progress = useProgress();
   const busy = planning || improving;
   const { handleFiles, inputRef, openPicker } = useImport();
   const hasData = jobs.length > 0;

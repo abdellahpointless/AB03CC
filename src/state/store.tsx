@@ -99,8 +99,6 @@ interface Store {
   planning: boolean;
   /** a quick plan is on screen and the optimizer is still improving it */
   improving: boolean;
-  /** how far the optimizer is (0..1) */
-  progress: number;
   planError: string | null;
   toasts: Toast[];
   partList: PartListInfo;
@@ -125,6 +123,12 @@ interface Store {
 }
 
 const Ctx = createContext<Store | null>(null);
+/** The optimizer's progress changes many times per second, so it has its own context: only the top bar listens. */
+const ProgressCtx = createContext(0);
+
+export function useProgress(): number {
+  return useContext(ProgressCtx);
+}
 
 export function useStore(): Store {
   const v = useContext(Ctx);
@@ -385,7 +389,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       previousPlan,
       planning,
       improving,
-      progress,
       planError,
       toasts,
       partList,
@@ -428,8 +431,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       notify,
       dismissToast,
     }),
-    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, improving, progress, planError, toasts, partList, partCoverage, importFile, loadDemo, clearData, replan, notify, dismissToast],
+    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, improving, planError, toasts, partList, partCoverage, importFile, loadDemo, clearData, replan, notify, dismissToast],
   );
 
-  return <Ctx.Provider value={store}>{children}</Ctx.Provider>;
+  return (
+    <Ctx.Provider value={store}>
+      <ProgressCtx.Provider value={progress}>{children}</ProgressCtx.Provider>
+    </Ctx.Provider>
+  );
 }

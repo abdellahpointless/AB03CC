@@ -20,7 +20,7 @@ import { Toasts } from './ui/Toasts';
 type Dialog = 'settings' | 'print' | 'help' | 'report' | 'carpenter' | null;
 
 export default function App() {
-  const { jobs, plan, planning, planError, settings } = useStore();
+  const { jobs, plan, planning, planError, settings, notify } = useStore();
   const [view, setView] = useState<View>('gantt');
   const [dialog, setDialog] = useState<Dialog>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
@@ -41,7 +41,10 @@ export default function App() {
         exceptionCount={exceptionCount}
         onSettings={() => setDialog('settings')}
         onPrint={() => setDialog('print')}
-        onExport={() => plan && downloadPlan(plan, settings)}
+        onExport={async () => {
+          if (!plan) return;
+          if ((await downloadPlan(plan, settings)) === 'failed') notify('The plan could not be saved as an Excel file here.', 'error');
+        }}
         onHelp={() => setDialog('help')}
         onReport={() => setDialog('report')}
       />

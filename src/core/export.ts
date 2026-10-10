@@ -97,7 +97,37 @@ export function buildWorkbook(plan: PlanResult, settings: PlannerSettings): XLSX
   return wb;
 }
 
-export function downloadPlan(plan: PlanResult, settings: PlannerSettings) {
-  const stamp = new Date().toISOString().slice(0, 10);
-  XLSX.writeFile(buildWorkbook(plan, settings), `cnc-plan-${stamp}.xlsx`);
+/** The claude.ai artifact viewer blocks ordinary downloads; it offers files through this capability instead. */
+interface ViewerDownloads {
+  save(request: { filename: string; data: ArrayBuffer }): Promise<{ status: string }>;
+}
+interface ViewerWindow {
+  claude?: { use?: (name: string) => Promise<unknown> };
+}
+
+export type ExportOutcome = 'saved' | 'declined' | 'failed';
+
+/** Saves the plan as an Excel file: through the viewer's save prompt when hosted in one, as a normal download otherwise. */
+export async function downloadPlan(plan: PlanResult, settings: PlannerSettings): Promise<ExportOutcome> {
+  const filename = `cnc-plan-${new Date().toISOString().slice(0, 10)}.xlsx`;
+  const wb = buildWorkbook(plan, settings);
+  const viewer = (window as unknown as ViewerWindow).claude;
+  if (typeof viewer?.use === 'function') {
+    try {
+      const downloads = (await viewer.use('downloads')) as ViewerDownloads | null;
+      if (downloads) {
+        const data = XLSX.write(wb, { bookType: 'xlsx', type: 'array' }) as ArrayBuffer;
+        await downloads.save({ filename, data });
+        return 'saved';
+      }
+    } catch (err) {
+      return (err as { code?: string } | null)?.code === 'declined' ? 'declined' : 'failed';
+    }
+  }
+  try {
+    XLSX.writeFile(wb, filename);
+    return 'saved';
+  } catch {
+    return 'failed';
+  }
 }

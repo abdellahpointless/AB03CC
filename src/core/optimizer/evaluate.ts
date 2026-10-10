@@ -33,12 +33,13 @@ export function evaluate(inst: Instance, queues: Queues): Metrics {
   const machineSetup = new Array<number>(K).fill(0);
   let setupTotal = 0;
   for (let k = 0; k < K; k++) {
-    let t = 0;
+    let t = inst.t0[k];
     let prev = -1;
     for (const j of queues[k]) {
       const d = dur[j * K + k];
       if (d <= 0) throw new Error(`job ${inst.jobs[j].id} cannot run on ${inst.machineIds[k]}`);
-      const s = prev < 0 ? 0 : setup[prev * n + j];
+      const s = prev < 0 ? inst.firstSetup[k * n + j] : setup[prev * n + j];
+      if (inst.minStart[j] > t) t = inst.minStart[j];
       t = advance(inst, k, t, s, d);
       start[j] = last.start;
       end[j] = t;

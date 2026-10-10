@@ -13,7 +13,7 @@ export interface Decoder {
 }
 
 export function makeDecoder(inst: Instance): Decoder {
-  const { n, K, M, dur, setup, fixed, head, mod, hasDown } = inst;
+  const { n, K, M, dur, setup, fixed, head, mod, hasDown, minStart, firstSetup, t0 } = inst;
   // parts of every module: forced parts first, then longest first
   const parts: Int32Array[] = inst.modParts.map(list => {
     const free = Array.from(list).filter(j => fixed[j] < 0);
@@ -28,7 +28,7 @@ export function makeDecoder(inst: Instance): Decoder {
   const qs: number[][] = Array.from({ length: K }, () => []);
 
   function run(order: ArrayLike<number>, build: boolean): number {
-    avail.fill(0);
+    for (let k = 0; k < K; k++) avail[k] = t0[k];
     last.fill(-1);
     modEnd.fill(0);
     if (build) for (const q of qs) q.length = 0;
@@ -38,7 +38,8 @@ export function makeDecoder(inst: Instance): Decoder {
     for (let k = 0; k < K; k++) {
       const h = Array.from(head[k]).sort((a, b) => rank[mod[a]] - rank[mod[b]] || dur[a * K + k] - dur[b * K + k]);
       for (const j of h) {
-        const s = last[k] < 0 ? 0 : setup[last[k] * n + j];
+        const s = last[k] < 0 ? firstSetup[k * n + j] : setup[last[k] * n + j];
+        if (minStart[j] > avail[k]) avail[k] = minStart[j];
         avail[k] = hasDown[k] ? advance(inst, k, avail[k], s, dur[j * K + k]) : avail[k] + s + dur[j * K + k];
         endT[j] = avail[k];
         if (endT[j] > modEnd[mod[j]]) modEnd[mod[j]] = endT[j];
@@ -57,8 +58,9 @@ export function makeDecoder(inst: Instance): Decoder {
         let bestSetup = 0;
         for (let e = 0; e < el.length; e++) {
           const k = el[e];
-          const s = last[k] < 0 ? 0 : setup[last[k] * n + j];
-          const finish = hasDown[k] ? advance(inst, k, avail[k], s, dur[j * K + k]) : avail[k] + s + dur[j * K + k];
+          const s = last[k] < 0 ? firstSetup[k * n + j] : setup[last[k] * n + j];
+          const from = minStart[j] > avail[k] ? minStart[j] : avail[k];
+          const finish = hasDown[k] ? advance(inst, k, from, s, dur[j * K + k]) : from + s + dur[j * K + k];
           if (finish < bestFinish || (finish === bestFinish && s < bestSetup)) {
             bestFinish = finish;
             bestK = k;

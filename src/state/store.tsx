@@ -5,11 +5,13 @@ import { parseCarpenter } from '../core/parse/carpenter';
 import {
   buildPartTimeIndex,
   parsePartTimes,
+  partKey,
   partTimeCoverage,
   pickPartTimes,
   type PartTimeCoverage,
   type PartTimeEntry,
 } from '../core/parse/partTimes';
+import { buildPartTypeInfo, type PartTypeInfo } from '../core/partTypes';
 import { missingProductionColumns, parseProduction } from '../core/parse/production';
 import { detectKind, readRows } from '../core/parse/workbook';
 import { planProduction } from '../core/scheduler/plan';
@@ -19,6 +21,7 @@ import type {
   CarpenterPart,
   ImportReport,
   Job,
+  PartTimeMap,
   PlanResult,
   PlannerSettings,
   TimelineEvent,
@@ -103,6 +106,10 @@ interface Store {
   toasts: Toast[];
   partList: PartListInfo;
   partCoverage: PartTimeCoverage;
+  /** real minutes per part from the parts list, for the parts of the loaded workload */
+  partTimes: PartTimeMap;
+  /** standard part names found in the parts list, with how many parts of each the workload holds */
+  partTypes: PartTypeInfo[];
 
   importFile(file: File): Promise<ImportOutcome>;
   loadDemo(): void;
@@ -157,6 +164,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const partIndex = useMemo(() => buildPartTimeIndex(activeList?.entries ?? []), [activeList]);
   const partTimes = useMemo(() => pickPartTimes(partIndex, jobs), [partIndex, jobs]);
   const partCoverage = useMemo(() => partTimeCoverage(partIndex, jobs), [partIndex, jobs]);
+  const partTypes = useMemo(() => buildPartTypeInfo(activeList?.entries ?? [], jobs, partKey, partTimes), [activeList, jobs, partTimes]);
   const partList: PartListInfo = useMemo(
     () => ({
       source: importedList ? 'imported' : builtinList ? 'builtin' : 'none',
@@ -223,8 +231,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           setPlanError(m.error);
           return;
         }
+        // A plan is already on screen: wait for the optimized one instead of swapping the Gantt twice (that looked like jitter).
+        const keepCurrent = !m.final && planRef.current !== null && !resetPrevious.current;
         setPlanning(false);
-        accept(m.plan, m.id);
+        if (!keepCurrent) accept(m.plan, m.id);
         if (m.final) {
           busy.current = false;
           setImproving(false);
@@ -393,6 +403,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       toasts,
       partList,
       partCoverage,
+      partTimes,
+      partTypes,
       importFile,
       loadDemo,
       clearData,
@@ -431,7 +443,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       notify,
       dismissToast,
     }),
-    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, improving, planError, toasts, partList, partCoverage, importFile, loadDemo, clearData, replan, notify, dismissToast],
+    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, improving, planError, toasts, partList, partCoverage, partTimes, partTypes, importFile, loadDemo, clearData, replan, notify, dismissToast],
   );
 
   return (

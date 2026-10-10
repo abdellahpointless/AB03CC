@@ -152,6 +152,7 @@ function MachinesTab({ s, set }: TabProps) {
                   <NumberInput value={m.minNcMinutesPref ?? undefined} min={1} onChange={v => patch(m.id, { minNcMinutesPref: v ?? null })} />
                 </Field>
               </div>
+              <PartTypesEditor machine={m} patch={patch} />
               <div className="mt-3">
                 <Field label="Overflow materials" hint="Also accepted when 'Allow overflow' is enabled in Planning rules (comma separated).">
                   <input
@@ -173,6 +174,86 @@ function MachinesTab({ s, set }: TabProps) {
         </div>
       </Section>
     </>
+  );
+}
+
+function PartTypesEditor({ machine, patch }: { machine: MachineConfig; patch: (id: string, p: Partial<MachineConfig>) => void }) {
+  const { partTypes } = useStore();
+  const [open, setOpen] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+  const [q, setQ] = useState('');
+  const cfg = machine.partTypes ?? { restricted: false, allowed: {} };
+  const save = (next: typeof cfg) => patch(machine.id, { partTypes: next });
+  const inWorkload = partTypes.filter(t => t.small + t.big > 0).length;
+  const rows = partTypes.filter(t => (showAll || t.small + t.big > 0) && (!q || t.label.toLowerCase().includes(q.trim().toLowerCase())));
+  const ticked = Object.values(cfg.allowed).filter(a => a.small || a.big).length;
+  const setAll = (small: boolean, big: boolean) => save({ ...cfg, allowed: Object.fromEntries(partTypes.map(t => [t.key, { small, big }])) });
+  const toggle = (key: string, size: 'small' | 'big', on: boolean) => {
+    const cur = cfg.allowed[key] ?? { small: false, big: false };
+    save({ ...cfg, allowed: { ...cfg.allowed, [key]: { ...cur, [size]: on } } });
+  };
+  return (
+    <div className="mt-3 rounded-md border border-slate-800 bg-slate-950/40 p-2.5">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-300">
+          <input
+            type="checkbox"
+            className="accent-blue-500"
+            checked={cfg.restricted}
+            disabled={partTypes.length === 0}
+            onChange={e => {
+              const restricted = e.target.checked;
+              // switching on starts from "everything allowed", so nothing changes until a type is unticked
+              save({ restricted, allowed: restricted && ticked === 0 ? Object.fromEntries(partTypes.map(t => [t.key, { small: true, big: true }])) : cfg.allowed });
+              if (restricted) setOpen(true);
+            }}
+          />
+          Limit to chosen part types
+        </label>
+        <button className="text-[11px] text-blue-300 hover:text-blue-200" onClick={() => setOpen(o => !o)} disabled={partTypes.length === 0}>
+          {partTypes.length === 0 ? 'Import the parts time list to get part names' : open ? 'Hide' : cfg.restricted ? `${ticked} of ${partTypes.length} types ticked · edit` : 'Choose'}
+        </button>
+      </div>
+      {open && partTypes.length > 0 && (
+        <div className="mt-2">
+          <p className="mb-2 text-[11px] text-slate-500">
+            Part names come from the parts time list, without numbers ("Contact pin plate 001" is a Contact pin plate). Small = real time under 15 min per part, Big = 15 min or more. A part that is not in the list is only checked against the materials.
+          </p>
+          <div className="mb-2 flex flex-wrap items-center gap-1.5">
+            <input className={`${inputCls} w-44`} placeholder="Find a part type" value={q} onChange={e => setQ(e.target.value)} />
+            <Button size="sm" onClick={() => setAll(true, true)}>All</Button>
+            <Button size="sm" onClick={() => setAll(true, false)}>All small</Button>
+            <Button size="sm" onClick={() => setAll(false, true)}>All big</Button>
+            <Button size="sm" onClick={() => setAll(false, false)}>None</Button>
+            <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-400">
+              <input type="checkbox" className="accent-blue-500" checked={showAll} onChange={e => setShowAll(e.target.checked)} /> Also types only in the list ({partTypes.length - inWorkload})
+            </label>
+          </div>
+          <div className="max-h-64 overflow-auto rounded border border-slate-800">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-slate-900 text-[10px] uppercase tracking-wide text-slate-400">
+                <tr><th className="px-2 py-1 text-left">Part type</th><th className="px-2 py-1 text-right">In workload</th><th className="px-2 py-1">Small</th><th className="px-2 py-1">Big</th></tr>
+              </thead>
+              <tbody>
+                {rows.map(t => {
+                  const a = cfg.allowed[t.key] ?? { small: false, big: false };
+                  return (
+                    <tr key={t.key} className="border-t border-slate-800/80">
+                      <td className="px-2 py-1 text-slate-200">{t.label}</td>
+                      <td className="mono px-2 py-1 text-right text-[10px] text-slate-500">{t.small + t.big ? `${t.small} small · ${t.big} big` : '–'}</td>
+                      <td className="px-2 py-1 text-center"><input type="checkbox" className="accent-blue-500" checked={a.small} onChange={e => toggle(t.key, 'small', e.target.checked)} /></td>
+                      <td className="px-2 py-1 text-center"><input type="checkbox" className="accent-blue-500" checked={a.big} onChange={e => toggle(t.key, 'big', e.target.checked)} /></td>
+                    </tr>
+                  );
+                })}
+                {rows.length === 0 && <tr><td colSpan={4} className="px-2 py-3 text-center text-slate-500">No part type matches.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+          {!cfg.restricted && <p className="mt-1.5 text-[11px] text-amber-300/80">Switch on "Limit to chosen part types" for these choices to apply.</p>}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -356,7 +437,6 @@ function RulesTab({ s, set }: TabProps) {
       <Section title="Assignment rules">
         <div className="grid gap-2">
           <Toggle checked={s.keepErpAssignments} onChange={v => set({ keepErpAssignments: v })} label="Keep ERP machine assignments" hint="Jobs already assigned to one of your machines in the ERP stay there, at the head of its queue." />
-          <Toggle checked={s.excludeMasterOrders30000} onChange={v => set({ excludeMasterOrders30000: v })} label="Leave master orders 30000* for manual planning" hint="They appear under Exceptions, where you can assign them one by one." />
           <Toggle checked={s.allowHaas5Overflow} onChange={v => set({ allowHaas5Overflow: v })} label="Allow overflow materials on machines that define them" hint="By default HAAS - 5 may then also take ALU and PCGF." />
           <Toggle checked={s.fanuc2UsesIdealMinutes} onChange={v => set({ fanuc2UsesIdealMinutes: v })} label="Small-part limit uses ideal NC minutes" hint="Off: the limit is checked against efficiency-adjusted planned minutes instead." />
           <Toggle checked={s.restartJobOnEvent} onChange={v => set({ restartJobOnEvent: v })} label="Restart a job hit by a disruption" hint="Off: the job pauses and resumes after the disruption." />

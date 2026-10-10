@@ -1,6 +1,6 @@
-import { AlertOctagon, Gauge, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertOctagon, Siren, Gauge, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { WorkCalendar, formatClock, formatDuration } from '../core/calendar';
+import { WorkCalendar, formatClock, formatDuration, planStartOffset } from '../core/calendar';
 import type { ScheduledJob, TimelineEvent } from '../core/types';
 import { swatchFor, type ColorMode } from '../lib/colors';
 import { timeBasisNote } from '../lib/timeBasis';
@@ -59,6 +59,11 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
     const start = cal.toDate(0);
     return now.getTime() >= start.getTime() ? cal.fromDate(now) : null;
   }, [cal]);
+
+  const startOffset = planStartOffset(settings.calendar);
+  const urgent = settings.emergencies.filter(e => e.applied);
+  const urgentItems = plan ? Object.values(plan.queues).flat().filter(i => i.emergency) : [];
+  const urgentDone = urgentItems.reduce((m, i) => Math.max(m, i.endMinute), 0);
 
   const prevByJob = useMemo(() => {
     const map = new Map<string, ScheduledJob>();
@@ -142,6 +147,16 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
 
   return (
     <div className="space-y-3">
+      {urgent.length > 0 && (
+        <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-rose-700 bg-rose-950/50 px-4 py-2.5 text-xs text-rose-100">
+          <span className="flex items-center gap-2 font-bold uppercase tracking-wide">
+            <Siren className="h-4 w-4 animate-pulse text-rose-400" /> Emergency in the plan
+          </span>
+          <span className="mono">
+            {urgent.map(e => `SO ${e.salesOrder}${e.schedule !== null ? ` / schedule ${e.schedule}` : ''}`).join(' · ')} · {urgentItems.length} parts, done {urgentDone ? finishLabel(cal, urgentDone) : '—'}. Everything else waits for them.
+          </span>
+        </div>
+      )}
       <KpiBar plan={plan} onCarpenter={onCarpenter} />
 
       <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-800 bg-slate-900/70 px-4 py-2.5">
@@ -270,6 +285,13 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                       <div key={i} style={{ left: t.x }} className={`absolute top-0 h-full border-l ${t.major ? 'border-slate-700' : 'border-slate-900'}`} />
                     ))}
 
+                    {startOffset > 0 && (
+                      <div
+                        className="hatch pointer-events-none absolute top-0 z-[4] h-full border-r border-slate-600 bg-slate-800/60"
+                        style={{ left: 0, width: startOffset * pxPerMin }}
+                        title="Before the plan starts"
+                      />
+                    )}
                     {events.filter(ev => ev.id !== draft?.id).map(ev => (
                       <div key={ev.id}>
                         {ev.type !== 'rework' && <div
@@ -344,8 +366,8 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                                   top: 8,
                                   height: LANE_H - 16,
                                   background: sw.bg,
-                                  borderColor: hoverMo === it.job.masterOrder ? '#fff' : it.job.isRework ? '#fbbf24' : sw.border,
-                                  borderWidth: hoverMo === it.job.masterOrder ? 2 : 1,
+                                  borderColor: hoverMo === it.job.masterOrder ? '#fff' : it.emergency ? '#f43f5e' : it.job.isRework || it.kind === 'rework' ? '#fbbf24' : sw.border,
+                                  borderWidth: hoverMo === it.job.masterOrder || it.emergency ? 2 : 1,
                                   opacity: dim ? 0.25 : 1,
                                 } as React.CSSProperties}
                               >
@@ -410,12 +432,21 @@ function finishLabel(cal: WorkCalendar, minute: number): string {
   return `${iso.slice(8, 10)}/${iso.slice(5, 7)} ${iso.slice(11, 16)}`;
 }
 
+function kindTag(it: ScheduledJob): { text: string; cls: string } | null {
+  if (it.emergency) return { text: 'URGENT', cls: 'bg-rose-600 text-white' };
+  if (it.kind === 'rework') return { text: 'REWORK', cls: 'bg-amber-400 text-slate-900' };
+  if (it.kind === 'table') return { text: 'TABLE', cls: 'bg-sky-300 text-slate-900' };
+  if (it.kind === 'spare') return { text: 'SPARE', cls: 'bg-orange-300 text-slate-900' };
+  return null;
+}
+
 function BlockLabel({ it, width, showEff }: { it: ScheduledJob; width: number; showEff: boolean }) {
   if (width < 26) return null;
   return (
     <div className="flex h-full flex-col justify-between p-1 text-white">
       <div className="flex items-center justify-between gap-1">
         <span className="truncate text-[11px] font-bold leading-none">{it.job.isRework ? '↻ ' : ''}{width > 52 ? `Box ${it.job.boxCode}` : it.job.boxCode}</span>
+        {width > 60 && kindTag(it) && <span className={`shrink-0 rounded px-1 text-[8px] font-extrabold leading-3 ${kindTag(it)!.cls}`}>{kindTag(it)!.text}</span>}
         <span className="flex shrink-0 items-center gap-0.5">
           {it.carpenterOpen && width > 40 && <Hammer className="h-2.5 w-2.5 text-amber-300" />}
           {(it.userLocked || it.manualDuration || it.manualStart) && width > 40 && (it.userLocked ? <Lock className="h-2.5 w-2.5" /> : <Pencil className="h-2.5 w-2.5" />)}
@@ -461,7 +492,7 @@ function Tooltip({ tip }: { tip: { item: ScheduledJob; x: number; y: number } })
           <TimeMark basis={it.timeBasis} className="-ml-1 text-slate-300" />
           {it.timeBasis === 'measured' ? `measured · ${Math.round((it.measuredPerPart ?? 0) * 10) / 10} min/part` : it.timeBasis === 'estimated' ? `estimated · ${it.efficiencyPercent}% eff.` : 'set by you'}
         </dd>
-        <dt>Why here</dt><dd className="text-slate-200">{it.decidingRule}</dd>
+        <dt>Why here</dt><dd className="text-slate-200">{it.emergency ? 'Emergency: planned before everything else' : it.kind === 'rework' ? 'Rework: top priority, ahead of every rule' : it.windowGroup ? `${it.kind === 'table' ? 'Table' : 'Spare parts'}: planned inside its start and finish` : it.decidingRule}</dd>
       </dl>
       {it.partName && <div className="mt-1.5 text-[11px] text-slate-400">{it.partName}</div>}
       <div className="mt-1 text-[10px] leading-snug text-slate-500">{timeBasisNote(it, settings.estimateMultiplier)}</div>

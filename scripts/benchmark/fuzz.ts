@@ -4,11 +4,14 @@
  * optimizer never worse than the classic heuristic.
  *   npx tsx scripts/benchmark/fuzz.ts --runs 40 [--seed 1] -- <workload.xlsx> [carpenter.xlsx] [parts-list.xlsx]
  */
+import { WorkCalendar } from '../../src/core/calendar';
 import { defaultSettings, RULE_PRESETS } from '../../src/core/defaults';
 import { makeRng } from '../../src/core/optimizer/search';
 import { isEligible, planProduction } from '../../src/core/scheduler/plan';
 import { SimContext } from '../../src/core/scheduler/simulate';
 import type { PlanResult, PlannerSettings, TimelineEvent, UserLock } from '../../src/core/types';
+import { buildGroups, classifyKinds } from '../../src/core/partKinds';
+import { standardPartName } from '../../src/core/partTypes';
 import { loadInputs, parseFlags } from './common';
 
 const flags = parseFlags();
@@ -42,6 +45,23 @@ for (let r = 0; r < runs; r++) {
     events.push({ id: `e${e}`, machineId: chance(0.2) ? 'ALL' : pick(s.machines).id, type: pick(['breakdown', 'maintenance', 'absent', 'other'] as const), title: 't', startMinute: rng.int(3000), durationMinutes: 5 + rng.int(500) });
   }
   s.timelineEvents = events;
+  s.calendar.startHour = chance(0.3) ? 6 + rng.int(8) : 6;
+  s.calendar.workSunday = chance(0.2);
+  s.calendar.workSaturday = chance(0.8);
+  // emergencies, windows for tables and spares, machines limited to part types
+  const salesOrders = [...new Set(jobs.map(j => j.salesOrder).filter(Boolean))];
+  if (salesOrders.length && chance(0.4)) s.emergencies = [{ id: 'em', salesOrder: pick(salesOrders), schedule: null, applied: true }];
+  const groups = buildGroups(jobs, classifyKinds(jobs));
+  for (const g of groups) {
+    if (!chance(0.5)) continue;
+    const startDay = 9 + rng.int(4);
+    s.partWindows[g.key] = { start: `2026-10-${String(startDay).padStart(2, '0')}T${String(6 + rng.int(10)).padStart(2, '0')}:00`, finish: `2026-10-${String(startDay + 1 + rng.int(4)).padStart(2, '0')}T${String(8 + rng.int(12)).padStart(2, '0')}:00` };
+  }
+  if (chance(0.3)) {
+    const names = [...new Set(Object.values(inp.partTimes).map(t => standardPartName(t.name ?? '')).filter(Boolean))];
+    const m = s.machines[rng.int(s.machines.length)];
+    m.partTypes = { restricted: true, allowed: Object.fromEntries(names.filter(() => chance(0.7)).map(n => [n, { small: chance(0.8), big: chance(0.8) }])) };
+  }
   const locks: Record<string, UserLock> = {};
   const pins = chance(0.4);
   for (const j of jobs) {
@@ -52,7 +72,7 @@ for (let r = 0; r < runs; r++) {
     if (pins && chance(0.3)) lock.startMinute = rng.int(2500);
     if (Object.keys(lock).length) locks[j.id] = lock;
   }
-  const label = `run ${r}: ${jobs.length} parts, rules ${s.priorityRules.map(x => x.type).join('+')}, carpenter ${s.carpenterDelayMode}, ${events.length} disruptions, ${Object.keys(locks).length} locks`;
+  const label = `run ${r}: ${jobs.length} parts, rules ${s.priorityRules.map(x => x.type).join('+')}, carpenter ${s.carpenterDelayMode}, ${events.length} disruptions, ${Object.keys(locks).length} locks, ${Object.keys(s.partWindows).length} windows, ${s.emergencies.length} emergency`;
   const problems: string[] = [];
   let classic: PlanResult | null = null;
   let optimized: PlanResult | null = null;
@@ -75,6 +95,17 @@ for (let r = 0; r < runs; r++) {
           if (it.startMinute < prevEnd) problems.push(`${name}: overlap on ${machineId} at ${it.job.id}`);
           prevEnd = it.endMinute;
           if (!it.erpLocked && !it.userLocked && !isEligible(it.job, machine, s, ctx)) problems.push(`${name}: ${it.job.id} on ${machineId} not allowed`);
+        }
+      }
+      if (name === 'optimized') {
+        for (const q of Object.values(p.queues)) {
+          const flags = q.map(i => i.emergency);
+          // a pinned start time deliberately moves a part to where the clock reaches it
+          if (!pins && flags.join() !== [...flags].sort((a, b) => Number(b) - Number(a)).join()) problems.push('emergency parts do not come first');
+          for (const it of q) {
+            const win = it.windowGroup ? s.partWindows[it.windowGroup] : undefined;
+            if (win && it.startMinute + 1 < new WorkCalendar(s.calendar).fromIso(win.start)) problems.push(`${it.job.id} starts before its group's start`);
+          }
         }
       }
       if (name === 'optimized' && seen.size !== Object.values(classic.queues).reduce((n, q) => n + q.length, 0)) problems.push('optimized and classic plan a different number of parts');

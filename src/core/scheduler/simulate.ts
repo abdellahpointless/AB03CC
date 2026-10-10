@@ -1,6 +1,7 @@
 import { planStartOffset } from '../calendar';
 import { plannedDuration, type PlannedDuration } from '../efficiency';
 import { partKey } from '../parse/partTimes';
+import { partTypeFromEntry, type PartTypeRef } from '../partTypes';
 import type { ChangeoverRules, Job, MachineConfig, PartTimeMap, PlannerSettings, Segment, TimelineEvent } from '../types';
 
 export interface Interval {
@@ -16,6 +17,8 @@ export class SimContext {
   /** User supplied durations / start minutes. */
   readonly manualDuration = new Map<string, number>();
   readonly manualStart = new Map<string, number>();
+  /** earliest minute a part may start (tables and spares given a start time); unlike a pin it does not reorder the queue */
+  readonly release = new Map<string, number>();
   private readonly durCache = new Map<string, PlannedDuration>();
 
   constructor(
@@ -41,7 +44,18 @@ export class SimContext {
     return this.settings.useMeasuredTimes ? this.partTimes[partKey(job.matnr)]?.minutes : undefined;
   }
 
+  private readonly types = new Map<string, PartTypeRef | null>();
   private readonly sizes = new Map<string, number>();
+
+  /** Standard part name and size (small/big) from the parts list; null when the part is not in the list. */
+  partTypeOf(job: Job): PartTypeRef | null {
+    let t = this.types.get(job.id);
+    if (t === undefined) {
+      t = partTypeFromEntry(this.partTimes[partKey(job.matnr)]);
+      this.types.set(job.id, t);
+    }
+    return t;
+  }
 
   /** A part's time in minutes, whatever the machine: the listed time, or NC x factor, times quantity (or the typed time). */
   readonly sizeOf = (job: Job): number => {
@@ -157,6 +171,8 @@ export function step(
   const manualStart = ctx.manualStart.get(job.id);
   let t = state.t;
   if (opts.respectManualStart && manualStart !== undefined && manualStart > t) t = manualStart;
+  const release = ctx.release.get(job.id);
+  if (release !== undefined && release > t) t = release;
 
   const setup = changeoverMinutes(state.prev, job, ctx.settings.changeover, ctx.sizeOf);
   if (setup > 0) t = placeSplit(t, setup, down).end;

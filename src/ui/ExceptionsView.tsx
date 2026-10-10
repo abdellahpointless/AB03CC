@@ -7,7 +7,7 @@ import { Badge, Empty, MaterialBadge, inputCls } from './kit';
 type Tab = 'manual30000' | 'blocked' | 'noEligibleMachine' | 'outOfScope' | 'unpickedWarehouse';
 
 const TABS: Array<{ id: Tab; label: string; tone: string; help: string; assign: boolean }> = [
-  { id: 'manual30000', label: 'Manual plan (Master 30000*)', tone: 'text-blue-300', assign: true, help: 'Parts whose master order begins with 30000 are kept out of automatic batching for manual planning. Pick a machine to assign one: it is then planned and pinned there.' },
+  { id: 'manual30000', label: 'Tables & spares waiting', tone: 'text-blue-300', assign: true, help: 'Table and spare parts are planned from a start and a finish you choose: open the Tables & Spares tab. Until then they are listed here. You can also pick a machine for one part: it is then planned and pinned there.' },
   { id: 'blocked', label: 'Blocked jobs', tone: 'text-rose-300', assign: false, help: 'On hold in the ERP (production status 11) or flagged as discontinued. They are not planned.' },
   { id: 'noEligibleMachine', label: 'No eligible machine', tone: 'text-amber-300', assign: true, help: 'No active machine accepts this material or size. Assign one manually, add the material to a machine in the Variable Editor, or map the material to another one (material aliases).' },
   { id: 'outOfScope', label: 'Out-of-scope centers', tone: 'text-violet-300', assign: false, help: 'Assigned in the ERP to a machine this planner does not schedule (router, laser, lathe, MASTER…).' },
@@ -17,10 +17,10 @@ const TABS: Array<{ id: Tab; label: string; tone: string; help: string; assign: 
 function reasonFor(tab: Tab, j: Job): string {
   switch (tab) {
     case 'blocked': return j.blockedReason || 'On hold';
-    case 'noEligibleMachine': return `No machine accepts ${j.materialType}${j.ncMinutes ? ` at ${j.ncMinutes} min NC` : ''}`;
+    case 'noEligibleMachine': return `No machine takes ${j.materialType}${j.ncMinutes ? ` at ${j.ncMinutes} min NC` : ''} (material, size or part type)`;
     case 'outOfScope': return `ERP machine: ${j.erpMachine}`;
     case 'unpickedWarehouse': return 'Warehouse pick date missing';
-    default: return 'Master order 30000*';
+    default: return 'Waiting for a start and a finish';
   }
 }
 

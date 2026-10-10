@@ -89,6 +89,11 @@ export class WorkCalendar {
     return toLocalIso(this.toDate(minute, asEnd));
   }
 
+  /** Plan minute of a local date and time "YYYY-MM-DDTHH:mm" (see fromDate). */
+  fromIso(iso: string): number {
+    return this.fromDate(parseLocalDate(iso));
+  }
+
   /** Inverse mapping used for the "now" marker; clamps into the plan axis. */
   fromDate(date: Date): number {
     for (let i = 0; i < 400; i++) {

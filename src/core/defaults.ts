@@ -193,6 +193,8 @@ export function defaultSettings(): PlannerSettings {
     estimateMultiplier: DEFAULT_ESTIMATE_MULTIPLIER,
     planningMode: 'modules_first',
     planningEffort: 'standard',
+    emergencies: [],
+    partWindows: {},
     settingsVersion: SETTINGS_VERSION,
   };
 }

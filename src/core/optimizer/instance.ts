@@ -26,8 +26,14 @@ export interface Instance {
   fixed: Int16Array;
   /** tied jobs per machine: they stay at the head of that machine's queue */
   head: Int32Array[];
-  /** changeover minutes from job a to job b at [a * n + b]; the first job of a queue has none */
+  /** changeover minutes from job a to job b at [a * n + b] */
   setup: Uint8Array;
+  /** minute at which each machine becomes free (it already has earlier work in a plan built in stages) */
+  t0: Int32Array;
+  /** changeover before job j when it is the first of machine k's queue, at [k * n + j] (after that earlier work) */
+  firstSetup: Uint8Array;
+  /** earliest minute a part may start (a table or spare that was given a start time); 0 = no limit */
+  minStart: Int32Array;
   /** objective weight of every module (1 = plain "finish modules as early as possible") */
   weight: Float64Array;
   /** minute after which finishing a module costs `slope` extra per minute (Infinity = no limit) */
@@ -47,6 +53,8 @@ export interface InstanceItem {
   job: Job;
   /** machine id this job is tied to, if any */
   fixedMachine?: string;
+  /** the only machine the job is allowed on, without being tied to the head of its queue (a part already placed) */
+  onlyMachine?: string;
 }
 
 export interface BuildOptions {
@@ -59,6 +67,12 @@ export interface BuildOptions {
   weightOf?(moduleKey: string, parts: Job[]): number;
   /** a minute the module should not finish after, and what every minute beyond it costs */
   dueOf?(moduleKey: string, parts: Job[]): { due: number; slope: number } | null;
+  /** where each machine stands when this part of the plan begins: free from minute `t`, last running `prev` */
+  startState?(machine: MachineConfig): { t: number; prev: Job | null };
+  /** earliest minute a job may start */
+  minStartOf?(job: Job): number;
+  /** which module a job counts towards (default: its master order) */
+  moduleOf?(job: Job): string;
   /** windows in which the machine does not work (breakdowns, maintenance ...), merged and sorted */
   downtime?(machine: MachineConfig): Array<{ start: number; end: number }>;
   restartJobOnEvent?: boolean;
@@ -74,11 +88,12 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
   const modIds: string[] = [];
   const mod = new Int32Array(n);
   jobs.forEach((j, i) => {
-    let m = modIndex.get(j.masterOrder);
+    const key = opts.moduleOf ? opts.moduleOf(j) : j.masterOrder;
+    let m = modIndex.get(key);
     if (m === undefined) {
       m = modIds.length;
-      modIndex.set(j.masterOrder, m);
-      modIds.push(j.masterOrder);
+      modIndex.set(key, m);
+      modIds.push(key);
     }
     mod[i] = m;
   });
@@ -93,7 +108,7 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
   const headLists: number[][] = Array.from({ length: K }, () => []);
   for (let i = 0; i < n; i++) {
     const list: number[] = [];
-    const fm = items[i].fixedMachine;
+    const fm = items[i].fixedMachine ?? items[i].onlyMachine;
     if (fm !== undefined) {
       const k = machineIds.indexOf(fm);
       if (k < 0) throw new Error(`job ${jobs[i].id} is tied to unknown machine ${fm}`);
@@ -101,8 +116,10 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
       if (d === null) throw new Error(`job ${jobs[i].id} is tied to ${fm} but has no duration there`);
       dur[i * K + k] = Math.max(1, Math.round(d));
       elig[i * K + k] = 1;
-      fixed[i] = k;
-      headLists[k].push(i);
+      if (items[i].fixedMachine !== undefined) {
+        fixed[i] = k;
+        headLists[k].push(i);
+      }
       list.push(k);
     } else {
       for (let k = 0; k < K; k++) {
@@ -121,6 +138,18 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
 
   const weight = new Float64Array(M).fill(1);
   if (opts.weightOf) for (let m = 0; m < M; m++) weight[m] = opts.weightOf(modIds[m], partLists[m].map(i => jobs[i]));
+
+  const t0 = new Int32Array(K);
+  const firstSetup = new Uint8Array(K * n);
+  if (opts.startState) {
+    for (let k = 0; k < K; k++) {
+      const st = opts.startState(opts.machines[k]);
+      t0[k] = Math.round(st.t);
+      for (let j = 0; j < n; j++) firstSetup[k * n + j] = Math.min(255, changeoverMinutes(st.prev, jobs[j], opts.changeover, opts.sizeOf));
+    }
+  }
+  const minStart = new Int32Array(n);
+  if (opts.minStartOf) for (let j = 0; j < n; j++) minStart[j] = Math.max(0, Math.round(opts.minStartOf(jobs[j])));
 
   const due = new Float64Array(M).fill(Infinity);
   const slope = new Float64Array(M);
@@ -168,6 +197,9 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
     fixed,
     head: headLists.map(l => Int32Array.from(l)),
     setup,
+    t0,
+    firstSetup,
+    minStart,
     weight,
     due,
     slope,

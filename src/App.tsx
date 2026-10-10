@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { downloadPlan } from './core/export';
 import { useStore } from './state/store';
 import { CarpenterPanel } from './ui/CarpenterPanel';
+import { EmergencyModal } from './ui/EmergencyModal';
 import { ExceptionsView } from './ui/ExceptionsView';
 import { GanttView } from './ui/GanttView';
 import { Header, type View } from './ui/Header';
@@ -15,9 +16,10 @@ import { PrintSheet } from './ui/PrintSheet';
 import { PriorityView } from './ui/PriorityView';
 import { RunSheetView } from './ui/RunSheetView';
 import { SettingsDrawer } from './ui/SettingsDrawer';
+import { TablesView } from './ui/TablesView';
 import { Toasts } from './ui/Toasts';
 
-type Dialog = 'settings' | 'print' | 'help' | 'report' | 'carpenter' | null;
+type Dialog = 'settings' | 'print' | 'help' | 'report' | 'carpenter' | 'emergency' | null;
 
 export default function App() {
   const { jobs, plan, planError, settings, notify } = useStore();
@@ -47,6 +49,7 @@ export default function App() {
         }}
         onHelp={() => setDialog('help')}
         onReport={() => setDialog('report')}
+        onEmergency={() => setDialog('emergency')}
       />
 
       <main className="flex-1 px-3 py-4 sm:px-6">
@@ -63,6 +66,7 @@ export default function App() {
               {view === 'orders' && <OrdersView onSelect={it => setSelectedJob(it.job.id)} />}
               {view === 'runsheet' && <RunSheetView onPrint={() => setDialog('print')} />}
               {view === 'hourly' && <HourlyView />}
+              {view === 'tables' && <TablesView />}
               {view === 'exceptions' && <ExceptionsView />}
             </div>
           </>
@@ -74,6 +78,7 @@ export default function App() {
       </footer>
 
       {dialog === 'settings' && <SettingsDrawer onClose={() => setDialog(null)} />}
+      {dialog === 'emergency' && <EmergencyModal onClose={() => setDialog(null)} />}
       {dialog === 'print' && <PrintSheet onClose={() => setDialog(null)} />}
       {dialog === 'help' && <HelpModal onClose={() => setDialog(null)} />}
       {dialog === 'report' && <ImportReportModal onClose={() => setDialog(null)} />}

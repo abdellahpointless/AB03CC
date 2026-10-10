@@ -145,8 +145,15 @@ export interface QueueSearch {
   sampleTemperature(rng: Rng, samples?: number): number;
 }
 
-export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAULT_WEIGHTS): QueueSearch {
-  const { n, K, M, dur, setup, mod, hasDown } = inst;
+export interface QueueSearchOptions {
+  /** only these parts may be moved (1 = movable); every other part keeps its place in its queue */
+  movable?: Uint8Array;
+  /** per machine: no movable part may be put before this position (protected parts at the head of the queue) */
+  minPos?: Int32Array;
+}
+
+export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAULT_WEIGHTS, opts: QueueSearchOptions = {}): QueueSearch {
+  const { n, K, M, dur, setup, mod, hasDown, minStart } = inst;
   const Q: Int32Array[] = Array.from({ length: K }, () => new Int32Array(n + 2));
   const len = new Int32Array(K);
   const mach = new Int16Array(n);
@@ -160,9 +167,10 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
   let setupTot = 0;
 
   const freeJobs: number[] = [];
-  for (let j = 0; j < n; j++) if (inst.fixed[j] < 0) freeJobs.push(j);
+  const isFree = new Uint8Array(n);
+  for (let j = 0; j < n; j++) if (inst.fixed[j] < 0 && (!opts.movable || opts.movable[j])) (freeJobs.push(j), (isFree[j] = 1));
   const headLen = new Int32Array(K);
-  for (let k = 0; k < K; k++) headLen[k] = inst.head[k].length;
+  for (let k = 0; k < K; k++) headLen[k] = Math.max(inst.head[k].length, opts.minPos?.[k] ?? 0);
   // tied jobs may change places inside the head of their machine (they all run before the free jobs)
   const tiedJobs: number[] = [];
   for (let j = 0; j < n; j++) if (inst.fixed[j] >= 0) tiedJobs.push(j);
@@ -250,7 +258,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
   /** recompute times of queue k from index i0 on and note the touched modules */
   function recompute(k: number, i0: number) {
     const q = Q[k];
-    let t = 0;
+    let t = inst.t0[k];
     let prev = -1;
     if (i0 > 0) {
       prev = q[i0 - 1];
@@ -258,7 +266,8 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
     }
     for (let i = i0; i < len[k]; i++) {
       const j = q[i];
-      const s = prev < 0 ? 0 : setup[prev * n + j];
+      const s = prev < 0 ? inst.firstSetup[k * n + j] : setup[prev * n + j];
+      if (minStart[j] > t) t = minStart[j];
       setupTot += s - setupB[j];
       setupB[j] = s;
       t = hasDown[k] ? advance(inst, k, t, s, dur[j * K + k]) : t + s + dur[j * K + k];
@@ -273,7 +282,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
       }
       prev = j;
     }
-    mEnd[k] = len[k] ? endT[q[len[k] - 1]] : 0;
+    mEnd[k] = len[k] ? endT[q[len[k] - 1]] : inst.t0[k];
   }
 
   function finishModules() {
@@ -435,7 +444,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
     } else {
       b = freeJobs[rng.int(freeJobs.length)];
     }
-    if (a === b || inst.fixed[b] >= 0) return false;
+    if (a === b || !isFree[b]) return false;
     const ka = mach[a];
     const kb = mach[b];
     if (!inst.elig[a * K + kb] || !inst.elig[b * K + ka]) return false;
@@ -466,7 +475,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
     const i = pos[j];
     if (i + 1 >= len[k] || i < headLen[k]) return false;
     const other = Q[k][i + 1];
-    if (inst.fixed[other] >= 0) return false;
+    if (!isFree[other]) return false;
     beginMove();
     takeSnap(k, i);
     Q[k][i] = other;
@@ -482,7 +491,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
     const i1 = pos[j];
     const size = 2 + rng.int(2);
     if (i1 + size > len[k1]) return false;
-    for (let x = 0; x < size; x++) if (inst.fixed[Q[k1][i1 + x]] >= 0) return false;
+    for (let x = 0; x < size; x++) if (!isFree[Q[k1][i1 + x]]) return false;
     // destination machine must be able to run the whole block
     let k2 = k1;
     if (rng.next() < 0.6) k2 = rng.int(K);

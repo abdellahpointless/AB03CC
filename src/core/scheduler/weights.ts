@@ -11,8 +11,11 @@ export interface ModuleFacts {
   carpenterBlocked: boolean;
 }
 
-/** How much more a prioritised master order counts than an ordinary one, per priority class. */
-export const TIER = 25;
+/**
+ * How much more one priority class counts than the next when plans are compared as a whole: far more than all the
+ * time the lower class could ever save, so higher classes always win a comparison.
+ */
+export const TIER = 1000;
 /** The earliest production date counts this much more than the latest one (a gentle nudge, not a rule). */
 export const DATE_SPREAD = 0.2;
 /** A master order that cannot be completed yet because the carpenter is not done counts for less. */
@@ -27,9 +30,10 @@ const dateKey = (j: Job) => {
  * Turns the priority rules into one number per master order: how many "minutes of waiting" a minute of its completion
  * is worth. The planner minimises the weighted sum of completion times, so a heavier order is finished sooner.
  *
- *  - filter rules (sales order, schedule, customer, material): an order matching a rule of a more important level
- *    counts TIER times more than one matching only less important levels, which count TIER times more than one
- *    matching nothing. Levels are compared like digits, so level 1 always beats level 2.
+ *  - filter rules (sales order, schedule, customer, material) make priority classes: an order matching a rule of a
+ *    more important level is planned before one matching only less important levels, which come before one matching
+ *    nothing. Levels are compared like digits, so level 1 always beats level 2. Inside a class the orders are finished
+ *    as early as possible.
  *  - production date: closer dates count slightly more (or slightly less when the rule says furthest first).
  *  - "waiting" / "finish full module" with highest first: orders with more parts count more.
  *  - carpenter: orders still waiting for the carpenter count for less.
@@ -37,15 +41,22 @@ const dateKey = (j: Job) => {
  * "Fewest parts left first" needs no extra weight: finishing the cheapest orders first is what minimising the sum of
  * completion times does anyway.
  */
-export function moduleWeights(mods: ModuleFacts[], rules: PriorityRule[], carpenterMode: CarpenterDelayMode): number[] {
+export interface ModuleWeights {
+  /** within its class: how much one minute of this order's completion is worth (date nudge, carpenter, size) */
+  weights: number[];
+  /** priority class of every order from the filter rules: 0 is planned first */
+  tiers: number[];
+}
+
+export function moduleWeights(mods: ModuleFacts[], rules: PriorityRule[], carpenterMode: CarpenterDelayMode): ModuleWeights {
   const active = rules.filter(r => r.enabled);
 
   // filter levels, most important first
   const levelIds = [...new Set(active.filter(r => FILTER_TYPES.includes(r.type)).map(r => r.level))].sort((a, b) => a - b);
   const levels = levelIds.map(l => active.filter(r => r.level === l && FILTER_TYPES.includes(r.type)));
   const classOf = mods.map(m => levels.reduce((acc, rs, i) => acc + (rs.some(r => jobMatchesRule(m.lead, r)) ? 2 ** (levels.length - 1 - i) : 0), 0));
-  const distinct = [...new Set(classOf)].sort((a, b) => a - b);
-  const tierRank = new Map(distinct.map((c, i) => [c, Math.min(i, 4)]));
+  const distinct = [...new Set(classOf)].sort((a, b) => b - a); // most important class first
+  const tierRank = new Map(distinct.map((c, i) => [c, i]));
 
   // production date
   const dateRule = active.find(r => r.type === 'production_date');
@@ -65,11 +76,11 @@ export function moduleWeights(mods: ModuleFacts[], rules: PriorityRule[], carpen
   const sizes = mods.map(m => m.parts).sort((a, b) => a - b);
   const median = sizes.length ? sizes[Math.floor(sizes.length / 2)] : 1;
 
-  return mods.map((m, i) => {
-    let w = TIER ** (tierRank.get(classOf[i]) ?? 0);
-    w *= dateFactor[i];
+  const weights = mods.map((m, i) => {
+    let w = dateFactor[i];
     if (bigFirst) w *= Math.min(3, Math.max(0.3, m.parts / Math.max(1, median))) ** 2;
     if (m.carpenterBlocked) w *= CARPENTER_WEIGHT[carpenterMode];
     return w;
   });
+  return { weights, tiers: classOf.map(c => tierRank.get(c) ?? 0) };
 }

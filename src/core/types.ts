@@ -1,5 +1,7 @@
 /** Domain types shared by the parsers, the scheduler (worker) and the UI. */
 
+import type { PartKind } from './partKinds';
+
 export type Id = string;
 
 /** Where a job's planned time comes from. */
@@ -46,6 +48,18 @@ export interface Job {
   isRework?: boolean;
 }
 
+export interface PartSizes {
+  small: boolean;
+  big: boolean;
+}
+
+/** Which standard part names (and sizes) a machine may produce, on top of its material rules. */
+export interface MachinePartTypes {
+  /** off: every part type is accepted */
+  restricted: boolean;
+  allowed: Record<string, PartSizes>;
+}
+
 export interface MachineConfig {
   id: Id;
   name: string;
@@ -60,6 +74,7 @@ export interface MachineConfig {
   overflowMaterials?: string[];
   isDown?: boolean;
   description?: string;
+  partTypes?: MachinePartTypes;
 }
 
 /**
@@ -222,7 +237,40 @@ export interface PlannerSettings {
   planningMode: PlanningMode;
   /** how long the search may work: quick, standard or thorough */
   planningEffort: PlanningEffort;
+  /** urgent orders (the big red button) */
+  emergencies: EmergencyOrder[];
+  /** start and finish the user gave to table and spare groups, by group key */
+  partWindows: Record<string, PartWindow>;
   settingsVersion: number;
+}
+
+/** An urgent order: everything of this sales order (and schedule) is planned before anything else. */
+export interface EmergencyOrder {
+  id: Id;
+  salesOrder: string;
+  /** only the parts of this schedule number; null = every part of the sales order */
+  schedule: number | null;
+  /** off = only looked at (the analysis), on = in the plan */
+  applied: boolean;
+}
+
+/** When a table or spare group should start and be finished: local date and time, "YYYY-MM-DDTHH:mm". */
+export interface PartWindow {
+  start: string;
+  finish: string;
+}
+
+/** How a table or spare group ended up in the plan. */
+export interface WindowReport {
+  key: string;
+  startMinute: number;
+  finishMinute: number;
+  startTime: string;
+  finishTime: string;
+  /** the finish time the user asked for, in plan minutes */
+  wantedFinishMinute: number;
+  /** how many minutes after the wanted finish it ends (0 = in time) */
+  lateBy: number;
 }
 
 export interface UserLock {
@@ -265,6 +313,11 @@ export interface ScheduledJob {
   manualDuration: boolean;
   manualStart: boolean;
   carpenterOpen: boolean;
+  kind: PartKind;
+  /** part of an applied emergency */
+  emergency: boolean;
+  /** table or spare group this part was planned with */
+  windowGroup?: string;
 }
 
 export interface MoSync {
@@ -356,6 +409,8 @@ export interface PlanResult {
     unpickedWarehouse: Job[];
   };
   kpis: PlanKpis;
+  /** per table / spare group that was given a start and a finish */
+  windowReport: Record<string, WindowReport>;
   summary: string;
 }
 

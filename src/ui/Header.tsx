@@ -8,8 +8,10 @@ import {
   Package,
   Printer,
   RotateCcw,
+  Siren,
   Settings as SettingsIcon,
   SlidersHorizontal,
+  Table2,
   Trash2,
   Upload,
 } from 'lucide-react';
@@ -18,7 +20,7 @@ import { useProgress, useStore } from '../state/store';
 import { Button } from './kit';
 import { useImport } from './useImport';
 
-export type View = 'gantt' | 'priority' | 'orders' | 'runsheet' | 'hourly' | 'exceptions';
+export type View = 'gantt' | 'priority' | 'orders' | 'runsheet' | 'hourly' | 'tables' | 'exceptions';
 
 const TABS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
   { id: 'gantt', label: 'Gantt Diagram', icon: <BarChart3 className="h-3.5 w-3.5" /> },
@@ -26,6 +28,7 @@ const TABS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
   { id: 'orders', label: 'Orders & Bulk Efficiency', icon: <Package className="h-3.5 w-3.5" /> },
   { id: 'runsheet', label: 'Machine Output (Run Sheets)', icon: <FileText className="h-3.5 w-3.5" /> },
   { id: 'hourly', label: 'Hourly Output', icon: <Activity className="h-3.5 w-3.5" /> },
+  { id: 'tables', label: 'Tables & Spares', icon: <Table2 className="h-3.5 w-3.5" /> },
   { id: 'exceptions', label: 'Exceptions', icon: <AlertTriangle className="h-3.5 w-3.5" /> },
 ];
 
@@ -45,6 +48,7 @@ export function Header({
   onExport,
   onHelp,
   onReport,
+  onEmergency,
 }: {
   view: View;
   setView: (v: View) => void;
@@ -54,8 +58,10 @@ export function Header({
   onExport: () => void;
   onHelp: () => void;
   onReport: () => void;
+  onEmergency: () => void;
 }) {
-  const { jobs, planning, improving, replanNow, clearData, report } = useStore();
+  const { jobs, planning, improving, replanNow, clearData, report, settings } = useStore();
+  const urgent = settings.emergencies.filter(e => e.applied).length;
   const progress = useProgress();
   const busy = planning || improving;
   const { handleFiles, inputRef, openPicker } = useImport();
@@ -133,6 +139,15 @@ export function Header({
             <span className="xl:hidden">Settings</span>
           </Button>
           {hasData && (
+            <button
+              onClick={onEmergency}
+              title="Put an order ahead of everything else"
+              className={`flex items-center gap-1.5 rounded-md border border-rose-400 bg-rose-600 px-3.5 py-1.5 text-xs font-extrabold uppercase tracking-wide text-white shadow-[0_0_22px_-4px_rgba(244,63,94,0.9)] transition hover:bg-rose-500 active:scale-95 ${urgent ? 'animate-pulse' : ''}`}
+            >
+              <Siren className="h-4 w-4" /> Emergency{urgent ? ` · ${urgent}` : ''}
+            </button>
+          )}
+          {hasData && (
             <>
               <Button onClick={onPrint} disabled={improving} title={improving ? 'Available when the optimizer has finished' : 'Print run sheets'}>
                 <Printer className="h-3.5 w-3.5 text-emerald-400" /> <span className="hidden 2xl:inline">Print</span>
@@ -150,7 +165,7 @@ export function Header({
               <Button onClick={onReport} title={report?.fileName ?? 'Import report'}>
                 Report
               </Button>
-              <Button variant="primary" onClick={replanNow} disabled={busy} title="Re-run the scheduler">
+              <Button variant="primary" className="min-w-[164px] tabular-nums" onClick={replanNow} disabled={busy} title="Re-run the scheduler">
                 <RotateCcw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
                 {improving ? `Optimizing ${Math.round(progress * 100)}%` : planning ? 'Planning…' : 'Re-optimize'}
               </Button>

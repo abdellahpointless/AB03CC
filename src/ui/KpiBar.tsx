@@ -7,9 +7,9 @@ import type { PlanResult } from '../core/types';
 function Kpi({ label, value, sub, tone = 'text-white', wide }: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: string; wide?: boolean }) {
   // fixed width and one line: the bar must not change size while the optimizer swaps plans
   return (
-    <div className={wide ? 'min-w-[270px]' : 'min-w-[130px]'}>
+    <div className={wide ? 'w-[310px] shrink-0' : 'min-w-[130px]'}>
       <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mono h-6 whitespace-nowrap text-base font-bold leading-6 ${tone}`}>
+      <div className={`mono h-6 whitespace-nowrap text-base font-bold leading-6 tabular-nums ${tone}`}>
         {value}
         {sub && <span className="ml-1.5 text-[10px] font-normal text-slate-500">{sub}</span>}
       </div>

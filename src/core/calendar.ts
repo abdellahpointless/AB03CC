@@ -18,6 +18,15 @@ export function minutesPerDay(cal: CalendarSettings): number {
 }
 
 /**
+ * Minutes of the first day that pass before the plan starts: the axis begins at the shift start, and the hours up to
+ * `startHour` are treated as time in which no machine works.
+ */
+export function planStartOffset(cal: CalendarSettings): number {
+  const off = Math.round((cal.startHour - cal.shiftStartHour) * 60);
+  return Math.min(Math.max(0, off), minutesPerDay(cal) - 1);
+}
+
+/**
  * Maps the continuous "working minute" axis used by the scheduler to wall-clock
  * time, skipping weekends when the calendar says so.
  */
@@ -35,8 +44,9 @@ export class WorkCalendar {
   }
 
   private isOff(d: Date) {
+    if (this.cal.continuous247) return false;
     const dow = d.getDay();
-    return this.cal.weekendOff && !this.cal.continuous247 && (dow === 0 || dow === 6);
+    return (dow === 6 && !this.cal.workSaturday) || (dow === 0 && !this.cal.workSunday);
   }
 
   private firstWorkingDay(): Date {

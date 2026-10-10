@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { WorkCalendar } from './calendar';
+import { WorkCalendar, planStartOffset } from './calendar';
 import { demoCarpenterParts, demoJobs } from './demo';
 import { defaultSettings, mergeSettings } from './defaults';
 import { plannedDuration } from './efficiency';
@@ -72,15 +72,15 @@ describe('timing model', () => {
   it('applies efficiency rules and material offsets to estimates only, in the documented lookup order', () => {
     const s = settings();
     s.estimateMultiplier = 1;
-    s.materialOffsets.FH = 2;
+    s.materialOffsets.FH = 20; // percent
     const m = s.machines[0];
-    expect(plannedDuration(job, m, s).durationMin).toBe(2 * (10 + 2));
+    expect(plannedDuration(job, m, s).durationMin).toBe(Math.round(2 * 10 * 1.2));
     s.globalEfficiencyPercent = 50;
-    expect(plannedDuration(job, m, s).durationMin).toBe(2 * (20 + 2));
+    expect(plannedDuration(job, m, s).durationMin).toBe(Math.round(2 * 20 * 1.2));
     s.materialEfficiency.FH = 80;
-    expect(plannedDuration(job, m, s).durationMin).toBe(Math.round(2 * (12.5 + 2)));
+    expect(plannedDuration(job, m, s).durationMin).toBe(Math.round(2 * 12.5 * 1.2));
     s.efficiencyMatrix[m.id] = { FH: 100 };
-    expect(plannedDuration(job, m, s).durationMin).toBe(2 * (10 + 2));
+    expect(plannedDuration(job, m, s).durationMin).toBe(Math.round(2 * 10 * 1.2));
     expect(plannedDuration(job, m, s, 77).durationMin).toBe(77);
   });
 
@@ -172,21 +172,36 @@ describe('throughput', () => {
 });
 
 describe('settings migration', () => {
-  it('resets untouched legacy offsets but keeps custom ones', () => {
-    const legacy = { ALU: 0, POM: 0, FH: 2, PCGF: 3, MS: 4, PEEK: 5, PP: 1, INOX: 8, FR4: 2 };
-    expect(mergeSettings({ materialOffsets: legacy }).materialOffsets.FH).toBe(0);
-    expect(mergeSettings({ materialOffsets: { ...legacy, FH: 7 } }).materialOffsets.FH).toBe(7);
-    const fresh = mergeSettings({ settingsVersion: 2, materialOffsets: { ...legacy } });
-    expect(fresh.materialOffsets.FH).toBe(2);
+  it('resets material offsets saved as minutes when they become percent', () => {
+    expect(mergeSettings({ materialOffsets: { FH: 7 } }).materialOffsets.FH).toBe(0);
+    expect(mergeSettings({ settingsVersion: 3, materialOffsets: { FH: 7 } }).materialOffsets.FH).toBe(7);
   });
 });
 
 describe('calendar', () => {
-  it('skips weekends', () => {
+  it('works Monday to Saturday by default and skips Sunday', () => {
     const cal = new WorkCalendar(settings().calendar); // Fri 09/10
     expect(cal.toIso(0)).toBe('2026-10-09T06:00');
-    expect(cal.toIso(960)).toBe('2026-10-12T06:00'); // next working day is Monday
+    expect(cal.toIso(960)).toBe('2026-10-10T06:00'); // Saturday is a working day
+    expect(cal.toIso(1920)).toBe('2026-10-12T06:00'); // Sunday is skipped
     expect(cal.toIso(960, true)).toBe('2026-10-09T22:00');
+  });
+
+  it('can skip Saturday or work Sunday', () => {
+    const c = { ...settings().calendar, workSaturday: false, workSunday: true };
+    const cal = new WorkCalendar(c);
+    expect(cal.toIso(960)).toBe('2026-10-11T06:00'); // Friday, then Sunday
+  });
+
+  it('starts the plan at a later hour of the first day', () => {
+    const s = settings();
+    s.calendar.startHour = 10;
+    expect(planStartOffset(s.calendar)).toBe(240);
+    const p = planProduction(demoJobs(), { ...s, planningMode: 'classic' });
+    const firstStart = Math.min(...Object.values(p.queues).flat().map(i => i.startMinute));
+    expect(firstStart).toBeGreaterThanOrEqual(240);
+    s.calendar.startHour = 3; // before the shift: no effect
+    expect(planStartOffset(s.calendar)).toBe(0);
   });
 });
 

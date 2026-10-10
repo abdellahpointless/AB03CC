@@ -185,7 +185,7 @@ function MaterialsTab({ s, set }: TabProps) {
   const mats = [...new Set([...MATERIAL_TYPES, ...Object.keys(s.materialOffsets)])];
   return (
     <>
-      <Section title="Material time offsets" hint="Fixed extra minutes added to every piece of an estimated part (probing, deburring, tool wear…). Parts with a measured time ignore them. Estimated = (NC × factor ÷ efficiency + offset) × qty.">
+      <Section title="Material time offsets" hint="Extra time in percent added to the planned time of an estimated part (probing, deburring, tool wear…). Parts with a measured time ignore it. Estimated = NC × factor ÷ efficiency × (1 + offset %) × qty.">
         <div className="grid gap-2 sm:grid-cols-2">
           {mats.map(m => (
             <div key={m} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
@@ -194,7 +194,7 @@ function MaterialsTab({ s, set }: TabProps) {
                 <div className="w-20">
                   <NumberInput value={s.materialOffsets[m] ?? 0} min={0} onChange={v => v !== undefined && set({ materialOffsets: { ...s.materialOffsets, [m]: v } })} />
                 </div>
-                <span className="text-[11px] text-slate-500">min / piece</span>
+                <span className="text-[11px] text-slate-500">%</span>
               </div>
             </div>
           ))}
@@ -256,28 +256,40 @@ function TimeTab({ s, set }: TabProps) {
   const c = s.calendar;
   const setC = (p: Partial<typeof c>) => set({ calendar: { ...c, ...p } });
   const setCo = (k: keyof typeof s.changeover, v: number | undefined) => v !== undefined && set({ changeover: { ...s.changeover, [k]: Math.max(0, v) } });
-  const rows: Array<[keyof typeof s.changeover, string, string]> = [
-    ['sameMatnrMin', 'Identical drawing (Matnr)', 'Same program & fixture'],
-    ['sameMaterialNoMin', 'Same material number', 'Same stock blank'],
-    ['sameMaterialTypeMin', 'Same material family', 'Different stock dimensions'],
-    ['differentMaterialTypeMin', 'Different material family', 'Full clean-out & tooling swap'],
-  ];
   return (
     <>
-      <Section title="Changeover times" hint="Setup minutes inserted between two consecutive jobs on a machine.">
+      <Section title="Changeover times" hint="Setup minutes inserted between two consecutive parts on a machine. A changeover happens only when the next part is of a different material family, or is much bigger than the part before it. Anything else runs straight on.">
         <div className="grid gap-2 sm:grid-cols-2">
-          {rows.map(([k, label, hint]) => (
-            <div key={k} className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
-              <div>
-                <div className="text-xs font-bold text-slate-200">{label}</div>
-                <div className="text-[11px] text-slate-500">{hint}</div>
-              </div>
-              <div className="flex w-24 items-center gap-1">
-                <NumberInput value={s.changeover[k]} min={0} onChange={v => setCo(k, v)} />
-                <span className="text-[11px] text-slate-500">min</span>
-              </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+            <div>
+              <div className="text-xs font-bold text-slate-200">Different material family</div>
+              <div className="text-[11px] text-slate-500">Clean-out and tooling swap</div>
             </div>
-          ))}
+            <div className="flex w-24 items-center gap-1">
+              <NumberInput value={s.changeover.differentMaterialTypeMin} min={0} onChange={v => setCo('differentMaterialTypeMin', v)} />
+              <span className="text-[11px] text-slate-500">min</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+            <div>
+              <div className="text-xs font-bold text-slate-200">Much bigger part</div>
+              <div className="text-[11px] text-slate-500">Setup for a longer part after a short one</div>
+            </div>
+            <div className="flex w-24 items-center gap-1">
+              <NumberInput value={s.changeover.biggerPartMin} min={0} onChange={v => setCo('biggerPartMin', v)} />
+              <span className="text-[11px] text-slate-500">min</span>
+            </div>
+          </div>
+          <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2 sm:col-span-2">
+            <div>
+              <div className="text-xs font-bold text-slate-200">"Much bigger" means at least</div>
+              <div className="text-[11px] text-slate-500">times as long as the part before (its listed or estimated time × quantity)</div>
+            </div>
+            <div className="flex w-24 items-center gap-1">
+              <NumberInput value={s.changeover.biggerPartRatio} min={1} step={0.5} onChange={v => setCo('biggerPartRatio', v)} />
+              <span className="text-[11px] text-slate-500">×</span>
+            </div>
+          </div>
         </div>
       </Section>
       <Section title="Calendar" hint={`Working time per day: ${(minutesPerDay(c) / 60).toFixed(1)} h`}>
@@ -288,6 +300,9 @@ function TimeTab({ s, set }: TabProps) {
           <Field label="Shift start hour (0–23)">
             <NumberInput value={c.shiftStartHour} min={0} max={23} onChange={v => v !== undefined && setC({ shiftStartHour: Math.min(23, Math.max(0, Math.round(v))) })} />
           </Field>
+          <Field label="Plan starts at hour (0–23)" hint="The hour of the start date at which the machines begin. Earlier hours of that day are left empty.">
+            <NumberInput value={c.startHour} min={0} max={23} onChange={v => v !== undefined && setC({ startHour: Math.min(23, Math.max(0, Math.round(v))) })} />
+          </Field>
           <Field label="Shifts per day">
             <NumberInput value={c.shiftsPerDay} min={1} max={3} onChange={v => v && setC({ shiftsPerDay: Math.round(v) })} />
           </Field>
@@ -296,7 +311,8 @@ function TimeTab({ s, set }: TabProps) {
           </Field>
         </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2">
-          <Toggle checked={c.weekendOff} onChange={v => setC({ weekendOff: v })} label="Weekend off" hint="Saturday and Sunday are skipped." />
+          <Toggle checked={c.workSaturday} onChange={v => setC({ workSaturday: v })} label="Work on Saturday" hint="Operators normally work Monday to Saturday." />
+          <Toggle checked={c.workSunday} onChange={v => setC({ workSunday: v })} label="Work on Sunday" hint="Off by default: Sunday is skipped." />
           <Toggle checked={c.continuous247} onChange={v => setC({ continuous247: v })} label="Continuous 24/7" hint="Ignore shifts and weekends; machines run around the clock." />
         </div>
       </Section>

@@ -65,7 +65,7 @@ export interface PlannedDuration {
  * Planned minutes for a job on a machine.
  *  - manual time lock       -> exactly what the user typed
  *  - measured (in the list) -> average real minutes per part x qty. No efficiency, speed or offset applies.
- *  - estimated (not listed) -> (NC minutes x estimate multiplier / efficiency + material offset) x qty
+ *  - estimated (not listed) -> NC minutes x estimate multiplier / efficiency x (1 + material offset %) x qty
  */
 export function plannedDuration(
   job: Job,
@@ -102,7 +102,7 @@ export function plannedDuration(
   const base = job.ncMinutes * multiplier;
   const offset = s.materialOffsets[job.materialType] ?? 0;
   const eff = resolveEfficiency(job, machine, s);
-  const total = (percent: number) => Math.max(1, Math.round((base / (percent / 100) + offset) * job.qty));
+  const total = (percent: number) => Math.max(1, Math.round((base / (percent / 100)) * (1 + offset / 100) * job.qty));
   const expected = total(eff.expectedPercent);
   const cautious = total(eff.lowerBoundPercent);
   return {

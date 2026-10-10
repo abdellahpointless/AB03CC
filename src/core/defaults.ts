@@ -72,20 +72,7 @@ export const DEFAULT_MATERIAL_OFFSETS: Record<string, number> = {
   FR4: 0,
 };
 
-/** The offsets earlier versions shipped; saved settings still holding exactly these are reset. */
-const LEGACY_MATERIAL_OFFSETS: Record<string, number> = {
-  ALU: 0,
-  POM: 0,
-  FH: 2,
-  PCGF: 3,
-  MS: 4,
-  PEEK: 5,
-  PP: 1,
-  INOX: 8,
-  FR4: 2,
-};
-
-export const SETTINGS_VERSION = 2;
+export const SETTINGS_VERSION = 3;
 export const DEFAULT_ESTIMATE_MULTIPLIER = 2.8;
 
 export const MATERIAL_TYPES = ['ALU', 'POM', 'FH', 'PCGF', 'MS', 'PEEK', 'PP', 'INOX', 'FR4'];
@@ -105,7 +92,9 @@ export function defaultCalendar(): CalendarSettings {
     shiftsPerDay: 2,
     hoursPerShift: 8,
     shiftStartHour: 6,
-    weekendOff: true,
+    startHour: 6,
+    workSaturday: true,
+    workSunday: false,
     continuous247: false,
   };
 }
@@ -173,10 +162,9 @@ export function defaultSettings(): PlannerSettings {
   return {
     machines: structuredClone(DEFAULT_MACHINES),
     changeover: {
-      sameMatnrMin: 0,
-      sameMaterialNoMin: 8,
-      sameMaterialTypeMin: 12,
       differentMaterialTypeMin: 20,
+      biggerPartMin: 12,
+      biggerPartRatio: 3,
     },
     calendar: defaultCalendar(),
     materialOffsets: { ...DEFAULT_MATERIAL_OFFSETS },
@@ -214,17 +202,22 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
   const base = defaultSettings();
   if (!saved || typeof saved !== 'object') return base;
   const merged: PlannerSettings = { ...base, ...saved };
-  merged.calendar = { ...base.calendar, ...(saved.calendar ?? {}) };
+  const savedCal = (saved.calendar ?? {}) as Partial<CalendarSettings> & { weekendOff?: boolean };
+  merged.calendar = { ...base.calendar, ...savedCal };
+  // calendars saved before Saturday and Sunday were separate switches: operators work Monday to Saturday
+  if (savedCal.workSaturday === undefined) merged.calendar.workSaturday = true;
+  if (savedCal.workSunday === undefined) merged.calendar.workSunday = savedCal.weekendOff === false;
+  delete (merged.calendar as { weekendOff?: boolean }).weekendOff;
+  if (savedCal.startHour === undefined) merged.calendar.startHour = merged.calendar.shiftStartHour;
   merged.changeover = { ...base.changeover, ...(saved.changeover ?? {}) };
   if (!Array.isArray(merged.machines) || merged.machines.length === 0) merged.machines = base.machines;
   if (!Array.isArray(merged.priorityRules)) merged.priorityRules = base.priorityRules;
 
-  // Migration: version 2 introduced real-time planning (parts list + NC x 2.8). Old default offsets would
-  // be double counted on top of the estimate, so untouched legacy offsets are reset to the new defaults.
-  if ((saved.settingsVersion ?? 1) < SETTINGS_VERSION) {
-    const old = saved.materialOffsets ?? {};
-    const legacy = Object.keys(LEGACY_MATERIAL_OFFSETS).every(k => old[k] === LEGACY_MATERIAL_OFFSETS[k]);
-    if (legacy || Object.keys(old).length === 0) merged.materialOffsets = { ...base.materialOffsets };
+  // Migration: version 3 turned material offsets from minutes per piece into percent (the old numbers would mean
+  // something else), and made Saturday a working day by default.
+  if ((saved.settingsVersion ?? 1) < 3) {
+    merged.materialOffsets = { ...base.materialOffsets };
+    merged.changeover = { ...base.changeover }; // the changeover rule changed (material family or a much bigger part)
     merged.settingsVersion = SETTINGS_VERSION;
   }
   if (!(merged.estimateMultiplier > 0)) merged.estimateMultiplier = DEFAULT_ESTIMATE_MULTIPLIER;

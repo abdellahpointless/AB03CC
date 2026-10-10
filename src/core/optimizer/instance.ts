@@ -52,6 +52,8 @@ export interface InstanceItem {
 export interface BuildOptions {
   machines: MachineConfig[];
   changeover: ChangeoverRules;
+  /** a part's time in minutes, the same on every machine (drives the 'much bigger part' changeover) */
+  sizeOf(job: Job): number;
   /** minutes the job needs on that machine, or null when the machine cannot take it */
   durationOn(job: Job, machine: MachineConfig, tied: boolean): number | null;
   weightOf?(moduleKey: string, parts: Job[]): number;
@@ -115,7 +117,7 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
   }
 
   const setup = new Uint8Array(n * n);
-  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) if (a !== b) setup[a * n + b] = Math.min(255, changeoverMinutes(jobs[a], jobs[b], opts.changeover));
+  for (let a = 0; a < n; a++) for (let b = 0; b < n; b++) if (a !== b) setup[a * n + b] = Math.min(255, changeoverMinutes(jobs[a], jobs[b], opts.changeover, opts.sizeOf));
 
   const weight = new Float64Array(M).fill(1);
   if (opts.weightOf) for (let m = 0; m < M; m++) weight[m] = opts.weightOf(modIds[m], partLists[m].map(i => jobs[i]));

@@ -111,7 +111,7 @@ export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () 
               </span>,
             )}
             {item.timeBasis === 'estimated' && row('Efficiency', `${item.efficiencyPercent}% (${item.efficiencySource})`)}
-            {item.timeBasis === 'estimated' && row('Material offset', `${item.materialOffset} min / piece`)}
+            {item.timeBasis === 'estimated' && row('Material offset', `+${item.materialOffset} %`)}
             {row('Priority rank', `#${item.rank}`)}
             {row('Why here', item.decidingRule)}
           </dl>

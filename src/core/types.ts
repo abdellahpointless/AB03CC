@@ -62,11 +62,16 @@ export interface MachineConfig {
   description?: string;
 }
 
+/**
+ * A changeover happens only when the next part is of a different material family, or is much bigger (in time) than
+ * the part before it. Anything else runs straight on.
+ */
 export interface ChangeoverRules {
-  sameMatnrMin: number;
-  sameMaterialNoMin: number;
-  sameMaterialTypeMin: number;
+  /** the next part is of a different material family */
   differentMaterialTypeMin: number;
+  /** the next part takes at least `biggerPartRatio` times as long as the one before */
+  biggerPartMin: number;
+  biggerPartRatio: number;
 }
 
 export interface CalendarSettings {
@@ -75,7 +80,11 @@ export interface CalendarSettings {
   shiftsPerDay: number;
   hoursPerShift: number;
   shiftStartHour: number;
-  weekendOff: boolean;
+  /** hour of the first day at which the plan starts (before that the machines count as not available) */
+  startHour: number;
+  /** operators normally work Monday to Saturday */
+  workSaturday: boolean;
+  workSunday: boolean;
   continuous247: boolean;
 }
 
@@ -179,7 +188,7 @@ export interface PlannerSettings {
   machines: MachineConfig[];
   changeover: ChangeoverRules;
   calendar: CalendarSettings;
-  materialOffsets: Record<string, number>; // extra minutes per piece
+  materialOffsets: Record<string, number>; // extra time in percent of the planned time
   priorityRules: PriorityRule[];
   outOfScopeMachines: string[];
   materialAliases: Record<string, string>; // e.g. "ALU B" -> "ALU"

@@ -20,7 +20,7 @@ import { Toasts } from './ui/Toasts';
 type Dialog = 'settings' | 'print' | 'help' | 'report' | 'carpenter' | null;
 
 export default function App() {
-  const { jobs, plan, planning, planError, settings, notify } = useStore();
+  const { jobs, plan, planError, settings, notify } = useStore();
   const [view, setView] = useState<View>('gantt');
   const [dialog, setDialog] = useState<Dialog>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
@@ -57,7 +57,7 @@ export default function App() {
         ) : (
           <>
             {planError && <div className="mb-3 rounded-lg border border-rose-800 bg-rose-950/50 px-4 py-2 text-xs text-rose-200">Planning failed: {planError}. Showing the last good plan.</div>}
-            <div key={view} className={`anim-fade-up ${planning ? 'opacity-70 transition-opacity' : 'transition-opacity'}`}>
+            <div key={view} className="anim-fade-up">
               {view === 'gantt' && <GanttView onSelect={it => setSelectedJob(it.job.id)} onCarpenter={() => setDialog('carpenter')} />}
               {view === 'priority' && <PriorityView />}
               {view === 'orders' && <OrdersView onSelect={it => setSelectedJob(it.job.id)} />}

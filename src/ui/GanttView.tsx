@@ -210,8 +210,8 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
         <div ref={scroller} className="max-h-[calc(100vh-290px)] min-h-[360px] overflow-auto">
           <div style={{ width: width + LABEL_W, minWidth: '100%' }}>
             {/* ruler */}
-            <div className="sticky top-0 z-20 flex h-9 border-b border-slate-800 bg-slate-900">
-              <div style={{ width: LABEL_W }} className="sticky left-0 z-30 flex shrink-0 items-center border-r border-slate-800 bg-slate-900 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-300">
+            <div className="sticky top-0 z-40 flex h-9 border-b border-slate-800 bg-slate-900">
+              <div style={{ width: LABEL_W }} className="sticky left-0 z-50 flex shrink-0 items-center border-r border-slate-800 bg-slate-900 px-3 text-[11px] font-bold uppercase tracking-wider text-slate-300">
                 Machine center
               </div>
               <div className="relative flex-1">
@@ -244,7 +244,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                   onDragLeave={() => setDragOver(null)}
                   onDrop={e => (e.preventDefault(), onDrop(machine.id, e.dataTransfer.getData('text/plain')))}
                 >
-                  <div style={{ width: LABEL_W }} className="sticky left-0 z-10 flex shrink-0 flex-col justify-between border-r border-slate-800 bg-slate-900 px-3 py-2">
+                  <div style={{ width: LABEL_W }} className="sticky left-0 z-30 flex shrink-0 flex-col justify-between border-r border-slate-800 bg-slate-900 px-3 py-2 shadow-[4px_0_8px_-4px_rgba(0,0,0,0.6)]">
                     <div className="flex items-center justify-between gap-1">
                       <div className="flex items-center gap-1.5">
                         <span className={`h-2 w-2 rounded-full ${down ? 'bg-rose-500' : 'bg-emerald-400'}`} />
@@ -265,7 +265,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                     </div>
                   </div>
 
-                  <div className="relative flex-1" style={{ background: laneIdx % 2 ? 'rgba(15,23,42,0.35)' : 'transparent' }}>
+                  <div className="relative isolate min-w-0 flex-1 overflow-hidden" style={{ background: laneIdx % 2 ? 'rgba(15,23,42,0.35)' : 'transparent' }}>
                     {ticks.map((t, i) => (
                       <div key={i} style={{ left: t.x }} className={`absolute top-0 h-full border-l ${t.major ? 'border-slate-700' : 'border-slate-900'}`} />
                     ))}

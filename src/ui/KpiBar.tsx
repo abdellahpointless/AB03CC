@@ -4,11 +4,12 @@ import { useStore } from '../state/store';
 import { CountUp } from './CountUp';
 import type { PlanResult } from '../core/types';
 
-function Kpi({ label, value, sub, tone = 'text-white' }: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: string }) {
+function Kpi({ label, value, sub, tone = 'text-white', wide }: { label: string; value: React.ReactNode; sub?: React.ReactNode; tone?: string; wide?: boolean }) {
+  // fixed width and one line: the bar must not change size while the optimizer swaps plans
   return (
-    <div className="min-w-[110px]">
+    <div className={wide ? 'min-w-[270px]' : 'min-w-[130px]'}>
       <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mono text-base font-bold leading-tight ${tone}`}>
+      <div className={`mono h-6 whitespace-nowrap text-base font-bold leading-6 ${tone}`}>
         {value}
         {sub && <span className="ml-1.5 text-[10px] font-normal text-slate-500">{sub}</span>}
       </div>
@@ -17,7 +18,7 @@ function Kpi({ label, value, sub, tone = 'text-white' }: { label: string; value:
 }
 
 export function KpiBar({ plan, onCarpenter }: { plan: PlanResult; onCarpenter: () => void }) {
-  const { settings, improving } = useStore();
+  const { settings } = useStore();
   const k = plan.kpis;
   const busiest = Object.entries(k.finishPerMachine).sort((a, b) => b[1] - a[1])[0];
   const dayLen = new WorkCalendar(settings.calendar).dayLen;
@@ -37,16 +38,17 @@ export function KpiBar({ plan, onCarpenter }: { plan: PlanResult; onCarpenter: (
           <>
             avg {k.avgMoCompletion}m
             {opt && gain >= 0.05 && <span className="ml-1.5 font-semibold text-emerald-400">{gain.toFixed(1)}% sooner than the basic plan</span>}
-            {improving && <span className="ml-1.5 text-slate-400">still improving…</span>}
           </>
         }
         tone="text-sky-300"
+        wide
       />
       <Kpi
         label="Orders done by day 1 / 2"
         value={<><CountUp value={doneBy(1)} /> / <CountUp value={doneBy(2)} /></>}
         sub={<>of {mos.length}{day2Gain > 0 && <span className="ml-1.5 font-semibold text-emerald-400">+{day2Gain} by day 2 vs the basic plan</span>}</>}
         tone="text-emerald-300"
+        wide
       />
       <Kpi label="Total changeover" value={<CountUp value={k.changeoverMinutes} suffix="m" />} tone="text-amber-300" />
       <Kpi label="Setup saved" value={<CountUp value={k.setupSavedMinutes} prefix="+" suffix="m" />} tone="text-emerald-400" />

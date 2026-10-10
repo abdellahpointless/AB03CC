@@ -1,3 +1,4 @@
+import { planStartOffset } from '../calendar';
 import { plannedDuration, type PlannedDuration } from '../efficiency';
 import { partKey } from '../parse/partTimes';
 import type { ChangeoverRules, Job, MachineConfig, PartTimeMap, PlannerSettings, Segment, TimelineEvent } from '../types';
@@ -23,7 +24,12 @@ export class SimContext {
     readonly partTimes: PartTimeMap = {},
   ) {
     this.settings = settings;
-    for (const m of machines) this.downtime.set(m.id, mergeIntervals(eventsFor(settings.timelineEvents, m.id)));
+    const startOffset = planStartOffset(settings.calendar);
+    for (const m of machines) {
+      const windows = eventsFor(settings.timelineEvents, m.id);
+      if (startOffset > 0) windows.push({ start: 0, end: startOffset }); // the plan starts later than the shift
+      this.downtime.set(m.id, mergeIntervals(windows));
+    }
   }
 
   downtimeOf(machineId: string): Interval[] {
@@ -34,6 +40,21 @@ export class SimContext {
   measuredFor(job: Job): number | undefined {
     return this.settings.useMeasuredTimes ? this.partTimes[partKey(job.matnr)]?.minutes : undefined;
   }
+
+  private readonly sizes = new Map<string, number>();
+
+  /** A part's time in minutes, whatever the machine: the listed time, or NC x factor, times quantity (or the typed time). */
+  readonly sizeOf = (job: Job): number => {
+    let v = this.sizes.get(job.id);
+    if (v === undefined) {
+      const manual = this.manualDuration.get(job.id);
+      const measured = this.measuredFor(job);
+      const mult = this.settings.estimateMultiplier > 0 ? this.settings.estimateMultiplier : 1;
+      v = manual && manual > 0 ? manual : (measured !== undefined && measured > 0 ? measured : job.ncMinutes * mult) * job.qty;
+      this.sizes.set(job.id, v);
+    }
+    return v;
+  };
 
   duration(job: Job, machine: MachineConfig): PlannedDuration {
     const key = `${job.id}|${machine.id}`;
@@ -63,13 +84,16 @@ function mergeIntervals(list: Interval[]): Interval[] {
   return out;
 }
 
-export function changeoverMinutes(prev: Job | null, cur: Job, r: ChangeoverRules): number {
+/**
+ * Setup minutes between two consecutive parts. `size` is a part's time in minutes, the same on every machine so that
+ * the search and the simulation agree. No changeover for the same drawing, or for a part of the same material family
+ * that is not much bigger than the one before.
+ */
+export function changeoverMinutes(prev: Job | null, cur: Job, r: ChangeoverRules, size: (j: Job) => number): number {
   if (!prev) return 0;
-  if (prev.matnr === cur.matnr) return r.sameMatnrMin;
-  if (prev.masterOrder === cur.masterOrder && prev.materialType === cur.materialType) return 0;
-  if (prev.materialNo !== 'UNKNOWN' && prev.materialNo === cur.materialNo) return r.sameMaterialNoMin;
-  if (prev.materialType === cur.materialType) return r.sameMaterialTypeMin;
-  return r.differentMaterialTypeMin;
+  if (prev.matnr === cur.matnr) return 0;
+  if (prev.materialType !== cur.materialType) return r.differentMaterialTypeMin;
+  return size(cur) >= Math.max(1, r.biggerPartRatio) * size(prev) ? r.biggerPartMin : 0;
 }
 
 /** Places `length` working minutes from `t`, pausing across downtime. */
@@ -134,7 +158,7 @@ export function step(
   let t = state.t;
   if (opts.respectManualStart && manualStart !== undefined && manualStart > t) t = manualStart;
 
-  const setup = changeoverMinutes(state.prev, job, ctx.settings.changeover);
+  const setup = changeoverMinutes(state.prev, job, ctx.settings.changeover, ctx.sizeOf);
   if (setup > 0) t = placeSplit(t, setup, down).end;
 
   const durationMin = ctx.duration(job, machine).durationMin;

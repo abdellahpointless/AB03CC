@@ -127,11 +127,9 @@ button {
 .block-in { transform-origin: left center; animation: block-in 0.5s var(--ease-out) backwards; }
 .float-slow { animation: float-slow 4.2s ease-in-out infinite; }
 
-/* Gantt boxes: glide to new positions after a re-plan, lift on hover */
+/* Gantt boxes: lift on hover. They jump straight to their new place after a re-plan (gliding 400 boxes at once looked like jitter). */
 .gantt-block {
   transition:
-    left 0.45s var(--ease-out),
-    width 0.45s var(--ease-out),
     opacity 0.2s ease,
     transform 0.16s ease,
     box-shadow 0.2s ease;

@@ -28,6 +28,8 @@ export interface ReportData {
   dayLen: number;
   shiftStartHour: number;
   dayLabels: string[];
+  /** disruptions both schedules had to work around: [machineIndex, startMinute, endMinute] */
+  downtime: number[][];
   summary: {
     app: Summary;
     perfect: Summary;
@@ -55,7 +57,7 @@ const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replac
 
 export function buildReportHtml(data: ReportData): string {
   const json = JSON.stringify(data).replace(/</g, '\\u003c');
-  return `<title>${esc(data.title)}</title>
+  return `<title>Perfect Timeline Comparison</title>
 <style>
 :root {
   color-scheme: dark;
@@ -131,6 +133,7 @@ svg text { fill: var(--fg-3); font: 11px var(--sans); }
 .blk.close { border-color: var(--fg); box-shadow: 0 0 0 1px var(--bg) inset; }
 .blk.est::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 5px; height: 5px; border-radius: 50%; border: 1px solid var(--block-ink); opacity: 0.55; }
 .blk.mea::after { content: ""; position: absolute; right: 3px; bottom: 3px; width: 5px; height: 5px; border-radius: 50%; background: var(--block-ink); opacity: 0.55; }
+.down { position: absolute; top: 0; bottom: 0; z-index: 2; pointer-events: none; border-inline: 1px solid var(--bad); background: repeating-linear-gradient(135deg, color-mix(in srgb, var(--bad) 60%, transparent) 0 3px, transparent 3px 7px); }
 .setup { position: absolute; top: 14px; height: 18px; background: repeating-linear-gradient(45deg, var(--fg-3) 0 2px, transparent 2px 5px); opacity: 0.45; border-radius: 3px; }
 .gantt.dim .blk:not(.hl) { opacity: 0.22; }
 .flag { position: absolute; top: 1px; height: 11px; line-height: 11px; font-size: 9px; padding-inline: 3px; border-radius: 3px; background: var(--fg); color: var(--bg); z-index: 2; pointer-events: none; font-variant-numeric: tabular-nums; }
@@ -163,7 +166,7 @@ td.num, th.num { text-align: right; }
   </section>
   <section class="card">
     <h2>Perfect timeline</h2>
-    <div class="toolbar"><button data-z="out" aria-label="Zoom out">−</button><button data-z="in" aria-label="Zoom in">+</button><button data-z="fit">Fit width</button><span class="hint">Colour = when the box's master order finishes (light = early). Outlined box = the one that closes its order. Hover to follow an order.</span></div>
+    <div class="toolbar"><button data-z="out" aria-label="Zoom out">−</button><button data-z="in" aria-label="Zoom in">+</button><button data-z="fit">Fit width</button><span class="hint">Colour = when the box's master order finishes (light = early). Outlined box = the one that closes its order. Hatched red = a disruption both plans had to work around. Hover to follow an order.</span></div>
     <div class="gantt-scroll" id="scrollA"><div class="gantt" id="ganttA"></div></div>
   </section>
   <section class="card">
@@ -263,6 +266,7 @@ function renderGantt(el, view, endKey) {
   D.machines.forEach((name, k) => {
     h += '<div class="lane"><span class="name">' + name + '</span>';
     for (let t = 0; t <= tmaxG; t += D.dayLen) h += '<div class="day-line" style="left:' + (112 + t * sc) + 'px"></div>';
+    D.downtime.filter(d => d[0] === k).forEach(d => h += '<div class="down" title="Disruption ' + clock(d[1]) + ' to ' + clock(d[2], true) + '" style="left:' + (112 + d[1] * sc) + 'px;width:' + Math.max(2, (d[2] - d[1]) * sc) + 'px"></div>');
     view.jobs.filter(j => j[0] === k).forEach(j => {
       const [, ji, s, e, su, m, closes, meas] = j;
       if (su > 0) h += '<div class="setup" style="left:' + (112 + (s - su) * sc) + 'px;width:' + su * sc + 'px"></div>';

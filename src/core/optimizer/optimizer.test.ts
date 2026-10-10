@@ -86,3 +86,44 @@ describe('lower bound', () => {
     expect(lb.sumC).toBeLessThanOrEqual(r.sumC);
   });
 });
+
+describe('downtime', () => {
+  for (const restart of [false, true]) {
+    it(`replays the planner minute for minute when machines are interrupted (${restart ? 'jobs restart' : 'jobs pause'})`, () => {
+      const s = defaultSettings();
+      s.calendar.startDate = '2026-10-09';
+      s.restartJobOnEvent = restart;
+      s.timelineEvents = [
+        { id: 'a', machineId: 'HAAS - 1', type: 'breakdown', title: 'a', startMinute: 130, durationMinutes: 75 },
+        { id: 'b', machineId: 'ALL', type: 'maintenance', title: 'b', startMinute: 400, durationMinutes: 30 },
+        { id: 'c', machineId: 'FANUC - 2', type: 'absent', title: 'c', startMinute: 0, durationMinutes: 20 },
+        { id: 'd', machineId: 'HAAS - 5', type: 'other', title: 'd', startMinute: 215, durationMinutes: 400 },
+      ];
+      const p = planProduction(jobs, s);
+      const built = instanceFromPlan(p, s, {});
+      const m = evaluate(built.inst, built.appQueues);
+      const index = new Map(built.inst.jobs.map((j, i) => [j.id, i]));
+      let checked = 0;
+      for (const q of Object.values(p.queues))
+        for (const it of q) {
+          const j = index.get(it.job.id)!;
+          expect([it.job.id, m.start[j], m.end[j]]).toEqual([it.job.id, it.startMinute, it.endMinute]);
+          checked++;
+        }
+      expect(checked).toBe(built.inst.n);
+      expect(m.sumC).toBe(p.kpis.sumMoCompletion);
+
+      // the incremental search agrees with the full replay on interrupted machines too
+      const rng = makeRng(11);
+      const search = makeQueueSearch(built.inst, built.appQueues);
+      const t = search.sampleTemperature(rng, 300);
+      for (let round = 0; round < 4; round++) {
+        search.anneal(3000, t, t / 20, rng);
+        expect(search.selfCheck()).toBeNull();
+      }
+      const res = optimize(built.inst, { seed: 3, orderIters: 1500, queueIters: 15000, restarts: 1, starts: [built.appQueues] });
+      expect(validate(built.inst, res.queues)).toEqual([]);
+      expect(res.sumC).toBeLessThanOrEqual(m.sumC);
+    });
+  }
+});

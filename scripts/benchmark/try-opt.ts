@@ -1,14 +1,12 @@
-import { defaultSettings } from '../../src/core/defaults';
 import { evaluate, modulesDoneBy, validate } from '../../src/core/optimizer/evaluate';
 import { optimize } from '../../src/core/optimizer/search';
-import { instanceFromPlan, loadInputs, runApp } from './common';
+import { parseFlags, prepare } from './common';
 
-const [seedArg, qIters, oIters, ...paths] = process.argv.slice(2);
-const inp = loadInputs(paths, 'src/data/builtin-part-times.json');
-const settings = defaultSettings();
-settings.calendar.startDate = '2026-10-09';
-const plan = runApp(inp, settings);
-const { inst, appQueues } = instanceFromPlan(plan, settings, inp.partTimes);
+const flags = parseFlags();
+const seedArg = flags.get('seed', '1')!;
+const qIters = flags.get('iters', '300000')!;
+const oIters = flags.get('order-iters', '20000')!;
+const { inst, appQueues } = prepare(flags);
 const app = evaluate(inst, appQueues);
 const t0 = Date.now();
 const weights = { makespan: Number(process.env.W_MAKESPAN ?? 0.3), partEnd: Number(process.env.W_PARTEND ?? 0.0015), setup: Number(process.env.W_SETUP ?? 0) };

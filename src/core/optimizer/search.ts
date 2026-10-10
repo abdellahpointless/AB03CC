@@ -1,6 +1,7 @@
 import { makeDecoder } from './decode';
 import { evaluate, type Queues } from './evaluate';
-import type { Instance } from './instance';
+import { moduleCost, type Instance } from './instance';
+import { advance } from './timing';
 
 /** Small seeded generator: the same seed always walks the same search. */
 export function makeRng(seed: number) {
@@ -41,6 +42,7 @@ export function annealOrder(
   iters: number,
   rng: Rng,
   log?: (s: string) => void,
+  tick?: (done: number) => void,
 ): { order: Int32Array; cost: number } {
   const dec = makeDecoder(inst);
   const M = inst.M;
@@ -79,6 +81,7 @@ export function annealOrder(
       }
     }
     T *= alpha;
+    if (tick && it % 256 === 255) tick(256);
     if (log && it % Math.max(1, Math.floor(iters / 5)) === 0) log(`  order SA ${it}/${iters} T=${T.toFixed(2)} cur=${curCost.toFixed(0)} best=${bestCost.toFixed(0)}`);
   }
   return { order: best, cost: bestCost };
@@ -132,7 +135,7 @@ export interface QueueSearch {
   /** objective value of the current state */
   cost(): number;
   weighted(): number;
-  anneal(iters: number, T0: number, T1: number, rng: Rng, log?: (s: string) => void): void;
+  anneal(iters: number, T0: number, T1: number, rng: Rng, log?: (s: string) => void, tick?: (done: number) => void): void;
   /** deterministic steepest-descent sweeps over every relocation; returns the number of improvements */
   descend(maxPasses: number, rng: Rng): number;
   best(): { queues: Queues; cost: number };
@@ -143,7 +146,7 @@ export interface QueueSearch {
 }
 
 export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAULT_WEIGHTS): QueueSearch {
-  const { n, K, M, dur, setup, mod, weight } = inst;
+  const { n, K, M, dur, setup, mod, hasDown } = inst;
   const Q: Int32Array[] = Array.from({ length: K }, () => new Int32Array(n + 2));
   const len = new Int32Array(K);
   const mach = new Int16Array(n);
@@ -258,7 +261,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
       const s = prev < 0 ? 0 : setup[prev * n + j];
       setupTot += s - setupB[j];
       setupB[j] = s;
-      t += s + dur[j * K + k];
+      t = hasDown[k] ? advance(inst, k, t, s, dur[j * K + k]) : t + s + dur[j * K + k];
       sumEnd += t - endT[j];
       endT[j] = t;
       mach[j] = k;
@@ -285,7 +288,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
       if (e !== modEnd[m]) {
         modLogIdx[modLogN] = m;
         modLogVal[modLogN++] = modEnd[m];
-        sumW += weight[m] * (e - modEnd[m]);
+        sumW += moduleCost(inst, m, e) - moduleCost(inst, m, modEnd[m]);
         modEnd[m] = e;
       }
     }
@@ -329,7 +332,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
       let e = 0;
       for (let i = 0; i < ps.length; i++) if (endT[ps[i]] > e) e = endT[ps[i]];
       modEnd[m] = e;
-      sumW += weight[m] * e;
+      sumW += moduleCost(inst, m, e);
     }
   }
   loadQueues(init);
@@ -522,7 +525,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
     return ds.length ? ds[Math.floor(ds.length / 2)] : 1;
   }
 
-  function anneal(iters: number, T0: number, T1: number, rng: Rng, log?: (s: string) => void) {
+  function anneal(iters: number, T0: number, T1: number, rng: Rng, log?: (s: string) => void, tick?: (done: number) => void) {
     const alpha = Math.pow(T1 / T0, 1 / Math.max(1, iters));
     let T = T0;
     let cur = objective();
@@ -541,6 +544,7 @@ export function makeQueueSearch(inst: Instance, init: Queues, w: Weights = DEFAU
         }
       }
       T *= alpha;
+      if (tick && it % 4096 === 4095) tick(4096);
       if (log && it > 0 && it % Math.max(1, Math.floor(iters / 8)) === 0) log(`  queue SA ${it}/${iters} T=${T.toFixed(2)} cur=${cur.toFixed(0)} best=${bestCost.toFixed(0)} sumC=${sumC().toFixed(0)}`);
     }
   }
@@ -687,10 +691,14 @@ export interface OptimizeOptions {
   /** extra starting schedules (for example the planner's own) */
   starts?: Queues[];
   log?: (s: string) => void;
+  /** called now and then with the share of the planned work that is done (0..1) */
+  onProgress?: (fraction: number) => void;
 }
 
 export interface OptimizeResult {
   queues: Queues;
+  /** the full objective (weighted completion times plus the small makespan / part-end / changeover terms) */
+  objective: number;
   sumW: number;
   sumC: number;
   makespan: number;
@@ -705,6 +713,17 @@ export function startingOrders(inst: Instance): Int32Array[] {
   return keys.map(f => Int32Array.from([...idx].sort((a, b) => f(a) - f(b) || a - b)));
 }
 
+/** The objective the searches minimise, computed from scratch for any schedule. */
+export function objectiveValue(inst: Instance, queues: Queues, w: Weights = DEFAULT_WEIGHTS): number {
+  const m = evaluate(inst, queues);
+  let sumEnd = 0;
+  for (let j = 0; j < inst.n; j++) sumEnd += m.end[j];
+  return m.sumW + w.makespan * m.makespan + w.partEnd * sumEnd + w.setup * m.setupTotal;
+}
+
+/** Cost of one module-order iteration relative to one queue iteration (measured), used to pace the progress. */
+const ORDER_COST = 10;
+
 export function optimize(inst: Instance, opts: OptimizeOptions = {}): OptimizeResult {
   const log = opts.log;
   const rng = makeRng(opts.seed ?? 1);
@@ -712,10 +731,25 @@ export function optimize(inst: Instance, opts: OptimizeOptions = {}): OptimizeRe
   const dec = makeDecoder(inst);
   const candidates: Queues[] = [...(opts.starts ?? [])];
 
-  // stage A: module orders
   const orderIters = opts.orderIters ?? 60000;
-  for (const init of startingOrders(inst)) {
-    const r = annealOrder(inst, init, orderIters, rng, undefined);
+  const queueIters = opts.queueIters ?? 600000;
+  const restarts = opts.restarts ?? 3;
+  const orders = startingOrders(inst);
+  const total = orders.length * orderIters * ORDER_COST + restarts * queueIters;
+  let done = 0;
+  let reported = -1;
+  const report = (work: number) => {
+    done += work;
+    const f = Math.min(1, done / Math.max(1, total));
+    if (opts.onProgress && f - reported >= 0.01) {
+      reported = f;
+      opts.onProgress(f);
+    }
+  };
+
+  // stage A: module orders
+  for (const init of orders) {
+    const r = annealOrder(inst, init, orderIters, rng, undefined, n => report(n * ORDER_COST));
     log?.(`stage A start -> weighted sum ${r.cost.toFixed(0)}`);
     candidates.push(dec.decode(r.order));
   }
@@ -723,20 +757,31 @@ export function optimize(inst: Instance, opts: OptimizeOptions = {}): OptimizeRe
   // stage B: queue level annealing from the best candidates
   const scored = candidates.map(q => ({ q, c: evaluate(inst, q).sumW }));
   scored.sort((a, b) => a.c - b.c);
-  const restarts = opts.restarts ?? 3;
   const search = makeQueueSearch(inst, scored[0].q, weights);
   let overallBest = { queues: scored[0].q, cost: Infinity };
   for (let r = 0; r < restarts; r++) {
     const startQ = r === 0 ? scored[0].q : r === 1 && scored[1] ? scored[1].q : overallBest.queues;
     search.load(startQ);
     const T0 = search.sampleTemperature(rng) * 0.5;
-    search.anneal(opts.queueIters ?? 600000, Math.max(1, T0), Math.max(0.05, T0 / 300), rng, log);
+    search.anneal(queueIters, Math.max(1, T0), Math.max(0.05, T0 / 300), rng, log, report);
     search.load(search.best().queues);
     search.descend(4, rng);
     const b = search.best();
     log?.(`restart ${r}: objective ${b.cost.toFixed(1)}`);
     if (b.cost < overallBest.cost) overallBest = { queues: b.queues, cost: b.cost };
   }
-  const m = evaluate(inst, overallBest.queues);
-  return { queues: overallBest.queues, sumW: m.sumW, sumC: m.sumC, makespan: m.makespan, setupTotal: m.setupTotal };
+
+  // never hand back something worse than a schedule we were given
+  let result = overallBest.queues;
+  let objective = objectiveValue(inst, result, weights);
+  for (const start of opts.starts ?? []) {
+    const v = objectiveValue(inst, start, weights);
+    if (v < objective - 1e-9) {
+      result = start;
+      objective = v;
+    }
+  }
+  opts.onProgress?.(1);
+  const m = evaluate(inst, result);
+  return { queues: result, objective, sumW: m.sumW, sumC: m.sumC, makespan: m.makespan, setupTotal: m.setupTotal };
 }

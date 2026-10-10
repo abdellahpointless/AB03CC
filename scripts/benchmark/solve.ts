@@ -1,35 +1,25 @@
 /**
  * Searches for the best plan the shop could possibly run, using the same timing rules as the planner.
  *
- *   npx tsx scripts/benchmark/solve.ts --seed 1 --iters 20000000 --restarts 1 --out best-1.json -- <files...>
+ *   npx tsx scripts/benchmark/solve.ts --seed 1 --iters 20000000 --restarts 1 [--settings run.json] --out best-1.json -- <files...>
  *
  * Files are recognised by their columns (production export, carpenter list, parts time list).
- * The result JSON holds the instance (for the CP-SAT cross-check) and the best queues found.
+ * `--settings` holds the changes made in the app (priority rules, disruptions on the timeline ...).
+ * The result JSON holds the best queues found.
  */
 import { writeFileSync } from 'node:fs';
-import { defaultSettings } from '../../src/core/defaults';
 import { evaluate, validate } from '../../src/core/optimizer/evaluate';
 import { optimize } from '../../src/core/optimizer/search';
-import { instanceFromPlan, loadInputs, runApp } from './common';
+import { parseFlags, prepare } from './common';
 
-const args = process.argv.slice(2);
-const flag = (name: string, def?: string) => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 ? args[i + 1] : def;
-};
-const files = args.slice(args.indexOf('--') + 1);
-const seed = Number(flag('seed', '1'));
-const iters = Number(flag('iters', '2000000'));
-const restarts = Number(flag('restarts', '1'));
-const orderIters = Number(flag('order-iters', '100000'));
-const out = flag('out', 'best.json')!;
-const start = flag('start-date', '2026-10-09')!;
+const flags = parseFlags();
+const seed = Number(flags.get('seed', '1'));
+const iters = Number(flags.get('iters', '2000000'));
+const restarts = Number(flags.get('restarts', '1'));
+const orderIters = Number(flags.get('order-iters', '100000'));
+const out = flags.get('out', 'best.json')!;
 
-const inp = loadInputs(files, 'src/data/builtin-part-times.json');
-const settings = defaultSettings();
-settings.calendar.startDate = start;
-const plan = runApp(inp, settings);
-const { inst, appQueues } = instanceFromPlan(plan, settings, inp.partTimes);
+const { inst, appQueues } = prepare(flags);
 const app = evaluate(inst, appQueues);
 const t0 = Date.now();
 const res = optimize(inst, { seed, queueIters: iters, orderIters, restarts, starts: [appQueues] });

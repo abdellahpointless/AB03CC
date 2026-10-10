@@ -1,4 +1,5 @@
-import type { Instance } from './instance';
+import { moduleCost, type Instance } from './instance';
+import { advance, last } from './timing';
 
 /** A schedule: for every machine the ordered list of job indices. */
 export type Queues = number[][];
@@ -21,7 +22,7 @@ export interface Metrics {
   machineSetup: number[];
 }
 
-/** Plays a schedule forward with the same timing rules as the planner (no downtime events). */
+/** Plays a schedule forward with the same timing rules as the planner (changeovers, downtime windows). */
 export function evaluate(inst: Instance, queues: Queues): Metrics {
   const { n, K, M, dur, setup } = inst;
   const end = new Int32Array(n);
@@ -38,9 +39,8 @@ export function evaluate(inst: Instance, queues: Queues): Metrics {
       const d = dur[j * K + k];
       if (d <= 0) throw new Error(`job ${inst.jobs[j].id} cannot run on ${inst.machineIds[k]}`);
       const s = prev < 0 ? 0 : setup[prev * n + j];
-      t += s;
-      start[j] = t;
-      t += d;
+      t = advance(inst, k, t, s, d);
+      start[j] = last.start;
       end[j] = t;
       setupBefore[j] = s;
       busy[k] += d;
@@ -56,7 +56,7 @@ export function evaluate(inst: Instance, queues: Queues): Metrics {
   let sumW = 0;
   for (let m = 0; m < M; m++) {
     sumC += modEnd[m];
-    sumW += inst.weight[m] * modEnd[m];
+    sumW += moduleCost(inst, m, modEnd[m]);
   }
   return { end, start, setupBefore, modEnd, sumC, sumW, makespan: Math.max(0, ...machineEnd), setupTotal, machineEnd, busy, machineSetup };
 }

@@ -1,13 +1,8 @@
-import { defaultSettings } from '../../src/core/defaults';
 import { evaluate, validate } from '../../src/core/optimizer/evaluate';
 import { makeQueueSearch, makeRng } from '../../src/core/optimizer/search';
-import { instanceFromPlan, loadInputs, runApp } from './common';
+import { parseFlags, prepare } from './common';
 
-const inp = loadInputs(process.argv.slice(2), 'src/data/builtin-part-times.json');
-const settings = defaultSettings();
-settings.calendar.startDate = '2026-10-09';
-const plan = runApp(inp, settings);
-const { inst, appQueues } = instanceFromPlan(plan, settings, inp.partTimes);
+const { inst, appQueues } = prepare(parseFlags());
 const rng = makeRng(5);
 const s = makeQueueSearch(inst, appQueues);
 console.log('initial check:', s.selfCheck());

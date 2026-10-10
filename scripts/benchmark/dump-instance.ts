@@ -1,23 +1,14 @@
 /** Writes the instance (and the best queues of a solve run) as JSON for the CP-SAT cross-check. */
 import { readFileSync, writeFileSync } from 'node:fs';
-import { defaultSettings } from '../../src/core/defaults';
-import { instanceFromPlan, loadInputs, runApp } from './common';
+import { parseFlags, prepare } from './common';
 
-const args = process.argv.slice(2);
-const flag = (name: string, def?: string) => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 ? args[i + 1] : def;
-};
-const files = args.slice(args.indexOf('--') + 1);
-const inp = loadInputs(files, 'src/data/builtin-part-times.json');
-const settings = defaultSettings();
-settings.calendar.startDate = flag('start-date', '2026-10-09')!;
-const plan = runApp(inp, settings);
-const { inst, appQueues } = instanceFromPlan(plan, settings, inp.partTimes);
-const best = flag('best') ? (JSON.parse(readFileSync(flag('best')!, 'utf8')) as { queues: number[][]; jobIds: string[] }) : null;
+const flags = parseFlags();
+const { inst, appQueues } = prepare(flags);
+const bestPath = flags.get('best');
+const best = bestPath ? (JSON.parse(readFileSync(bestPath, 'utf8')) as { queues: number[][]; jobIds: string[] }) : null;
 if (best && best.jobIds.join('|') !== inst.jobs.map(j => j.id).join('|')) throw new Error('best file belongs to a different instance');
 writeFileSync(
-  flag('out', 'instance.json')!,
+  flags.get('out', 'instance.json')!,
   JSON.stringify({
     n: inst.n,
     K: inst.K,
@@ -29,6 +20,7 @@ writeFileSync(
     fixed: Array.from(inst.fixed),
     head: inst.head.map(h => Array.from(h)),
     setup: Array.from(inst.setup),
+    downtime: inst.down.map(d => Array.from(d)),
     appQueues,
     bestQueues: best?.queues ?? null,
   }),

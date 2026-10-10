@@ -25,6 +25,8 @@ def main():
     slack = int(opts.get('--horizon-slack', 600))
 
     inst = json.load(open(path))
+    if any(len(w) for w in inst.get('downtime', [])):
+        sys.exit('this instance has disruptions on the timeline, which the exact model does not cover; skipping the polish')
     n, K, M = inst['n'], inst['K'], inst['M']
     dur, setup, mod, fixed = inst['dur'], inst['setup'], inst['mod'], inst['fixed']
     elig = [[k for k in range(K) if dur[j * K + k] > 0] for j in range(n)]

@@ -125,6 +125,10 @@ export interface TimelineEvent {
   note?: string;
 }
 
+/** How the planner searches: the optimizing engine, or the earlier fast heuristic only. */
+export type PlanningMode = 'modules_first' | 'classic';
+export type PlanningEffort = 'quick' | 'standard' | 'thorough';
+
 export type CarpenterCutColumn = 'cutted_status' | 'carpenter_status' | 'either';
 export type CarpenterDelayMode = 'off' | 'soft' | 'hard';
 
@@ -204,6 +208,11 @@ export interface PlannerSettings {
   useMeasuredTimes: boolean;
   /** Parts missing from the list are planned at NC minutes x this factor. */
   estimateMultiplier: number;
+
+  /** modules_first searches for the plan that finishes master orders soonest; classic is the earlier heuristic. */
+  planningMode: PlanningMode;
+  /** how long the search may work: quick, standard or thorough */
+  planningEffort: PlanningEffort;
   settingsVersion: number;
 }
 
@@ -311,8 +320,20 @@ export interface PlanKpis {
   bottlenecks: Bottleneck[];
 }
 
+/** What the optimizer did to the plan, so the app can show the gain over the earlier heuristic. */
+export interface OptimizationInfo {
+  effort: PlanningEffort;
+  /** the same plan without the search: sum of master order completion, last machine finish, changeover */
+  classicSumMo: number;
+  classicMakespan: number;
+  classicChangeover: number;
+  /** master orders finished by the end of working day 1, 2 and 3: [classic plan, optimized plan] */
+  doneByDay: Array<[number, number]>;
+}
+
 export interface PlanResult {
   generatedAt: string;
+  optimization?: OptimizationInfo;
   queues: Record<Id, ScheduledJob[]>;
   moSync: Record<string, MoSync>;
   carpenter: Record<string, CarpenterMoInfo>;

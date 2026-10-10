@@ -1,8 +1,8 @@
-import { isEligible } from '../scheduler/plan';
 import { SimContext } from '../scheduler/simulate';
 import type { PartTimeMap, PlanResult, PlannerSettings } from '../types';
 import type { Queues } from './evaluate';
 import { buildInstance, type Instance, type InstanceItem } from './instance';
+import { instanceOptions } from './options';
 
 export interface Built {
   inst: Instance;
@@ -24,12 +24,7 @@ export function instanceFromPlan(plan: PlanResult, settings: PlannerSettings, pa
       items.push({ job: it.job, fixedMachine: it.erpLocked || it.userLocked ? m.id : undefined });
     }
   }
-  const inst = buildInstance(items, {
-    machines,
-    changeover: settings.changeover,
-    // the planner keeps ERP-assigned jobs on their machine even where the material rules would refuse them
-    durationOn: (job, machine, tied) => (tied || isEligible(job, machine, settings, ctx) ? ctx.duration(job, machine).durationMin : null),
-  });
+  const inst = buildInstance(items, instanceOptions(machines, settings, ctx));
   const index = new Map(inst.jobs.map((j, i) => [j.id, i]));
   const appQueues: Queues = machines.map(m => (plan.queues[m.id] ?? []).filter(it => index.has(it.job.id)).map(it => index.get(it.job.id)!));
   return { inst, appQueues };

@@ -30,6 +30,15 @@ export interface Instance {
   setup: Uint8Array;
   /** objective weight of every module (1 = plain "finish modules as early as possible") */
   weight: Float64Array;
+  /** minute after which finishing a module costs `slope` extra per minute (Infinity = no limit) */
+  due: Float64Array;
+  slope: Float64Array;
+  /** downtime of every machine as merged windows [start0, end0, start1, end1, ...] in working minutes */
+  down: Int32Array[];
+  /** 1 when the machine has any downtime (lets the hot loops skip the window arithmetic) */
+  hasDown: Uint8Array;
+  /** a job that meets downtime starts again afterwards instead of pausing */
+  restart: boolean;
   /** total work of a module on its cheapest machine for every part (ignores changeovers) */
   work: Float64Array;
 }
@@ -46,6 +55,11 @@ export interface BuildOptions {
   /** minutes the job needs on that machine, or null when the machine cannot take it */
   durationOn(job: Job, machine: MachineConfig, tied: boolean): number | null;
   weightOf?(moduleKey: string, parts: Job[]): number;
+  /** a minute the module should not finish after, and what every minute beyond it costs */
+  dueOf?(moduleKey: string, parts: Job[]): { due: number; slope: number } | null;
+  /** windows in which the machine does not work (breakdowns, maintenance ...), merged and sorted */
+  downtime?(machine: MachineConfig): Array<{ start: number; end: number }>;
+  restartJobOnEvent?: boolean;
 }
 
 export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instance {
@@ -106,6 +120,18 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
   const weight = new Float64Array(M).fill(1);
   if (opts.weightOf) for (let m = 0; m < M; m++) weight[m] = opts.weightOf(modIds[m], partLists[m].map(i => jobs[i]));
 
+  const due = new Float64Array(M).fill(Infinity);
+  const slope = new Float64Array(M);
+  if (opts.dueOf) {
+    for (let m = 0; m < M; m++) {
+      const d = opts.dueOf(modIds[m], partLists[m].map(i => jobs[i]));
+      if (d) {
+        due[m] = d.due;
+        slope[m] = d.slope;
+      }
+    }
+  }
+
   const work = new Float64Array(M);
   for (let m = 0; m < M; m++) {
     for (const p of partLists[m]) {
@@ -114,6 +140,16 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
       work[m] += best;
     }
   }
+
+  const down = opts.machines.map(m => {
+    const windows = opts.downtime?.(m) ?? [];
+    const flat = new Int32Array(windows.length * 2);
+    windows.forEach((w, i) => {
+      flat[i * 2] = Math.round(w.start);
+      flat[i * 2 + 1] = Math.round(w.end);
+    });
+    return flat;
+  });
 
   return {
     K,
@@ -131,6 +167,17 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
     head: headLists.map(l => Int32Array.from(l)),
     setup,
     weight,
+    due,
+    slope,
     work,
+    down,
+    hasDown: Uint8Array.from(down, d => (d.length ? 1 : 0)),
+    restart: Boolean(opts.restartJobOnEvent),
   };
+}
+
+/** What finishing module `m` at minute `c` costs: its weight per minute, plus the penalty past its limit. */
+export function moduleCost(inst: Instance, m: number, c: number): number {
+  const base = inst.weight[m] * c;
+  return c > inst.due[m] ? base + inst.slope[m] * (c - inst.due[m]) : base;
 }

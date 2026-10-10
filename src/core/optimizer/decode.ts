@@ -1,5 +1,6 @@
-import type { Instance } from './instance';
+import { moduleCost, type Instance } from './instance';
 import type { Queues } from './evaluate';
+import { advance } from './timing';
 
 /**
  * Turns a module order into a full schedule: modules are taken in order, their parts (hardest to place first,
@@ -12,7 +13,7 @@ export interface Decoder {
 }
 
 export function makeDecoder(inst: Instance): Decoder {
-  const { n, K, M, dur, setup, fixed, head, mod } = inst;
+  const { n, K, M, dur, setup, fixed, head, mod, hasDown } = inst;
   // parts of every module: forced parts first, then longest first
   const parts: Int32Array[] = inst.modParts.map(list => {
     const free = Array.from(list).filter(j => fixed[j] < 0);
@@ -38,7 +39,7 @@ export function makeDecoder(inst: Instance): Decoder {
       const h = Array.from(head[k]).sort((a, b) => rank[mod[a]] - rank[mod[b]] || dur[a * K + k] - dur[b * K + k]);
       for (const j of h) {
         const s = last[k] < 0 ? 0 : setup[last[k] * n + j];
-        avail[k] += s + dur[j * K + k];
+        avail[k] = hasDown[k] ? advance(inst, k, avail[k], s, dur[j * K + k]) : avail[k] + s + dur[j * K + k];
         endT[j] = avail[k];
         if (endT[j] > modEnd[mod[j]]) modEnd[mod[j]] = endT[j];
         last[k] = j;
@@ -57,7 +58,7 @@ export function makeDecoder(inst: Instance): Decoder {
         for (let e = 0; e < el.length; e++) {
           const k = el[e];
           const s = last[k] < 0 ? 0 : setup[last[k] * n + j];
-          const finish = avail[k] + s + dur[j * K + k];
+          const finish = hasDown[k] ? advance(inst, k, avail[k], s, dur[j * K + k]) : avail[k] + s + dur[j * K + k];
           if (finish < bestFinish || (finish === bestFinish && s < bestSetup)) {
             bestFinish = finish;
             bestK = k;
@@ -72,7 +73,7 @@ export function makeDecoder(inst: Instance): Decoder {
       }
     }
     let sum = 0;
-    for (let m = 0; m < M; m++) sum += inst.weight[m] * modEnd[m];
+    for (let m = 0; m < M; m++) sum += moduleCost(inst, m, modEnd[m]);
     return sum;
   }
 

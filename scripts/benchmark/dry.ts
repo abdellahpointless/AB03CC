@@ -1,14 +1,8 @@
 import { makeDecoder } from '../../src/core/optimizer/decode';
 import { evaluate, modulesDoneBy, validate } from '../../src/core/optimizer/evaluate';
-import { defaultSettings } from '../../src/core/defaults';
-import { instanceFromPlan, loadInputs, runApp } from './common';
+import { parseFlags, prepare } from './common';
 
-const paths = process.argv.slice(2);
-const inp = loadInputs(paths, 'src/data/builtin-part-times.json');
-const settings = defaultSettings();
-settings.calendar.startDate = '2026-10-09';
-const plan = runApp(inp, settings);
-const { inst, appQueues } = instanceFromPlan(plan, settings, inp.partTimes);
+const { plan, inst, appQueues } = prepare(parseFlags());
 console.log('jobs', inst.n, 'modules', inst.M, 'machines', inst.machineIds.join(' | '));
 console.log('validate app queues:', validate(inst, appQueues));
 const m = evaluate(inst, appQueues);

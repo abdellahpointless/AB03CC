@@ -203,6 +203,8 @@ export function defaultSettings(): PlannerSettings {
     calibrationHistory: [],
     useMeasuredTimes: true,
     estimateMultiplier: DEFAULT_ESTIMATE_MULTIPLIER,
+    planningMode: 'modules_first',
+    planningEffort: 'standard',
     settingsVersion: SETTINGS_VERSION,
   };
 }

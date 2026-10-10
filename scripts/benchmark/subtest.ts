@@ -4,27 +4,18 @@
  * Writes dir/sub-N.json (instance + the search's best queues) to feed to cpsat.py with --hint none.
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
-import { defaultSettings } from '../../src/core/defaults';
 import { evaluate } from '../../src/core/optimizer/evaluate';
 import { makeRng, optimize } from '../../src/core/optimizer/search';
-import { instanceFromPlan, loadInputs, runApp } from './common';
+import { instanceFromPlan, parseFlags, prepare } from './common';
 
-const args = process.argv.slice(2);
-const flag = (name: string, def?: string) => {
-  const i = args.indexOf(`--${name}`);
-  return i >= 0 ? args[i + 1] : def;
-};
-const files = args.slice(args.indexOf('--') + 1);
-const count = Number(flag('count', '5'));
-const target = Number(flag('parts', '22'));
-const dir = flag('out-dir', '.')!;
-const pure = args.includes('--pure');
+const flags = parseFlags();
+const count = Number(flags.get('count', '5'));
+const target = Number(flags.get('parts', '22'));
+const dir = flags.get('out-dir', '.')!;
+const pure = flags.has('pure');
 mkdirSync(dir, { recursive: true });
 
-const inp = loadInputs(files, 'src/data/builtin-part-times.json');
-const settings = defaultSettings();
-settings.calendar.startDate = '2026-10-09';
-const plan = runApp(inp, settings);
+const { inp, settings, plan } = prepare(flags);
 const rng = makeRng(99);
 const modules = new Map<string, number>();
 for (const q of Object.values(plan.queues)) for (const it of q) modules.set(it.job.masterOrder, (modules.get(it.job.masterOrder) ?? 0) + 1);

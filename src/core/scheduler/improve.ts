@@ -121,7 +121,8 @@ export function improveQueues(inp: ImproveInput): Improvement | null {
     const weightsOf = (key: string) => classes.weights.get(key) ?? 1;
     const modules = items.filter(it => !windowOf.has(it.job.id));
     const meanW = modules.length ? modules.reduce((a, it) => a + weightsOf(it.job.masterOrder), 0) / modules.length : 1;
-    // a minute late on a table or spare group costs more than delaying every order of the class by a minute
+    // a minute late on a table or spare group costs as much as delaying every order of the class by 10 minutes: the
+    // search never buys time for the modules with lateness (the plan comparison would throw such a plan away)
     let sumW = 0;
     new Set(modules.map(it => it.job.masterOrder)).forEach(k => (sumW += weightsOf(k)));
     const windowDue = new Map<string, number>();
@@ -137,7 +138,7 @@ export function improveQueues(inp: ImproveInput): Improvement | null {
       minStartOf: job => windowOf.get(job.id)?.release ?? 0,
       dueOf: (key, parts) => {
         const due = windowDue.get(key);
-        if (due !== undefined) return { due, slope: Math.max(1, sumW) };
+        if (due !== undefined) return { due, slope: 10 * Math.max(1, sumW) };
         const end = inp.startModuleEnd.get(key);
         return hard && end !== undefined && inp.carpenterBlocked(key) && parts.length ? { due: end, slope: 100 * meanW } : null;
       },
@@ -146,7 +147,18 @@ export function improveQueues(inp: ImproveInput): Improvement | null {
     const start: Queues = startQueues.map(q => q.map(j => index.get(j.id)!));
 
     let result: Queues = start;
-    if (items.length >= 3 && !items.every(it => it.onlyMachine !== undefined)) {
+    // minutes the table and spare groups of this class finish after their finish
+    const lateness = (q: Queues) => {
+      const e = evaluate(inst, q);
+      let late = 0;
+      inst.modIds.forEach((key, m) => {
+        const due = windowDue.get(key);
+        if (due !== undefined) late += Math.max(0, e.modEnd[m] - due);
+      });
+      return late;
+    };
+    // parts kept on their machine (ERP, pins) may still change places on it, so even such a class is searched
+    if (items.length >= 3) {
       const search = { makespan: DEFAULT_WEIGHTS.makespan * meanW, partEnd: DEFAULT_WEIGHTS.partEnd * meanW, setup: DEFAULT_WEIGHTS.setup * meanW };
       const r = optimize(inst, {
         seed: SEED + tier,
@@ -155,8 +167,9 @@ export function improveQueues(inp: ImproveInput): Improvement | null {
         starts: [start],
         onProgress: inp.onProgress ? f => inp.onProgress!(Math.min(1, done + share * f)) : undefined,
       });
-      // a schedule the search hands back must be a legal one, and better than what we started from
-      if (!validate(inst, r.queues).length && r.objective < objectiveValue(inst, start, search) - 1e-9) {
+      // a schedule the search hands back must be a legal one, better than what we started from, and must not make a
+      // table or spare group later
+      if (!validate(inst, r.queues).length && r.objective < objectiveValue(inst, start, search) - 1e-9 && lateness(r.queues) <= lateness(start)) {
         result = r.queues;
         improvedAny = true;
       }

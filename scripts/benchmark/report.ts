@@ -110,6 +110,11 @@ const dayLabels = Array.from({ length: horizonDays + 1 }, (_, d) => {
   const dt = calendar.toDate(d * dayLen);
   return `${dayNames[dt.getDay()]} ${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`;
 });
+const nextDayLabels = dayLabels.map((_, d) => {
+  const dt = calendar.toDate(d * dayLen);
+  dt.setDate(dt.getDate() + 1);
+  return `${dayNames[dt.getDay()]} ${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}`;
+});
 const stamp = (minute: number) => {
   const iso = calendar.toIso(minute);
   const dt = calendar.toDate(minute);
@@ -163,6 +168,7 @@ const data: ReportData = {
   dayLen,
   shiftStartHour: settings.calendar.shiftStartHour,
   dayLabels,
+  nextDayLabels,
   downtime,
   lowerBound: lb.sumC,
   notes,

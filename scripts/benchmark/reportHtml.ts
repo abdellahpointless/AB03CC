@@ -39,6 +39,8 @@ export interface ReportData {
   dayLen: number;
   shiftStartHour: number;
   dayLabels: string[];
+  /** label of the calendar day after each working day (a shift that runs past midnight ends there) */
+  nextDayLabels?: string[];
   /** disruptions every plan had to work around: [machineIndex, startMinute, endMinute] */
   downtime: number[][];
   lowerBound: number;
@@ -197,7 +199,8 @@ function clock(min, asEnd) {
   let day = Math.floor(min / D.dayLen), within = min - day * D.dayLen;
   if (asEnd && within === 0 && day > 0) { day -= 1; within = D.dayLen; }
   const h = D.shiftStartHour + Math.floor(within / 60), m = Math.round(within % 60);
-  return (D.dayLabels[day] || 'Day ' + (day + 1)) + ' ' + String(h % 24).padStart(2, '0') + ':' + String(m).padStart(2, '0');
+  const label = h >= 24 && D.nextDayLabels ? D.nextDayLabels[day] : D.dayLabels[day];
+  return (label || 'Day ' + (day + 1)) + ' ' + String(h % 24).padStart(2, '0') + ':' + String(m).padStart(2, '0');
 }
 const P = D.plans, PERFECT = P[0], BASE = P[P.length - 1], MID = P.length > 2 ? P[1] : null;
 const M = D.modules.length;

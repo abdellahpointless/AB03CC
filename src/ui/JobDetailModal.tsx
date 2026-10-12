@@ -3,11 +3,13 @@ import { useMemo, useState } from 'react';
 import { formatClock, formatDayMonth, formatDuration } from '../core/calendar';
 import type { ScheduledJob } from '../core/types';
 import { useStore } from '../state/store';
+import { useMachineRules } from './useMachineRules';
 import { timeBasisLabel, timeBasisNote } from '../lib/timeBasis';
 import { Badge, Button, Field, MaterialBadge, Modal, NumberInput, TimeMark, inputCls } from './kit';
 
 export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () => void }) {
   const { plan, settings, locks, setLock, clearLock, setPartEfficiency } = useStore();
+  const whyNot = useMachineRules();
   const mult = settings.estimateMultiplier;
   const item: ScheduledJob | undefined = useMemo(
     () => (plan ? Object.values(plan.queues).flat().find(i => i.job.id === jobId) : undefined),
@@ -136,11 +138,14 @@ export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () 
               <Field label="Pin to machine" hint="Pinned jobs are never moved by the optimizer.">
                 <select className={inputCls} value={machine} onChange={e => setMachine(e.target.value)}>
                   <option value="">Automatic</option>
-                  {settings.machines.map(m => (
-                    <option key={m.id} value={m.id}>
-                      {m.name}
-                    </option>
-                  ))}
+                  {settings.machines.map(m => {
+                    const why = whyNot(item.job, m.id);
+                    return (
+                      <option key={m.id} value={m.id} disabled={Boolean(why) && lock.machine !== m.id} title={why ?? undefined}>
+                        {m.name}{why ? ` (not allowed: ${why})` : ''}
+                      </option>
+                    );
+                  })}
                 </select>
               </Field>
               <Field label="Run time (minutes)" hint={item.manualDuration ? 'Set by you. Clear the field to return to automatic.' : `Automatic: ${formatDuration(item.durationMin)}`}>

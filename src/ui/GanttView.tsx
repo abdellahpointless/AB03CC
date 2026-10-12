@@ -1,10 +1,11 @@
 import { AlertOctagon, Siren, Gauge, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { WorkCalendar, formatClock, formatDuration, planStartOffset } from '../core/calendar';
+import { WorkCalendar, breakWindows, formatClock, formatDuration, planStartOffset } from '../core/calendar';
 import type { ScheduledJob, TimelineEvent } from '../core/types';
 import { swatchFor, type ColorMode } from '../lib/colors';
 import { timeBasisNote } from '../lib/timeBasis';
 import { useStore } from '../state/store';
+import { useMachineRules } from './useMachineRules';
 import { Button, Segmented, TimeMark } from './kit';
 import { EVENT_TYPES, EventPopup, type EventDraft } from './EventPopup';
 import { KpiBar } from './KpiBar';
@@ -19,6 +20,7 @@ const SNAP = 5;
 
 export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: ScheduledJob) => void; onCarpenter: () => void }) {
   const { plan, previousPlan, settings, setLock, updateSettings, notify, saveEvent, removeEvent } = useStore();
+  const whyNot = useMachineRules();
   const [draft, setDraft] = useState<EventDraft | null>(null);
   const [drag, setDrag] = useState<{ lane: string; a: number; b: number } | null>(null);
   const [zoom, setZoom] = useState(1);
@@ -61,6 +63,8 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
   }, [cal]);
 
   const startOffset = planStartOffset(settings.calendar);
+  const breaks = useMemo(() => breakWindows(settings.calendar).filter(w => w.start < axisMinutes), [settings.calendar, axisMinutes]);
+  const breakTitle = settings.calendar.breakMode === 'run' ? 'Operator break: running parts carry on, nothing starts' : 'Operator break: machines stop';
   const urgent = settings.emergencies.filter(e => e.applied);
   const urgentItems = plan ? Object.values(plan.queues).flat().filter(i => i.emergency) : [];
   const urgentDone = urgentItems.reduce((m, i) => Math.max(m, i.endMinute), 0);
@@ -141,6 +145,11 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
       .flat()
       .find(i => i.job.id === jobId);
     if (current?.machineId === machineId) return;
+    const why = current ? whyNot(current.job, machineId) : null;
+    if (why) {
+      notify(`Box ${current!.job.boxCode} cannot go to ${machineId}: ${why}.`, 'error');
+      return;
+    }
     setLock(jobId, { machine: machineId });
     notify(`Box ${current?.job.boxCode ?? jobId} pinned to ${machineId}. Reset it from the job details to unpin.`, 'ok');
   };
@@ -292,6 +301,14 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                         title="Before the plan starts"
                       />
                     )}
+                    {breaks.map(b => (
+                      <div
+                        key={b.start}
+                        className="pointer-events-none absolute top-0 z-[3] h-full border-x border-amber-500/30 bg-amber-400/10"
+                        style={{ left: b.start * pxPerMin, width: Math.max(2, (b.end - b.start) * pxPerMin) }}
+                        title={breakTitle}
+                      />
+                    ))}
                     {events.filter(ev => ev.id !== draft?.id).map(ev => (
                       <div key={ev.id}>
                         {ev.type !== 'rework' && <div
@@ -421,7 +438,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
           onDelete={draft.id ? () => (removeEvent(draft.id!), setDraft(null)) : undefined}
         />
       )}
-      <Legend mode={colorMode} multiplier={settings.estimateMultiplier} />
+      <Legend mode={colorMode} multiplier={settings.estimateMultiplier} hasBreaks={breaks.length > 0} />
       {tip && <Tooltip tip={tip} />}
     </div>
   );
@@ -502,7 +519,7 @@ function Tooltip({ tip }: { tip: { item: ScheduledJob; x: number; y: number } })
   );
 }
 
-function Legend({ mode, multiplier }: { mode: ColorMode; multiplier: number }) {
+function Legend({ mode, multiplier, hasBreaks }: { mode: ColorMode; multiplier: number; hasBreaks: boolean }) {
   const mats = ['ALU', 'POM', 'FH', 'PCGF', 'MS', 'PEEK', 'PP', 'INOX', 'FR4'];
   const fake = (m: string) => swatchFor({ materialType: m } as never, 'material');
   return (
@@ -519,6 +536,7 @@ function Legend({ mode, multiplier }: { mode: ColorMode; multiplier: number }) {
         </span>
       )}
       <span className="flex items-center gap-1"><span className="hatch h-2.5 w-4 rounded border border-slate-600 bg-slate-700/60" /> changeover</span>
+      {hasBreaks && <span className="flex items-center gap-1"><span className="h-2.5 w-4 rounded border-x border-amber-500/40 bg-amber-400/15" /> operator break</span>}
       <span className="flex items-center gap-1"><TimeMark basis="measured" /> measured time</span>
       <span className="flex items-center gap-1"><TimeMark basis="estimated" /> estimated (NC × {multiplier})</span>
       <span className="flex items-center gap-1"><span className="h-2.5 w-2.5 rounded border-t-2 border-rose-500 bg-slate-700" /> past due</span>

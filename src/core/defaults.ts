@@ -31,7 +31,7 @@ export const DEFAULT_MACHINES: MachineConfig[] = [
     id: 'FANUC - 2',
     name: 'FANUC - 2',
     allowedMaterials: ['ALU', 'POM', 'MS'],
-    maxNcMinutes: 8,
+    size: { basis: 'nc', min: null, max: 8 },
     speedPercentage: 100,
     description: 'Quick-turn machine for small parts (NC time below 8 min)',
   },
@@ -39,10 +39,10 @@ export const DEFAULT_MACHINES: MachineConfig[] = [
     id: 'HAAS - 5',
     name: 'HAAS - 5',
     allowedMaterials: ['POM'],
-    minNcMinutesPref: 20,
-    overflowMaterials: ['ALU', 'PCGF'],
+    backupMaterials: ['ALU', 'PCGF'],
+    useBackupMaterials: false,
     speedPercentage: 100,
-    description: 'Heavy / large POM jobs (NC >= 20 min preferred), optional overflow',
+    description: 'Heavy / large POM jobs, can help out with ALU and PCGF',
   },
 ];
 
@@ -72,7 +72,7 @@ export const DEFAULT_MATERIAL_OFFSETS: Record<string, number> = {
   FR4: 0,
 };
 
-export const SETTINGS_VERSION = 3;
+export const SETTINGS_VERSION = 4;
 export const DEFAULT_ESTIMATE_MULTIPLIER = 2.8;
 
 export const MATERIAL_TYPES = ['ALU', 'POM', 'FH', 'PCGF', 'MS', 'PEEK', 'PP', 'INOX', 'FR4'];
@@ -96,6 +96,8 @@ export function defaultCalendar(): CalendarSettings {
     workSaturday: true,
     workSunday: false,
     continuous247: false,
+    breaks: [],
+    breakMode: 'stop',
   };
 }
 
@@ -173,7 +175,6 @@ export function defaultSettings(): PlannerSettings {
     materialAliases: {},
     keepErpAssignments: true,
     excludeMasterOrders30000: true,
-    allowHaas5Overflow: false,
     syncToleranceMin: 10,
     restartJobOnEvent: false,
     timelineEvents: [],
@@ -187,7 +188,6 @@ export function defaultSettings(): PlannerSettings {
     materialEfficiency: {},
     partEfficiencyOverrides: {},
     efficiencyMode: 'expected',
-    fanuc2UsesIdealMinutes: true,
     calibrationHistory: [],
     useMeasuredTimes: true,
     estimateMultiplier: DEFAULT_ESTIMATE_MULTIPLIER,
@@ -211,6 +211,7 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
   if (savedCal.workSunday === undefined) merged.calendar.workSunday = savedCal.weekendOff === false;
   delete (merged.calendar as { weekendOff?: boolean }).weekendOff;
   if (savedCal.startHour === undefined) merged.calendar.startHour = merged.calendar.shiftStartHour;
+  if (!Array.isArray(merged.calendar.breaks)) merged.calendar.breaks = [];
   merged.changeover = { ...base.changeover, ...(saved.changeover ?? {}) };
   if (!Array.isArray(merged.machines) || merged.machines.length === 0) merged.machines = base.machines;
   if (!Array.isArray(merged.priorityRules)) merged.priorityRules = base.priorityRules;
@@ -222,6 +223,27 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
     merged.changeover = { ...base.changeover }; // the changeover rule changed (material family or a much bigger part)
     merged.settingsVersion = SETTINGS_VERSION;
   }
+  // Migration: version 4 rebuilt the machine rules (hard size limits with a basis, backup materials per machine)
+  if ((saved.settingsVersion ?? 1) < 4) {
+    merged.machines = merged.machines.map(m => migrateMachine(m, saved));
+    delete merged.allowHaas5Overflow;
+    delete merged.fanuc2UsesIdealMinutes;
+    merged.settingsVersion = SETTINGS_VERSION;
+  }
   if (!(merged.estimateMultiplier > 0)) merged.estimateMultiplier = DEFAULT_ESTIMATE_MULTIPLIER;
   return merged;
+}
+
+/** A machine saved before version 4: the NC limit becomes a hard size limit, overflow materials become backup materials. */
+export function migrateMachine(m: MachineConfig, saved: Partial<PlannerSettings>): MachineConfig {
+  const { maxNcMinutes, minNcMinutesPref, overflowMaterials, ...rest } = m;
+  const out: MachineConfig = { ...rest };
+  if (maxNcMinutes && maxNcMinutes > 0) out.size = { basis: saved.fanuc2UsesIdealMinutes === false ? 'planned' : 'nc', min: null, max: maxNcMinutes };
+  // the old "prefers parts from" was only a wish; it is not turned into a hard limit
+  void minNcMinutesPref;
+  if (overflowMaterials?.length) {
+    out.backupMaterials = overflowMaterials;
+    out.useBackupMaterials = Boolean(saved.allowHaas5Overflow);
+  }
+  return out;
 }

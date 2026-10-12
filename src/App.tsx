@@ -30,7 +30,7 @@ export default function App() {
   const exceptionCount = useMemo(() => {
     if (!plan) return 0;
     const e = plan.exceptions;
-    return e.blocked.length + e.noEligibleMachine.length + e.outOfScope.length + e.manual30000.length;
+    return e.blocked.length + e.noEligibleMachine.length + e.outOfScope.length + e.manual30000.length + (e.erpRefused?.length ?? 0);
   }, [plan]);
 
   const hasData = jobs.length > 0;

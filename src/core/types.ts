@@ -60,21 +60,36 @@ export interface MachinePartTypes {
   allowed: Record<string, PartSizes>;
 }
 
+/** How big a part may be on a machine, per piece. Both limits are hard: a part outside them never goes there. */
+export interface MachineSizeLimit {
+  /** 'nc' = NC file minutes per piece; 'planned' = planned (real or estimated) minutes per piece */
+  basis: 'nc' | 'planned';
+  /** only parts of at least this many minutes (null = no lower limit) */
+  min: number | null;
+  /** only parts below this many minutes (null = no upper limit) */
+  max: number | null;
+}
+
 export interface MachineConfig {
   id: Id;
   name: string;
+  /** materials the machine always takes */
   allowedMaterials: string[];
-  /** Only accepts parts whose ideal NC minutes per piece are below this value. */
-  maxNcMinutes?: number | null;
-  /** Preference only: jobs at or above this length are favoured on this machine. */
-  minNcMinutesPref?: number | null;
+  /** extra materials it takes only while `useBackupMaterials` is on (e.g. HAAS - 5 helping out with ALU) */
+  backupMaterials?: string[];
+  useBackupMaterials?: boolean;
+  size?: MachineSizeLimit;
   /** Default efficiency of the machine in percent (100 = ideal feed). */
   speedPercentage: number;
-  /** Extra materials accepted when "overflow" is enabled in settings. */
-  overflowMaterials?: string[];
   isDown?: boolean;
   description?: string;
   partTypes?: MachinePartTypes;
+  /** @deprecated settings v3 and older; turned into `size` / `backupMaterials` when loaded */
+  maxNcMinutes?: number | null;
+  /** @deprecated settings v3 and older */
+  minNcMinutesPref?: number | null;
+  /** @deprecated settings v3 and older */
+  overflowMaterials?: string[];
 }
 
 /**
@@ -89,6 +104,15 @@ export interface ChangeoverRules {
   biggerPartRatio: number;
 }
 
+/** A break the operators take every working day (lunch, coffee …), in wall-clock time. */
+export interface OperatorBreak {
+  id: string;
+  label: string;
+  /** "HH:MM" */
+  start: string;
+  minutes: number;
+}
+
 export interface CalendarSettings {
   /** First day of the plan, yyyy-mm-dd. */
   startDate: string;
@@ -101,6 +125,10 @@ export interface CalendarSettings {
   workSaturday: boolean;
   workSunday: boolean;
   continuous247: boolean;
+  /** daily operator breaks */
+  breaks: OperatorBreak[];
+  /** 'stop': machines stand still during a break; 'run': a running part carries on, but nothing is started or changed over */
+  breakMode: 'stop' | 'run';
 }
 
 export type PriorityRuleType =
@@ -209,7 +237,8 @@ export interface PlannerSettings {
   materialAliases: Record<string, string>; // e.g. "ALU B" -> "ALU"
   keepErpAssignments: boolean;
   excludeMasterOrders30000: boolean;
-  allowHaas5Overflow: boolean;
+  /** @deprecated settings v3 and older (now per machine: `useBackupMaterials`) */
+  allowHaas5Overflow?: boolean;
   syncToleranceMin: number;
   restartJobOnEvent: boolean;
   timelineEvents: TimelineEvent[];
@@ -225,7 +254,8 @@ export interface PlannerSettings {
   materialEfficiency: Record<string, number>; // material -> %
   partEfficiencyOverrides: Record<string, number>; // job id -> %
   efficiencyMode: 'expected' | 'cautious';
-  fanuc2UsesIdealMinutes: boolean;
+  /** @deprecated settings v3 and older (now per machine: `size.basis`) */
+  fanuc2UsesIdealMinutes?: boolean;
   calibrationHistory: CalibrationRow[];
 
   /** Parts found in the time list use that time as-is; efficiency and offsets never touch them. */
@@ -407,7 +437,11 @@ export interface PlanResult {
     outOfScope: Job[];
     manual30000: Job[];
     unpickedWarehouse: Job[];
+    /** the ERP put the part on a machine whose rules refuse it: planned on a machine that takes it instead */
+    erpRefused: Job[];
   };
+  /** why a machine refused a part (ERP machine refused, or no machine takes it), by job id */
+  refusals: Record<string, string>;
   kpis: PlanKpis;
   /** per table / spare group that was given a start and a finish */
   windowReport: Record<string, WindowReport>;

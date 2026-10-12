@@ -8,6 +8,7 @@ import { WorkCalendar } from '../../src/core/calendar';
 import { defaultSettings, RULE_PRESETS } from '../../src/core/defaults';
 import { makeRng } from '../../src/core/optimizer/search';
 import { isEligible, planProduction } from '../../src/core/scheduler/plan';
+import { refusal } from '../../src/core/scheduler/eligibility';
 import { SimContext } from '../../src/core/scheduler/simulate';
 import type { PlanResult, PlannerSettings, TimelineEvent, UserLock } from '../../src/core/types';
 import { buildGroups, classifyKinds } from '../../src/core/partKinds';
@@ -36,8 +37,14 @@ for (let r = 0; r < runs; r++) {
   }
   s.carpenterDelayMode = pick(['off', 'soft', 'hard'] as const);
   s.restartJobOnEvent = chance(0.3);
-  s.allowHaas5Overflow = chance(0.3);
+  for (const m of s.machines) if (m.backupMaterials?.length) m.useBackupMaterials = chance(0.3);
+  if (chance(0.3)) { const m = pick(s.machines); m.size = { basis: chance(0.5) ? 'nc' : 'planned', min: chance(0.3) ? 5 + rng.int(20) : null, max: chance(0.7) ? 8 + rng.int(40) : null }; }
   s.keepErpAssignments = chance(0.8);
+  if (chance(0.4)) {
+    s.calendar.breakMode = chance(0.5) ? 'stop' : 'run';
+    s.calendar.breaks = [{ id: 'b1', label: 'coffee', start: `${String(7 + rng.int(4)).padStart(2, '0')}:${pick(['00', '15', '30', '45'])}`, minutes: 10 + rng.int(20) }];
+    if (chance(0.5)) s.calendar.breaks.push({ id: 'b2', label: 'lunch', start: `1${2 + rng.int(2)}:00`, minutes: 30 });
+  }
   s.useMeasuredTimes = chance(0.8);
   if (chance(0.2)) s.machines[rng.int(s.machines.length)].isDown = true;
   const events: TimelineEvent[] = [];
@@ -84,6 +91,8 @@ for (let r = 0; r < runs; r++) {
   }
   if (classic && optimized) {
     const ctx = new SimContext(s, s.machines.filter(m => !m.isDown), inp.partTimes);
+    // run times typed by hand count as the part's planned minutes, as in the planner
+    for (const [id, l] of Object.entries(locks)) if (l.durationMin) ctx.manualDuration.set(id, l.durationMin);
     for (const [name, p] of [['classic', classic], ['optimized', optimized]] as const) {
       const seen = new Set<string>();
       for (const [machineId, q] of Object.entries(p.queues)) {
@@ -94,7 +103,7 @@ for (let r = 0; r < runs; r++) {
           seen.add(it.job.id);
           if (it.startMinute < prevEnd) problems.push(`${name}: overlap on ${machineId} at ${it.job.id}`);
           prevEnd = it.endMinute;
-          if (!it.erpLocked && !it.userLocked && !isEligible(it.job, machine, s, ctx)) problems.push(`${name}: ${it.job.id} on ${machineId} not allowed`);
+          if (!it.userLocked && !isEligible(it.job, machine, s, ctx)) problems.push(`${name}: ${it.job.id} on ${machineId} not allowed (${refusal(it.job, machine, s, ctx)}; lock ${JSON.stringify(locks[it.job.id] ?? null)})`);
         }
       }
       if (name === 'optimized') {

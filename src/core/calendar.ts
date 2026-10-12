@@ -26,6 +26,44 @@ export function planStartOffset(cal: CalendarSettings): number {
   return Math.min(Math.max(0, off), minutesPerDay(cal) - 1);
 }
 
+/** How many working days of breaks are laid out (far beyond any plan). */
+export const BREAK_HORIZON_DAYS = 400;
+
+/** "HH:MM" -> minutes after midnight, or null */
+export function clockMinutes(hhmm: string): number | null {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(hhmm.trim());
+  if (!m || +m[1] > 23 || +m[2] > 59) return null;
+  return +m[1] * 60 + +m[2];
+}
+
+/**
+ * The operator breaks as windows on the working-minute axis, every working day. A break outside the working hours is
+ * ignored; one that runs past the end of the working day is cut there.
+ */
+export function breakWindows(cal: CalendarSettings, days = BREAK_HORIZON_DAYS): Array<{ start: number; end: number }> {
+  const dayLen = minutesPerDay(cal);
+  const daily: Array<[number, number]> = [];
+  for (const b of cal.breaks ?? []) {
+    const at = clockMinutes(b.start);
+    if (at === null || !(b.minutes > 0)) continue;
+    const offset = (((at - cal.shiftStartHour * 60) % 1440) + 1440) % 1440;
+    if (offset >= dayLen) continue;
+    daily.push([offset, Math.min(dayLen, offset + Math.round(b.minutes))]);
+  }
+  if (!daily.length) return [];
+  daily.sort((a, b) => a[0] - b[0]);
+  const out: Array<{ start: number; end: number }> = [];
+  for (let d = 0; d < days; d++)
+    for (const [a, b] of daily) {
+      const start = d * dayLen + a;
+      const end = d * dayLen + b;
+      const last = out[out.length - 1];
+      if (last && start <= last.end) last.end = Math.max(last.end, end);
+      else out.push({ start, end });
+    }
+  return out;
+}
+
 /**
  * Maps the continuous "working minute" axis used by the scheduler to wall-clock
  * time, skipping weekends when the calendar says so.

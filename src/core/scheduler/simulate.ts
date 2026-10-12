@@ -1,4 +1,4 @@
-import { planStartOffset } from '../calendar';
+import { breakWindows, planStartOffset } from '../calendar';
 import { plannedDuration, type PlannedDuration } from '../efficiency';
 import { partKey } from '../parse/partTimes';
 import { partTypeFromEntry, type PartTypeRef } from '../partTypes';
@@ -12,8 +12,12 @@ export interface Interval {
 /** Everything the simulation needs, prepared once per planning run. */
 export class SimContext {
   readonly settings: PlannerSettings;
-  /** Downtime per machine, merged into disjoint sorted intervals. */
+  /** Downtime per machine (the machine stands still), merged into disjoint sorted intervals. */
   private readonly downtime = new Map<string, Interval[]>();
+  /** Downtime plus operator breaks in which nothing may be started or changed over (only when breaks let parts run). */
+  private readonly operatorOff = new Map<string, Interval[]>();
+  /** the operator breaks on the plan axis (for display) */
+  readonly breaks: Interval[];
   /** User supplied durations / start minutes. */
   readonly manualDuration = new Map<string, number>();
   readonly manualStart = new Map<string, number>();
@@ -28,11 +32,20 @@ export class SimContext {
   ) {
     this.settings = settings;
     const startOffset = planStartOffset(settings.calendar);
+    this.breaks = breakWindows(settings.calendar);
+    const breaksStop = settings.calendar.breakMode !== 'run';
     for (const m of machines) {
       const windows = eventsFor(settings.timelineEvents, m.id);
       if (startOffset > 0) windows.push({ start: 0, end: startOffset }); // the plan starts later than the shift
-      this.downtime.set(m.id, mergeIntervals(windows));
+      const down = mergeIntervals(breaksStop ? [...windows, ...this.breaks] : windows);
+      this.downtime.set(m.id, down);
+      this.operatorOff.set(m.id, breaksStop || !this.breaks.length ? down : mergeIntervals([...down, ...this.breaks]));
     }
+  }
+
+  /** Windows in which nothing may start or be changed over on the machine: downtime, and breaks when parts run through them. */
+  operatorOffOf(machineId: string): Interval[] {
+    return this.operatorOff.get(machineId) ?? [];
   }
 
   downtimeOf(machineId: string): Interval[] {
@@ -110,12 +123,31 @@ export function changeoverMinutes(prev: Job | null, cur: Job, r: ChangeoverRules
   return size(cur) >= Math.max(1, r.biggerPartRatio) * size(prev) ? r.biggerPartMin : 0;
 }
 
+/** Index of the first window that ends after `t` (windows sorted and disjoint). */
+export function firstWindowAfter(list: Interval[], t: number): number {
+  let lo = 0;
+  let hi = list.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (list[mid].end <= t) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+/** `t`, or the end of the window `t` falls in (nothing may start inside one). */
+function skipInside(t: number, list: Interval[]): number {
+  const i = firstWindowAfter(list, t);
+  return i < list.length && list[i].start <= t ? list[i].end : t;
+}
+
 /** Places `length` working minutes from `t`, pausing across downtime. */
 function placeSplit(t: number, length: number, down: Interval[]): { segments: Segment[]; end: number } {
   const segments: Segment[] = [];
   let remaining = length;
   let cursor = t;
-  for (const iv of down) {
+  for (let i = firstWindowAfter(down, t); i < down.length; i++) {
+    const iv = down[i];
     if (iv.end <= cursor) continue;
     if (iv.start <= cursor) {
       cursor = iv.end;
@@ -138,7 +170,8 @@ function placeSplit(t: number, length: number, down: Interval[]): { segments: Se
 /** Finds the first contiguous free window of `length` minutes at or after `t`. */
 function placeContiguous(t: number, length: number, down: Interval[]): Segment {
   let start = t;
-  for (const iv of down) {
+  for (let i = firstWindowAfter(down, t); i < down.length; i++) {
+    const iv = down[i];
     if (iv.end <= start) continue;
     if (iv.start >= start + length) break;
     start = iv.end;
@@ -174,16 +207,25 @@ export function step(
   const release = ctx.release.get(job.id);
   if (release !== undefined && release > t) t = release;
 
+  // the changeover needs the operator: it pauses across downtime and breaks
+  const off = ctx.operatorOffOf(machine.id);
   const setup = changeoverMinutes(state.prev, job, ctx.settings.changeover, ctx.sizeOf);
-  if (setup > 0) t = placeSplit(t, setup, down).end;
+  if (setup > 0) t = placeSplit(t, setup, off).end;
 
   const durationMin = ctx.duration(job, machine).durationMin;
   let segments: Segment[];
   if (ctx.settings.restartJobOnEvent) {
-    segments = [placeContiguous(t, durationMin, down)];
+    // one free stretch without downtime, starting outside downtime and breaks
+    for (;;) {
+      t = skipInside(t, off);
+      const s = placeContiguous(t, durationMin, down).startMinute;
+      if (s === t) break;
+      t = s;
+    }
+    segments = [{ startMinute: t, endMinute: t + durationMin }];
   } else {
-    // a job may not *start* inside downtime
-    for (const iv of down) if (t >= iv.start && t < iv.end) t = iv.end;
+    // a job may not *start* inside downtime (or a break); once running it pauses only for downtime
+    t = skipInside(t, off);
     segments = placeSplit(t, durationMin, down).segments;
   }
   const startMinute = segments[0].startMinute;

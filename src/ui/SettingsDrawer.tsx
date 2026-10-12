@@ -1,11 +1,12 @@
 import { Hammer, Plus, RotateCcw, Timer, Trash2, Upload, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
-import { minutesPerDay } from '../core/calendar';
+import { clockMinutes, minutesPerDay } from '../core/calendar';
 import { EFFICIENCY_PRESETS, MATERIAL_TYPES } from '../core/defaults';
 import { calibrationSuggestions, parseCalibration } from '../core/efficiency';
-import type { CarpenterCutColumn, CarpenterDelayMode, MachineConfig, PlannerSettings, PlanningEffort, PlanningMode } from '../core/types';
+import type { CarpenterCutColumn, CarpenterDelayMode, PlannerSettings, PlanningEffort, PlanningMode } from '../core/types';
 import { useStore } from '../state/store';
 import { Badge, Button, Field, NumberInput, Segmented, Toggle, inputCls } from './kit';
+import { MachinesEditor } from './MachinesEditor';
 import { useImport } from './useImport';
 
 type Tab = 'machines' | 'materials' | 'time' | 'rules' | 'parttimes' | 'carpenter' | 'efficiency';
@@ -61,7 +62,7 @@ export function SettingsDrawer({ onClose }: { onClose: () => void }) {
           ))}
         </nav>
         <div className="flex-1 overflow-y-auto p-5">
-          {tab === 'machines' && <MachinesTab s={settings} set={updateSettings} />}
+          {tab === 'machines' && <MachinesEditor s={settings} set={updateSettings} />}
           {tab === 'materials' && <MaterialsTab s={settings} set={updateSettings} />}
           {tab === 'time' && <TimeTab s={settings} set={updateSettings} />}
           {tab === 'rules' && <RulesTab s={settings} set={updateSettings} />}
@@ -87,173 +88,6 @@ function Section({ title, hint, children }: { title: string; hint?: string; chil
       {hint && <p className="mb-3 mt-0.5 text-[11px] text-slate-400">{hint}</p>}
       <div className={hint ? '' : 'mt-3'}>{children}</div>
     </section>
-  );
-}
-
-/* ----------------------------- machines ----------------------------- */
-
-function MachinesTab({ s, set }: TabProps) {
-  const patch = (id: string, p: Partial<MachineConfig>) => set({ machines: s.machines.map(m => (m.id === id ? { ...m, ...p } : m)) });
-  const allMaterials = useMemo(() => [...new Set([...MATERIAL_TYPES, ...s.machines.flatMap(m => m.allowedMaterials)])], [s.machines]);
-  const [newName, setNewName] = useState('');
-  const add = () => {
-    const name = newName.trim();
-    if (!name || s.machines.some(m => m.id === name)) return;
-    set({ machines: [...s.machines, { id: name, name, allowedMaterials: ['ALU'], speedPercentage: 100 }] });
-    setNewName('');
-  };
-  return (
-    <>
-      <Section title="CNC machine centers" hint="The machine name must equal the ERP machine name so existing assignments are recognised.">
-        <div className="space-y-3">
-          {s.machines.map(m => (
-            <div key={m.id} className={`rounded-lg border p-3 ${m.isDown ? 'border-rose-800 bg-rose-950/20' : 'border-slate-800 bg-slate-950/50'}`}>
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <div className="mono text-sm font-bold text-white">{m.id}</div>
-                <div className="flex items-center gap-3">
-                  <label className="flex items-center gap-1.5 text-xs text-slate-300">
-                    <input type="checkbox" checked={Boolean(m.isDown)} onChange={e => patch(m.id, { isDown: e.target.checked })} className="accent-rose-500" /> Machine down
-                  </label>
-                  <button
-                    onClick={() => confirm(`Remove ${m.id}?`) && set({ machines: s.machines.filter(x => x.id !== m.id) })}
-                    className="rounded p-1 text-slate-500 hover:bg-rose-950 hover:text-rose-400"
-                    aria-label={`Remove ${m.id}`}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-              </div>
-              <input className={`${inputCls} mt-2`} value={m.description ?? ''} placeholder="Description" onChange={e => patch(m.id, { description: e.target.value })} />
-              <div className="mt-3">
-                <div className="mb-1 text-[11px] font-semibold text-slate-300">Allowed materials</div>
-                <div className="flex flex-wrap gap-1.5">
-                  {allMaterials.map(mat => {
-                    const on = m.allowedMaterials.includes(mat);
-                    return (
-                      <button
-                        key={mat}
-                        onClick={() => patch(m.id, { allowedMaterials: on ? m.allowedMaterials.filter(x => x !== mat) : [...m.allowedMaterials, mat] })}
-                        className={`rounded border px-2 py-0.5 text-[11px] font-bold ${on ? 'border-blue-500 bg-blue-600 text-white' : 'border-slate-700 text-slate-400 hover:bg-slate-800'}`}
-                      >
-                        {mat}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-              <div className="mt-3 grid gap-3 sm:grid-cols-3">
-                <Field label="Speed (% of ideal)" hint="50 = twice as long">
-                  <NumberInput value={m.speedPercentage} min={10} max={300} onChange={v => v && patch(m.id, { speedPercentage: v })} />
-                </Field>
-                <Field label="Only parts under (NC min)" hint="blank = no limit">
-                  <NumberInput value={m.maxNcMinutes ?? undefined} min={1} onChange={v => patch(m.id, { maxNcMinutes: v ?? null })} />
-                </Field>
-                <Field label="Prefers parts from (NC min)" hint="soft preference">
-                  <NumberInput value={m.minNcMinutesPref ?? undefined} min={1} onChange={v => patch(m.id, { minNcMinutesPref: v ?? null })} />
-                </Field>
-              </div>
-              <PartTypesEditor machine={m} patch={patch} />
-              <div className="mt-3">
-                <Field label="Overflow materials" hint="Also accepted when 'Allow overflow' is enabled in Planning rules (comma separated).">
-                  <input
-                    className={inputCls}
-                    defaultValue={(m.overflowMaterials ?? []).join(', ')}
-                    key={m.id + (m.overflowMaterials ?? []).join()}
-                    onBlur={e => patch(m.id, { overflowMaterials: e.target.value.split(/[,;\s]+/).map(x => x.trim().toUpperCase()).filter(Boolean) })}
-                  />
-                </Field>
-              </div>
-            </div>
-          ))}
-        </div>
-        <div className="mt-3 flex gap-2">
-          <input className={inputCls} placeholder="New machine name, e.g. HAAS - 6" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
-          <Button variant="primary" onClick={add}>
-            <Plus className="h-3.5 w-3.5" /> Add machine
-          </Button>
-        </div>
-      </Section>
-    </>
-  );
-}
-
-function PartTypesEditor({ machine, patch }: { machine: MachineConfig; patch: (id: string, p: Partial<MachineConfig>) => void }) {
-  const { partTypes } = useStore();
-  const [open, setOpen] = useState(false);
-  const [showAll, setShowAll] = useState(false);
-  const [q, setQ] = useState('');
-  const cfg = machine.partTypes ?? { restricted: false, allowed: {} };
-  const save = (next: typeof cfg) => patch(machine.id, { partTypes: next });
-  const inWorkload = partTypes.filter(t => t.small + t.big > 0).length;
-  const rows = partTypes.filter(t => (showAll || t.small + t.big > 0) && (!q || t.label.toLowerCase().includes(q.trim().toLowerCase())));
-  const ticked = Object.values(cfg.allowed).filter(a => a.small || a.big).length;
-  const setAll = (small: boolean, big: boolean) => save({ ...cfg, allowed: Object.fromEntries(partTypes.map(t => [t.key, { small, big }])) });
-  const toggle = (key: string, size: 'small' | 'big', on: boolean) => {
-    const cur = cfg.allowed[key] ?? { small: false, big: false };
-    save({ ...cfg, allowed: { ...cfg.allowed, [key]: { ...cur, [size]: on } } });
-  };
-  return (
-    <div className="mt-3 rounded-md border border-slate-800 bg-slate-950/40 p-2.5">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <label className="flex items-center gap-2 text-[11px] font-semibold text-slate-300">
-          <input
-            type="checkbox"
-            className="accent-blue-500"
-            checked={cfg.restricted}
-            disabled={partTypes.length === 0}
-            onChange={e => {
-              const restricted = e.target.checked;
-              // switching on starts from "everything allowed", so nothing changes until a type is unticked
-              save({ restricted, allowed: restricted && ticked === 0 ? Object.fromEntries(partTypes.map(t => [t.key, { small: true, big: true }])) : cfg.allowed });
-              if (restricted) setOpen(true);
-            }}
-          />
-          Limit to chosen part types
-        </label>
-        <button className="text-[11px] text-blue-300 hover:text-blue-200" onClick={() => setOpen(o => !o)} disabled={partTypes.length === 0}>
-          {partTypes.length === 0 ? 'Import the parts time list to get part names' : open ? 'Hide' : cfg.restricted ? `${ticked} of ${partTypes.length} types ticked · edit` : 'Choose'}
-        </button>
-      </div>
-      {open && partTypes.length > 0 && (
-        <div className="mt-2">
-          <p className="mb-2 text-[11px] text-slate-500">
-            Part names come from the parts time list, without numbers ("Contact pin plate 001" is a Contact pin plate). Small = real time under 15 min per part, Big = 15 min or more. A part that is not in the list is only checked against the materials.
-          </p>
-          <div className="mb-2 flex flex-wrap items-center gap-1.5">
-            <input className={`${inputCls} w-44`} placeholder="Find a part type" value={q} onChange={e => setQ(e.target.value)} />
-            <Button size="sm" onClick={() => setAll(true, true)}>All</Button>
-            <Button size="sm" onClick={() => setAll(true, false)}>All small</Button>
-            <Button size="sm" onClick={() => setAll(false, true)}>All big</Button>
-            <Button size="sm" onClick={() => setAll(false, false)}>None</Button>
-            <label className="ml-auto flex items-center gap-1.5 text-[11px] text-slate-400">
-              <input type="checkbox" className="accent-blue-500" checked={showAll} onChange={e => setShowAll(e.target.checked)} /> Also types only in the list ({partTypes.length - inWorkload})
-            </label>
-          </div>
-          <div className="max-h-64 overflow-auto rounded border border-slate-800">
-            <table className="w-full text-xs">
-              <thead className="sticky top-0 bg-slate-900 text-[10px] uppercase tracking-wide text-slate-400">
-                <tr><th className="px-2 py-1 text-left">Part type</th><th className="px-2 py-1 text-right">In workload</th><th className="px-2 py-1">Small</th><th className="px-2 py-1">Big</th></tr>
-              </thead>
-              <tbody>
-                {rows.map(t => {
-                  const a = cfg.allowed[t.key] ?? { small: false, big: false };
-                  return (
-                    <tr key={t.key} className="border-t border-slate-800/80">
-                      <td className="px-2 py-1 text-slate-200">{t.label}</td>
-                      <td className="mono px-2 py-1 text-right text-[10px] text-slate-500">{t.small + t.big ? `${t.small} small · ${t.big} big` : '–'}</td>
-                      <td className="px-2 py-1 text-center"><input type="checkbox" className="accent-blue-500" checked={a.small} onChange={e => toggle(t.key, 'small', e.target.checked)} /></td>
-                      <td className="px-2 py-1 text-center"><input type="checkbox" className="accent-blue-500" checked={a.big} onChange={e => toggle(t.key, 'big', e.target.checked)} /></td>
-                    </tr>
-                  );
-                })}
-                {rows.length === 0 && <tr><td colSpan={4} className="px-2 py-3 text-center text-slate-500">No part type matches.</td></tr>}
-              </tbody>
-            </table>
-          </div>
-          {!cfg.restricted && <p className="mt-1.5 text-[11px] text-amber-300/80">Switch on "Limit to chosen part types" for these choices to apply.</p>}
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -397,7 +231,70 @@ function TimeTab({ s, set }: TabProps) {
           <Toggle checked={c.continuous247} onChange={v => setC({ continuous247: v })} label="Continuous 24/7" hint="Ignore shifts and weekends; machines run around the clock." />
         </div>
       </Section>
+      <BreaksSection c={c} setC={setC} />
     </>
+  );
+}
+
+const BREAK_PRESETS: Array<{ label: string; start: string; minutes: number }> = [
+  { label: 'Coffee break', start: '10:00', minutes: 15 },
+  { label: 'Lunch', start: '12:30', minutes: 30 },
+  { label: 'Afternoon break', start: '16:00', minutes: 15 },
+];
+
+function BreaksSection({ c, setC }: { c: PlannerSettings['calendar']; setC: (p: Partial<PlannerSettings['calendar']>) => void }) {
+  const list = c.breaks ?? [];
+  const setList = (breaks: PlannerSettings['calendar']['breaks']) => setC({ breaks });
+  const edit = (id: string, p: Partial<(typeof list)[number]>) => setList(list.map(b => (b.id === id ? { ...b, ...p } : b)));
+  const add = (preset: { label: string; start: string; minutes: number }) => setList([...list, { id: `brk-${Date.now().toString(36)}-${list.length}`, ...preset }]);
+  const total = list.reduce((a, b) => a + (clockMinutes(b.start) !== null ? b.minutes : 0), 0);
+  return (
+    <Section title="Operator breaks" hint={`Breaks the operators take every working day, at the same clock time. ${total ? `${total} min a day in total.` : ''}`}>
+      <div className="mb-3">
+        <Segmented
+          value={c.breakMode}
+          options={[
+            { value: 'stop', label: 'Machines stop during a break' },
+            { value: 'run', label: 'Running parts carry on' },
+          ]}
+          onChange={breakMode => setC({ breakMode })}
+        />
+        <p className="mt-1.5 text-[11px] text-slate-500">
+          {c.breakMode === 'run'
+            ? 'A part that is already running finishes during the break; no part is started and no changeover is done until the break is over.'
+            : 'The machines stand still: a running part pauses and carries on after the break; nothing starts and no changeover is done during it.'}
+        </p>
+      </div>
+      <div className="space-y-2">
+        {list.map(b => {
+          const bad = clockMinutes(b.start) === null;
+          return (
+            <div key={b.id} className="grid grid-cols-[minmax(0,1fr)_8rem_6.5rem_auto] items-center gap-2 rounded-lg border border-slate-800 bg-slate-950/50 px-3 py-2">
+              <input className={inputCls} value={b.label} placeholder="Name" aria-label="Break name" onChange={e => edit(b.id, { label: e.target.value })} />
+              <input type="time" className={`${inputCls} ${bad ? 'border-rose-600' : ''}`} value={b.start} aria-label="Starts at" onChange={e => edit(b.id, { start: e.target.value })} />
+              <div className="flex items-center gap-1">
+                <NumberInput value={b.minutes} min={1} max={240} onChange={v => v && edit(b.id, { minutes: Math.round(v) })} />
+                <span className="text-[11px] text-slate-500">min</span>
+              </div>
+              <button onClick={() => setList(list.filter(x => x.id !== b.id))} className="rounded p-1 text-slate-500 hover:bg-rose-950 hover:text-rose-400" aria-label={`Remove ${b.label || 'break'}`}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          );
+        })}
+        {list.length === 0 && <p className="text-[11px] text-slate-500">No breaks yet: the machines are planned without pauses.</p>}
+      </div>
+      <div className="mt-2 flex flex-wrap gap-1.5">
+        <Button size="sm" onClick={() => add({ label: 'Break', start: '10:00', minutes: 15 })}>
+          <Plus className="h-3 w-3" /> Add a break
+        </Button>
+        {BREAK_PRESETS.filter(p => !list.some(b => b.label === p.label)).map(p => (
+          <Button key={p.label} size="sm" variant="ghost" onClick={() => add(p)}>
+            + {p.label} {p.start} · {p.minutes} min
+          </Button>
+        ))}
+      </div>
+    </Section>
   );
 }
 
@@ -437,8 +334,6 @@ function RulesTab({ s, set }: TabProps) {
       <Section title="Assignment rules">
         <div className="grid gap-2">
           <Toggle checked={s.keepErpAssignments} onChange={v => set({ keepErpAssignments: v })} label="Keep ERP machine assignments" hint="Jobs already assigned to one of your machines in the ERP stay on that machine; the optimizer chooses where in its queue they run." />
-          <Toggle checked={s.allowHaas5Overflow} onChange={v => set({ allowHaas5Overflow: v })} label="Allow overflow materials on machines that define them" hint="By default HAAS - 5 may then also take ALU and PCGF." />
-          <Toggle checked={s.fanuc2UsesIdealMinutes} onChange={v => set({ fanuc2UsesIdealMinutes: v })} label="Small-part limit uses ideal NC minutes" hint="Off: the limit is checked against efficiency-adjusted planned minutes instead." />
           <Toggle checked={s.restartJobOnEvent} onChange={v => set({ restartJobOnEvent: v })} label="Restart a job hit by a disruption" hint="Off: the job pauses and resumes after the disruption." />
         </div>
       </Section>

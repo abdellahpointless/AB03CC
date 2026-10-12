@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { WorkCalendar, planStartOffset } from './calendar';
+import { WorkCalendar, breakWindows, planStartOffset } from './calendar';
 import { demoCarpenterParts, demoJobs } from './demo';
 import { defaultSettings, mergeSettings } from './defaults';
 import { plannedDuration } from './efficiency';
@@ -8,6 +8,7 @@ import { buildPartTimeIndex, looksLikePartTimes, parsePartTimes, partKey, pickPa
 import { parseProduction } from './parse/production';
 import { toIsoDate } from './parse/workbook';
 import { isEligible, planProduction } from './scheduler/plan';
+import { refusal } from './scheduler/eligibility';
 import { bucketIndexOf, computeThroughput, niceTicks } from './throughput';
 import { SimContext } from './scheduler/simulate';
 import type { Job } from './types';
@@ -318,4 +319,99 @@ describe('scheduler', () => {
 it('type sanity: Job fields used by the UI exist', () => {
   const j: Pick<Job, 'id' | 'boxCode'> = { id: '1', boxCode: '0001' };
   expect(j.boxCode).toBe('0001');
+});
+
+describe('operator breaks', () => {
+  const withBreaks = (mode: 'stop' | 'run') => {
+    const s = settings();
+    s.calendar.breakMode = mode;
+    s.calendar.breaks = [
+      { id: 'a', label: 'coffee', start: '09:00', minutes: 15 },
+      { id: 'b', label: 'lunch', start: '12:30', minutes: 30 },
+    ];
+    return s;
+  };
+
+  it('lays the daily breaks out on the working-minute axis', () => {
+    const s = withBreaks('stop');
+    const w = breakWindows(s.calendar, 2);
+    const day = new WorkCalendar(s.calendar).dayLen;
+    // shift starts at 06:00: 09:00 is minute 180, 12:30 is minute 390
+    expect(w).toEqual([
+      { start: 180, end: 195 },
+      { start: 390, end: 420 },
+      { start: day + 180, end: day + 195 },
+      { start: day + 390, end: day + 420 },
+    ]);
+    s.calendar.breaks.push({ id: 'c', label: 'outside', start: '23:30', minutes: 10 }); // after the two shifts: ignored
+    expect(breakWindows(s.calendar, 1)).toHaveLength(2);
+  });
+
+  it('stops the machines during a break: nothing runs, starts or is changed over inside one', () => {
+    const s = withBreaks('stop');
+    const p = planProduction(demoJobs(), s);
+    const w = breakWindows(s.calendar);
+    for (const it of Object.values(p.queues).flat()) {
+      for (const seg of it.segments)
+        for (const b of w) expect(seg.endMinute <= b.start || seg.startMinute >= b.end).toBe(true);
+    }
+    // a part that meets a break pauses: some part is split around one
+    expect(Object.values(p.queues).flat().some(it => it.segments.length > 1)).toBe(true);
+  });
+
+  it('lets a running part carry on through a break when asked, but starts nothing inside one', () => {
+    const s = withBreaks('run');
+    const p = planProduction(demoJobs(), s);
+    const w = breakWindows(s.calendar);
+    const inside = (t: number) => w.some(b => t >= b.start && t < b.end);
+    for (const it of Object.values(p.queues).flat()) {
+      expect(inside(it.startMinute)).toBe(false);
+    }
+    // some part is running while a break passes, in one piece
+    expect(Object.values(p.queues).flat().some(it => it.segments.length === 1 && w.some(b => it.startMinute < b.start && it.endMinute > b.end))).toBe(true);
+  });
+});
+
+describe('machine rules', () => {
+  const job = (p: Partial<Job>): Job => ({ ...demoJobs()[0], erpMachine: null, blocked: false, qty: 1, ...p });
+
+  it('takes backup materials only while they are switched on', () => {
+    const s = settings();
+    const haas5 = s.machines.find(m => m.id === 'HAAS - 5')!;
+    expect(isEligible(job({ materialType: 'ALU' }), haas5, s)).toBe(false);
+    expect(refusal(job({ materialType: 'ALU' }), haas5, s)).toMatch(/backup material/);
+    expect(isEligible(job({ materialType: 'ALU' }), { ...haas5, useBackupMaterials: true }, s)).toBe(true);
+    expect(isEligible(job({ materialType: 'FH' }), { ...haas5, useBackupMaterials: true }, s)).toBe(false);
+  });
+
+  it('treats both size limits as hard, on NC minutes or on planned minutes', () => {
+    const s = settings();
+    const m = { ...s.machines[0], allowedMaterials: ['ALU'], size: { basis: 'nc' as const, min: 10, max: 30 } };
+    expect(isEligible(job({ materialType: 'ALU', ncMinutes: 9 }), m, s)).toBe(false);
+    expect(isEligible(job({ materialType: 'ALU', ncMinutes: 10 }), m, s)).toBe(true);
+    expect(isEligible(job({ materialType: 'ALU', ncMinutes: 30 }), m, s)).toBe(false);
+    // planned basis: NC 5 x estimate factor 2.8 = 14 planned minutes, inside 10..30
+    const planned = { ...m, size: { basis: 'planned' as const, min: 10, max: 30 } };
+    const ctx = new SimContext(s, [planned], {});
+    expect(isEligible(job({ materialType: 'ALU', ncMinutes: 5 }), planned, s, ctx)).toBe(true);
+    expect(isEligible(job({ materialType: 'ALU', ncMinutes: 5 }), m, s, ctx)).toBe(false);
+  });
+
+  it('turns machine settings of version 3 into the new rules', () => {
+    const old = {
+      settingsVersion: 3,
+      allowHaas5Overflow: true,
+      fanuc2UsesIdealMinutes: true,
+      machines: [
+        { id: 'FANUC - 2', name: 'FANUC - 2', allowedMaterials: ['ALU'], maxNcMinutes: 8, speedPercentage: 100 },
+        { id: 'HAAS - 5', name: 'HAAS - 5', allowedMaterials: ['POM'], minNcMinutesPref: 20, overflowMaterials: ['ALU'], speedPercentage: 100 },
+      ],
+    };
+    const s = mergeSettings(old as never);
+    expect(s.machines[0].size).toEqual({ basis: 'nc', min: null, max: 8 });
+    expect(s.machines[0].maxNcMinutes).toBeUndefined();
+    expect(s.machines[1]).toMatchObject({ backupMaterials: ['ALU'], useBackupMaterials: true });
+    expect(s.machines[1].size).toBeUndefined();
+    expect(s.calendar.breaks).toEqual([]);
+  });
 });

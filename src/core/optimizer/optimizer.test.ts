@@ -88,11 +88,20 @@ describe('lower bound', () => {
 });
 
 describe('downtime', () => {
-  for (const restart of [false, true]) {
-    it(`replays the planner minute for minute when machines are interrupted (${restart ? 'jobs restart' : 'jobs pause'})`, () => {
+  for (const restart of [false, true])
+    for (const breaks of ['none', 'stop', 'run'] as const)
+    it(`replays the planner minute for minute when machines are interrupted (${restart ? 'jobs restart' : 'jobs pause'}, breaks: ${breaks})`, () => {
       const s = defaultSettings();
       s.calendar.startDate = '2026-10-09';
       s.restartJobOnEvent = restart;
+      if (breaks !== 'none') {
+        s.calendar.breakMode = breaks;
+        s.calendar.breaks = [
+          { id: '1', label: 'coffee', start: '09:00', minutes: 15 },
+          { id: '2', label: 'lunch', start: '12:30', minutes: 30 },
+          { id: '3', label: 'night', start: '19:45', minutes: 20 },
+        ];
+      }
       s.timelineEvents = [
         { id: 'a', machineId: 'HAAS - 1', type: 'breakdown', title: 'a', startMinute: 130, durationMinutes: 75 },
         { id: 'b', machineId: 'ALL', type: 'maintenance', title: 'b', startMinute: 400, durationMinutes: 30 },
@@ -125,5 +134,4 @@ describe('downtime', () => {
       expect(validate(built.inst, res.queues)).toEqual([]);
       expect(res.sumC).toBeLessThanOrEqual(m.sumC);
     });
-  }
 });

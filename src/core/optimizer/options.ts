@@ -12,6 +12,7 @@ export function instanceOptions(machines: MachineConfig[], settings: PlannerSett
     // the planner keeps ERP-assigned jobs on their machine even where the material rules would refuse them
     durationOn: (job, machine, tied) => (tied || isEligible(job, machine, settings, ctx) ? ctx.duration(job, machine).durationMin : null),
     downtime: m => ctx.downtimeOf(m.id),
+    operatorOff: m => ctx.operatorOffOf(m.id),
     restartJobOnEvent: settings.restartJobOnEvent,
   };
 }

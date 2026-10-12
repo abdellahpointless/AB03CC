@@ -145,12 +145,31 @@ describe('modules-first planner', () => {
     expect(sumMo(plan)).toBeLessThan(sumMo(classic));
   });
 
-  it('has nothing to optimize, and does not fail, when every part is already tied to a machine', () => {
+  it('keeps the ERP machine only when that machine takes the part; the others are planned where they are allowed', () => {
+    const s = base({ priorityRules: finishOnly });
+    const haas1 = s.machines.find(m => m.id === 'HAAS - 1')!;
     const tiedJobs = jobs.map(j => ({ ...j, erpMachine: 'HAAS - 1', blocked: false }));
-    const p = planProduction(tiedJobs, base({ priorityRules: finishOnly }));
+    const p = planProduction(tiedJobs, s);
+    const ctx = new SimContext(s, s.machines, {});
     const placed = Object.values(p.queues).flat();
     expect(placed.length).toBeGreaterThan(0);
-    expect(placed.every(i => i.machineId === 'HAAS - 1')).toBe(true);
+    for (const it of placed) {
+      expect(isEligible(it.job, s.machines.find(m => m.id === it.machineId)!, s, ctx)).toBe(true);
+      if (isEligible(it.job, haas1, s, ctx)) expect(it.machineId).toBe('HAAS - 1');
+    }
+    expect(p.exceptions.erpRefused.length).toBeGreaterThan(0);
+    for (const j of p.exceptions.erpRefused) expect(p.refusals[j.id]).toMatch(/^ERP machine HAAS - 1: /);
+  });
+
+  it('never lets a part break a size limit or a material rule, whatever the ERP says', () => {
+    const s = base({ priorityRules: finishOnly });
+    const fanuc2 = s.machines.find(m => m.id === 'FANUC - 2')!;
+    const onFanuc2 = jobs.map(j => ({ ...j, erpMachine: 'FANUC - 2', blocked: false }));
+    const p = planProduction(onFanuc2, s);
+    for (const it of p.queues['FANUC - 2'] ?? []) {
+      expect(fanuc2.allowedMaterials).toContain(it.job.materialType);
+      expect(it.job.ncMinutes).toBeLessThan(fanuc2.size!.max!);
+    }
   });
 
   it('works around a breakdown without losing or double-booking a part', () => {

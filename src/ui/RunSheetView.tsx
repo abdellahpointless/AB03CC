@@ -50,7 +50,7 @@ function MachineTable({ machine, plan, multiplier }: { machine: MachineConfig; p
           </h3>
           <p className="text-[11px] text-slate-400">
             Allowed materials: {machine.allowedMaterials.join(', ')} · Speed {machine.speedPercentage}%
-            {machine.maxNcMinutes ? ` · NC < ${machine.maxNcMinutes} min` : ''}
+            {machine.size?.max ? ` · under ${machine.size.max} ${machine.size.basis === 'planned' ? 'planned' : 'NC'} min` : ''}{machine.size?.min ? ` · from ${machine.size.min} min` : ''}
           </p>
         </div>
         <div className="mono text-right text-[11px] text-slate-400">

@@ -9,7 +9,7 @@ function Kpi({ label, value, sub, tone = 'text-white', wide }: { label: string; 
   return (
     <div className={wide ? 'w-[310px] shrink-0' : 'min-w-[130px]'}>
       <div className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{label}</div>
-      <div className={`mono h-6 whitespace-nowrap text-base font-bold leading-6 tabular-nums ${tone}`}>
+      <div className={`mono h-6 overflow-hidden text-ellipsis whitespace-nowrap text-base font-bold leading-6 tabular-nums ${tone}`}>
         {value}
         {sub && <span className="ml-1.5 text-[10px] font-normal text-slate-500">{sub}</span>}
       </div>
@@ -37,7 +37,7 @@ export function KpiBar({ plan, onCarpenter }: { plan: PlanResult; onCarpenter: (
         sub={
           <>
             avg {k.avgMoCompletion}m
-            {opt && gain >= 0.05 && <span className="ml-1.5 font-semibold text-emerald-400">{gain.toFixed(1)}% sooner than the basic plan</span>}
+            {opt && gain >= 0.05 && <span className="ml-1.5 font-semibold text-emerald-400">{gain.toFixed(1)}% sooner than basic</span>}
           </>
         }
         tone="text-sky-300"

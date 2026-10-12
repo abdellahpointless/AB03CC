@@ -73,7 +73,7 @@ for (const [id, q] of Object.entries(subject.queues)) {
     seen.add(it.job.id);
     if (it.startMinute < prevEnd) problems.push(`${name}: overlap on ${id} at ${it.job.id}`);
     prevEnd = it.endMinute;
-    if (!it.erpLocked && !it.userLocked && !isEligible(it.job, machine, settings, ctx)) problems.push(`${name}: ineligible ${it.job.id} on ${id}`);
+    if (!it.userLocked && !isEligible(it.job, machine, settings, ctx)) problems.push(`${name}: ineligible ${it.job.id} on ${id}`);
     if (it.erpLocked && it.job.erpMachine !== id) problems.push(`${name}: ERP lock broken ${it.job.id}`);
   }
 }

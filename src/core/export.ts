@@ -72,7 +72,8 @@ export function buildWorkbook(plan: PlanResult, settings: PlannerSettings): XLSX
     list.map(j => ({ Category: cat, 'Order Number': j.orderNumber, 'Master Order': j.masterOrder, 'Box Code': j.boxCode, Matnr: j.matnr, Material: j.materialType, Reason: reason(j) }));
   add('Exceptions', [
     ...exRows('BLOCKED', ex.blocked, j => j.blockedReason ?? 'On hold'),
-    ...exRows('NO_ELIGIBLE_MACHINE', ex.noEligibleMachine, j => `No machine can take this part (${j.materialType}, or its part type)`),
+    ...exRows('NO_ELIGIBLE_MACHINE', ex.noEligibleMachine, j => plan.refusals?.[j.id] ?? `No machine can take this part (${j.materialType})`),
+    ...exRows('ERP_MACHINE_REFUSED', ex.erpRefused ?? [], j => `${plan.refusals?.[j.id] ?? `ERP machine ${j.erpMachine} does not take it`} (planned elsewhere)`),
     ...exRows('OUT_OF_SCOPE', ex.outOfScope, j => `ERP machine ${j.erpMachine}`),
     ...exRows('MANUAL_30000', ex.manual30000, () => 'Master order 30000* planned manually'),
     ...exRows('NO_WAREHOUSE_PICK', ex.unpickedWarehouse, () => 'Planned, but warehouse pick date missing'),

@@ -20,7 +20,7 @@ import type {
   WaitingOnCarpenter,
   WindowReport,
 } from '../types';
-import { isEligible } from './eligibility';
+import { isEligible, refusal } from './eligibility';
 import { classifyKinds, emergencyJobIds, groupKey } from '../partKinds';
 import { classifyJobs, improveQueues, partitionByTier } from './improve';
 import { insertWindowJobs, type WindowJob } from './windows';
@@ -192,7 +192,11 @@ export function planProduction(
     outOfScope: [],
     manual30000: [],
     unpickedWarehouse: [],
+    erpRefused: [],
   };
+  const refusals: Record<string, string> = {};
+  // why no active machine takes a part (the first machine's reason, or the closest one's)
+  const whyNoMachine = (job: Job) => active.map(m => refusal(job, m, settings, ctx)).find(Boolean) ?? 'no active machine';
   const lockedBy = new Map<string, 'user' | 'erp'>();
   const lockedQueues: Record<string, Job[]> = {};
   active.forEach(m => (lockedQueues[m.id] = []));
@@ -232,6 +236,7 @@ export function planProduction(
       }
       if (!active.some(m => isEligible(job, m, settings, ctx))) {
         exceptions.noEligibleMachine.push(job);
+        refusals[job.id] = whyNoMachine(job);
         continue;
       }
       windowJobs.push({ job, group: key, release: win.release, due: win.due });
@@ -239,9 +244,15 @@ export function planProduction(
       continue;
     }
     if (settings.keepErpAssignments && job.erpMachine && activeIds.has(job.erpMachine)) {
-      lockedBy.set(job.id, 'erp');
-      lockedQueues[job.erpMachine].push(job);
-      continue;
+      // the ERP machine is kept only when its rules allow the part; otherwise the part is planned like any other
+      const why = refusal(job, active.find(m => m.id === job.erpMachine)!, settings, ctx);
+      if (!why) {
+        lockedBy.set(job.id, 'erp');
+        lockedQueues[job.erpMachine].push(job);
+        continue;
+      }
+      exceptions.erpRefused.push(job);
+      refusals[job.id] = `ERP machine ${job.erpMachine}: ${why}`;
     }
     free.push(job);
   }
@@ -263,8 +274,10 @@ export function planProduction(
   const plannable: Job[] = [];
   for (const j of free) {
     const list = active.filter(m => isEligible(j, m, settings, ctx));
-    if (list.length === 0) exceptions.noEligibleMachine.push(j);
-    else {
+    if (list.length === 0) {
+      exceptions.noEligibleMachine.push(j);
+      refusals[j.id] = whyNoMachine(j);
+    } else {
       eligible.set(j.id, list);
       plannable.push(j);
     }
@@ -315,7 +328,6 @@ export function planProduction(
   const moEndSoFar = new Map<string, number>();
   for (const m of active) simulateQueue(queues[m.id], m, ctx).moEnd.forEach((v, k) => moEndSoFar.set(k, Math.max(v, moEndSoFar.get(k) ?? 0)));
 
-  const prefPenalty = (job: Job, m: MachineConfig) => (m.minNcMinutesPref && job.ncMinutes < m.minNcMinutesPref ? 1 : 0);
 
   for (const mo of moOrder) {
     const parts = moParts.get(mo)!;
@@ -327,7 +339,6 @@ export function planProduction(
     const evaluate = (assign: MachineConfig[]) => {
       const states: Record<string, MachineState> = {};
       let setup = 0;
-      let pref = 0;
       let moEnd = moEndSoFar.get(mo) ?? 0;
       parts.forEach((p, i) => {
         const m = assign[i];
@@ -335,7 +346,6 @@ export function planProduction(
         const r = step(st, p, m, ctx, { respectManualStart: false });
         setup += r.setup;
         moEnd = Math.max(moEnd, r.endMinute);
-        pref += prefPenalty(p, m);
       });
       let virtual = 0;
       let makespan = 0;
@@ -347,7 +357,7 @@ export function planProduction(
         virtual = Math.max(virtual, v);
         balance += v * v;
       }
-      return [virtual, moEnd, setup, makespan, balance, pref];
+      return [virtual, moEnd, setup, makespan, balance];
     };
 
     const place = (p: Job, m: MachineConfig) => {
@@ -393,7 +403,7 @@ export function planProduction(
             virtual = Math.max(virtual, v);
             balance += v * v;
           }
-          const score = [virtual, r.endMinute, r.setup, 0, balance, prefPenalty(p, m)];
+          const score = [virtual, r.endMinute, r.setup, 0, balance];
           if (!bestScore || lexLess(score, bestScore)) {
             bestScore = score;
             bestM = m;
@@ -465,6 +475,7 @@ export function planProduction(
         const options = active.filter(m => isEligible(rw, m, settings, ctx));
         if (options.length === 0) {
           exceptionsOut.noEligibleMachine.push(rw);
+          refusals[rw.id] = whyNoMachine(rw);
           continue;
         }
         machineId = options.reduce((best, m) =>
@@ -675,6 +686,7 @@ export function planProduction(
       carpenterReport: carpenterParts.length || settings.simulatedUncutMasterOrders.length ? carpenter.report : null,
       waitingOnCarpenter: waiting,
       exceptions: exceptionsOut,
+      refusals: { ...refusals },
       kpis,
       windowReport,
       summary: `Scheduled ${plannedJobs} jobs on ${active.length} machines; ${syncCount} of ${byMo.size} master orders finish together.`,

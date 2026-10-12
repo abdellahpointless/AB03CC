@@ -41,7 +41,9 @@ export interface Instance {
   slope: Float64Array;
   /** downtime of every machine as merged windows [start0, end0, start1, end1, ...] in working minutes */
   down: Int32Array[];
-  /** 1 when the machine has any downtime (lets the hot loops skip the window arithmetic) */
+  /** downtime plus operator breaks in which nothing may start or be changed over (same windows as `down` unless breaks let parts run) */
+  off: Int32Array[];
+  /** 1 when the machine has any downtime or break (lets the hot loops skip the window arithmetic) */
   hasDown: Uint8Array;
   /** a job that meets downtime starts again afterwards instead of pausing */
   restart: boolean;
@@ -75,6 +77,8 @@ export interface BuildOptions {
   moduleOf?(job: Job): string;
   /** windows in which the machine does not work (breakdowns, maintenance ...), merged and sorted */
   downtime?(machine: MachineConfig): Array<{ start: number; end: number }>;
+  /** windows in which nothing may start or be changed over (downtime plus breaks); default: the downtime */
+  operatorOff?(machine: MachineConfig): Array<{ start: number; end: number }>;
   restartJobOnEvent?: boolean;
 }
 
@@ -172,15 +176,16 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
     }
   }
 
-  const down = opts.machines.map(m => {
-    const windows = opts.downtime?.(m) ?? [];
+  const flatten = (windows: Array<{ start: number; end: number }>) => {
     const flat = new Int32Array(windows.length * 2);
     windows.forEach((w, i) => {
       flat[i * 2] = Math.round(w.start);
       flat[i * 2 + 1] = Math.round(w.end);
     });
     return flat;
-  });
+  };
+  const down = opts.machines.map(m => flatten(opts.downtime?.(m) ?? []));
+  const off = opts.machines.map((m, k) => (opts.operatorOff ? flatten(opts.operatorOff(m)) : down[k]));
 
   return {
     K,
@@ -205,7 +210,8 @@ export function buildInstance(items: InstanceItem[], opts: BuildOptions): Instan
     slope,
     work,
     down,
-    hasDown: Uint8Array.from(down, d => (d.length ? 1 : 0)),
+    off,
+    hasDown: Uint8Array.from(down, (d, k) => (d.length || off[k].length ? 1 : 0)),
     restart: Boolean(opts.restartJobOnEvent),
   };
 }

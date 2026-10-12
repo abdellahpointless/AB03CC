@@ -30,13 +30,14 @@
   /* ------------------------------------------------------------ the page */
 
   // Two kinds of grid are understood: SlickGrid (div rows, only the visible ones exist) and plain tables.
-  const slickViewport = () => q('.slick-viewport').filter(visible).sort((x, y) => y.clientHeight * y.clientWidth - x.clientHeight * x.clientWidth)[0] || null;
+  let scope = document; // the whole page, or the dialog being worked on
+  const slickViewport = () => q('.slick-viewport', scope).filter(visible).sort((x, y) => y.clientHeight * y.clientWidth - x.clientHeight * x.clientWidth)[0] || null;
   const isSlick = () => !!slickViewport();
 
   /** column names in order (header cells) */
   function headerNames() {
-    if (isSlick()) return q('.slick-header-column').filter(visible).map(h => norm((h.querySelector('.slick-column-name') || h).textContent));
-    return q('th, [role="columnheader"]').filter(visible).map(h => norm(h.textContent));
+    if (isSlick()) return q('.slick-header-column', scope).filter(visible).map(h => norm((h.querySelector('.slick-column-name') || h).textContent));
+    return q('th, [role="columnheader"]', scope).filter(visible).map(h => norm(h.textContent));
   }
   function columnIndex(re) {
     const i = headerNames().findIndex(n => re.test(n));
@@ -62,25 +63,23 @@
     }
     return row;
   }
+  /** clicks once, then waits for the grid to show the new state (it redraws the row a moment later) */
   async function setTick(row, on) {
     if (isTicked(row) === on) return true;
     const c = checkboxOf(row);
     if (!c) return false;
     press(c);
-    await sleep(80);
-    let now = freshRow(row);
-    if (isTicked(now) !== on && c.tagName === 'INPUT') {
-      press(c.closest('label, .e-checkbox-wrapper, td') || c);
-      await sleep(80);
-      now = freshRow(row);
+    for (let i = 0; i < 10; i++) {
+      await sleep(100);
+      if (isTicked(freshRow(row)) === on) return true;
     }
-    return isTicked(now) === on;
+    return false;
   }
 
   /** calls fn(row) for every row of the grid once; for SlickGrid it scrolls down the list so every row gets drawn */
-  async function scan(fn) {
+  async function scan(fn, keepPlace) {
     if (!isSlick()) {
-      for (const r of q('tbody tr, [role="row"]').filter(r => visible(r) && checkboxOf(r) && !r.querySelector('th'))) {
+      for (const r of q('tbody tr, [role="row"]', scope).filter(r => visible(r) && checkboxOf(r) && !r.querySelector('th'))) {
         if (stop) return;
         if ((await fn(r)) === 'done') return;
       }
@@ -98,7 +97,7 @@
         if (seen.has(key)) continue;
         seen.add(key);
         if ((await fn(r)) === 'done') {
-          vp.scrollTop = 0;
+          if (!keepPlace) vp.scrollTop = 0;
           return;
         }
       }
@@ -176,6 +175,8 @@
         <button data-act="tick" class="cnc-b">Tick the boxes</button>
         <button data-act="send" class="cnc-b" style="background:#2563eb;border-color:#3b82f6">Tick + send to machine</button>
         <button data-act="clear" class="cnc-b">Untick all</button>
+        <button data-act="order" class="cnc-b" title="With the Machines workload list open: drags the rows into plan order">Order the open workload list</button>
+        <button data-act="record" class="cnc-b" title="Logs what the page sends while you drag one row by hand">Record a drag</button>
         <button data-act="probe" class="cnc-b" title="Copies a description of this page (no clicking)">Describe page</button>
       </div>
       <pre data-log style="margin:0;white-space:pre-wrap;word-break:break-word;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:6px;max-height:240px;overflow:auto;font:11px ui-monospace,monospace"></pre>
@@ -196,8 +197,12 @@
     logEl.scrollTop = logEl.scrollHeight;
   };
   let plan = [];
+  let planSource = null;
   const readPlan = () => {
-    plan = parsePlan($('[data-plan]').value);
+    const text = $('[data-plan]').value;
+    if (text === planSource) return plan; // the same entries every time, so they can be compared
+    planSource = text;
+    plan = parsePlan(text);
     const machines = [...new Set(plan.map(p => p.machine))];
     const sel = $('[data-machine]');
     const keep = sel.value;
@@ -304,20 +309,34 @@
     const r = pre || (await survey(machine));
     if (r.others && !onlyThese) throw new Error(`${r.others} other rows are ticked. Press "Untick all" first.`);
     const want = new Set(onlyThese || r.mine);
-    let ok = 0;
-    const failed = [];
-    const done = new Set();
-    const target = [...want].filter(p => r.found.has(p)).length;
-    await scan(async row => {
-      const p = r.match(row);
-      if (!p || !want.has(p)) return;
-      if (await setTick(row, true)) ok++;
-      else failed.push(p.box);
-      done.add(p);
-      if (done.size >= target) return 'done'; // everything wanted is ticked: no need to read the rest of the list
-    });
-    log(`${machine}: ticked ${ok} of ${target}${r.missing.length ? `, ${r.missing.length} not found (${r.missing.map(m => m.box || m.order).join(', ')})` : ''}${failed.length ? `, could not tick ${failed.join(', ')}` : ''}.`, ok === target && !r.missing.length ? 'ok' : 'warn');
-    return { ...r, ticked: ok };
+    const target = [...want].filter(p => r.found.has(p));
+    let pending = new Set(target.filter(p => !r.found.get(p)));
+    // click what is not ticked, then read the whole list again to see what really is ticked; repeat for the rest
+    for (let round = 1; round <= 4 && pending.size; round++) {
+      const clicked = new Set();
+      await scan(async row => {
+        const p = r.match(row);
+        if (!p || !pending.has(p) || clicked.has(p)) return;
+        clicked.add(p);
+        await setTick(row, true);
+        if (clicked.size >= pending.size) return 'done';
+      });
+      if (stop) break;
+      const still = new Set(pending);
+      const seen = new Set();
+      await scan(row => {
+        const p = r.match(row);
+        if (!p || !still.has(p)) return;
+        seen.add(p);
+        if (isTicked(row)) still.delete(p);
+        if (seen.size >= pending.size) return 'done';
+      });
+      pending = still;
+      if (pending.size && round < 4) log(`Round ${round}: ${pending.size} not ticked yet, trying again.`, 'warn');
+    }
+    const ticked = target.length - pending.size;
+    log(`${machine}: ticked ${ticked} of ${target.length}${r.missing.length ? `, ${r.missing.length} not found (${r.missing.map(m => m.box || m.order).join(', ')})` : ''}${pending.size ? `, could not tick ${[...pending].map(p => p.box).join(', ')}` : ''}.`, !pending.size && !r.missing.length ? 'ok' : 'warn');
+    return { ...r, ticked };
   }
 
   /** "Send to machine" -> dialog -> pick the machine -> OK */
@@ -361,7 +380,9 @@
     if (!ok) throw new Error('Could not find OK in the box.');
     press(ok);
     await waitFor(() => !visible(dialog), 8000);
-    await sleep(600);
+    await sleep(800);
+    await waitFor(() => slickViewport() && slickViewport().querySelector('.slick-row') && pageInfo(), 20000, 200);
+    await sleep(300);
   }
 
   async function doSend() {
@@ -394,6 +415,188 @@
     log(`Sent ${n} boxes to ${machine} in plan order.`, 'ok');
   }
 
+  /* ------------------------------------------------------------ order the machine workload list */
+
+  const fire = (el, type, x, y, extra = {}) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0, buttons: type === 'mouseup' ? 0 : 1, ...extra }));
+  const center = el => {
+    const r = el.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+  const workloadDialog = () => q('.ui-dialog, [role="dialog"], .modal').filter(visible).find(d => /machines workload/i.test(norm(d.textContent.slice(0, 400))));
+
+  /** drags one row onto another (the list then says "Move A under B"), scrolling the list while the button is held */
+  async function dragUnder(srcRow, boxIdx, findTarget) {
+    const grab = srcRow.querySelector('.slick-cell.l' + boxIdx) || srcRow;
+    const vp = slickViewport();
+    let { x, y } = center(grab);
+    fire(grab, 'mousedown', x, y);
+    await sleep(60);
+    for (const dy of [3, 6, 9]) {
+      fire(grab, 'mousemove', x, y + dy);
+      fire(document, 'mousemove', x, y + dy);
+      await sleep(30);
+    }
+    const tgt = await findTarget();
+    if (!tgt) {
+      fire(document, 'mouseup', x, y);
+      return false;
+    }
+    const to = center(tgt.querySelector('.slick-cell.l' + boxIdx) || tgt);
+    const steps = 6;
+    for (let i = 1; i <= steps; i++) {
+      const px = x + ((to.x - x) * i) / steps;
+      const py = y + ((to.y - y) * i) / steps;
+      const el = document.elementFromPoint(px, py) || tgt;
+      fire(el, 'mousemove', px, py);
+      fire(document, 'mousemove', px, py);
+      await sleep(30);
+    }
+    const end = document.elementFromPoint(to.x, to.y) || tgt;
+    fire(end, 'mousemove', to.x, to.y);
+    await sleep(120);
+    fire(end, 'mouseup', to.x, to.y);
+    await sleep(60);
+    fire(end, 'click', to.x, to.y, { buttons: 0 });
+    void vp;
+    return true;
+  }
+
+  async function readWorkload(machine, boxIdx, ordIdx) {
+    const mine = mineOf(machine);
+    const match = matcher(mine, { box: boxIdx, ord: ordIdx });
+    const rows = [];
+    await scan(row => {
+      const p = match(row);
+      rows.push({ p, top: parseFloat(row.style.top) || rows.length, text: boxIdx !== null ? cellText(row, boxIdx) : '' });
+    });
+    return rows.sort((a, b) => a.top - b.top);
+  }
+
+  /** finds a row of the open list by its plan entry and leaves the list scrolled so that the row is in the middle */
+  async function rowOf(p, match, keepPlace) {
+    let found = null;
+    await scan(row => {
+      if (match(row) === p) {
+        found = row;
+        return 'done';
+      }
+    }, keepPlace);
+    if (found && keepPlace) {
+      const vp = slickViewport();
+      const top = parseFloat(found.style.top);
+      if (!isNaN(top)) {
+        vp.scrollTop = Math.max(0, top - vp.clientHeight / 2 + found.offsetHeight / 2);
+        await sleep(250);
+        found = [...vp.querySelectorAll('.slick-row')].find(r => r.style.top === found.style.top) || found;
+      }
+    }
+    return found;
+  }
+
+  async function doOrder() {
+    const dlg = workloadDialog();
+    if (!dlg) throw new Error('Open the "Machines workload" list first (the button next to "Send to machine"), then press this again.');
+    const machine = $('[data-machine]').value;
+    scope = dlg;
+    try {
+      const boxIdx = columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
+      const ordIdx = columnIndex(/^order\s*number/i);
+      if (boxIdx === null && ordIdx === null) throw new Error('The list has no Box Code or Order Number column.');
+      let rows = await readWorkload(machine, boxIdx, ordIdx);
+      const present = new Set(rows.filter(r => r.p).map(r => r.p));
+      log(`List columns: box ${boxIdx}, order ${ordIdx}; ${rows.length} rows read, ${present.size} are ${machine} boxes.`);
+      const desired = mineOf(machine).filter(p => present.has(p));
+      if (desired.length < 2) throw new Error(`Only ${desired.length} of ${machine}'s boxes are in this list: nothing to order.`);
+      log(`${desired.length} of ${machine}'s boxes are in the list (${rows.length} rows). Ordering them like the plan.`);
+      const match = matcher(mineOf(machine), { box: boxIdx, ord: ordIdx });
+      const orderNow = () => rows.filter(r => r.p).map(r => r.p);
+      // the boxes that can stay: the first one in plan order, and the longest run after it that is already in order
+      const pos = new Map(orderNow().map((p, i) => [p, i]));
+      const first = desired[0];
+      const after = desired.slice(1).filter(p => pos.get(p) > pos.get(first));
+      const best = [];
+      const tails = [];
+      after.forEach(p => {
+        const v = pos.get(p);
+        let lo = 0, hi = tails.length;
+        while (lo < hi) {
+          const m = (lo + hi) >> 1;
+          if (tails[m].v < v) lo = m + 1;
+          else hi = m;
+        }
+        tails[lo] = { v, p, prev: lo ? tails[lo - 1] : null };
+      });
+      for (let t = tails[tails.length - 1]; t; t = t.prev) best.push(t.p);
+      const keep = new Set([first, ...best]);
+      const moves = desired.filter((p, i) => i > 0 && !keep.has(p));
+      if (!moves.length) return log('The list is already in plan order.', 'ok');
+      if (!confirm(`Move ${moves.length} rows in the "${machine}" list to put its ${desired.length} boxes in plan order?`)) return log('Cancelled.');
+      let done = 0;
+      for (const p of moves) {
+        if (stop) return log('Stopped.');
+        const prev = desired[desired.indexOf(p) - 1];
+        let ok = false;
+        for (let attempt = 1; attempt <= 2 && !ok; attempt++) {
+          const src = await rowOf(p, match, true);
+          if (!src) throw new Error(`Box ${p.box} is no longer in the list.`);
+          await dragUnder(src, boxIdx ?? ordIdx, () => rowOf(prev, match, true));
+          await sleep(900);
+          await waitFor(() => slickViewport() && slickViewport().querySelector('.slick-row'), 8000, 150);
+          rows = await readWorkload(machine, boxIdx, ordIdx);
+          const o = orderNow();
+          ok = o.indexOf(p) === o.indexOf(prev) + 1 || (o.indexOf(p) > o.indexOf(prev) && !o.slice(o.indexOf(prev) + 1, o.indexOf(p)).some(x => desired.includes(x) && desired.indexOf(x) > desired.indexOf(p)));
+          if (!ok && attempt === 1) log(`Box ${p.box} did not move yet, trying once more.`, 'warn');
+        }
+        if (!ok) throw new Error(`Box ${p.box} would not move under ${prev.box}. Press "Record a drag" and do one drag by hand, then send me the result.`);
+        done++;
+        if (done % 5 === 0) log(`${done}/${moves.length} moved`);
+      }
+      const o = orderNow();
+      const right = desired.every((p, i) => i === 0 || o.indexOf(p) > o.indexOf(desired[i - 1]));
+      log(right ? `Done: ${desired.length} boxes of ${machine} are in plan order.` : 'Finished the moves, but the list does not look in plan order. Check it by eye.', right ? 'ok' : 'warn');
+    } finally {
+      scope = document;
+    }
+  }
+
+  /** logs the calls the page makes (to learn what a drag sends) */
+  let recording = null;
+  function toggleRecord() {
+    if (recording) {
+      const text = JSON.stringify(recording.log, null, 1);
+      recording.stop();
+      recording = null;
+      $('[data-act=record]').textContent = 'Record a drag';
+      try {
+        navigator.clipboard.writeText(text);
+        log('Recording copied. Paste it to me.', 'ok');
+      } catch {
+        log('Select and copy the text below:', 'warn');
+      }
+      log(text.slice(0, 1800));
+      return;
+    }
+    const logEntries = [];
+    const open = XMLHttpRequest.prototype.open;
+    const send = XMLHttpRequest.prototype.send;
+    XMLHttpRequest.prototype.open = function (m, u) {
+      this.__rec = { method: m, url: String(u) };
+      return open.apply(this, arguments);
+    };
+    XMLHttpRequest.prototype.send = function (b) {
+      if (this.__rec) logEntries.push({ ...this.__rec, body: typeof b === 'string' ? b.slice(0, 700) : b ? '[binary]' : '' });
+      return send.apply(this, arguments);
+    };
+    const f = window.fetch;
+    if (f) window.fetch = function (u, o) {
+      logEntries.push({ method: (o && o.method) || 'GET', url: String(u && u.url ? u.url : u), body: o && typeof o.body === 'string' ? o.body.slice(0, 700) : '' });
+      return f.apply(this, arguments);
+    };
+    recording = { log: logEntries, stop: () => { XMLHttpRequest.prototype.open = open; XMLHttpRequest.prototype.send = send; if (f) window.fetch = f; } };
+    $('[data-act=record]').textContent = 'Stop recording';
+    log('Recording. Now drag ONE row in the Machines workload list by hand, then press "Stop recording".', 'ok');
+  }
+
   function probe() {
     const lines = [];
     const add = (k, v) => lines.push(`${k}: ${v}`);
@@ -409,7 +612,12 @@
     if (row) add('first row html', row.outerHTML.slice(0, 2000));
     add('tick elements', q(TICK_SEL).length);
     const dlg = q('.ui-dialog, [role="dialog"], .modal').filter(visible)[0];
-    if (dlg) add('open dialog html', dlg.outerHTML.slice(0, 3000));
+    if (dlg) {
+      add('open dialog headers', q('.slick-header-column', dlg).map(h => norm(h.textContent)).join(' | '));
+      const r1 = dlg.querySelector('.slick-row');
+      if (r1) add('dialog first row html', r1.outerHTML.slice(0, 2200));
+      add('dialog html (start)', dlg.outerHTML.slice(0, 2500));
+    }
     const text = lines.join('\n');
     try {
       navigator.clipboard.writeText(text);
@@ -435,6 +643,8 @@
     else if (act === 'clear') guard(untickAll);
     else if (act === 'send') guard(doSend);
     else if (act === 'probe') guard(async () => probe());
+    else if (act === 'order') guard(doOrder);
+    else if (act === 'record') toggleRecord();
   });
   // drag by the title
   const bar = panel.querySelector('[data-drag]');

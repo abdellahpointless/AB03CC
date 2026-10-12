@@ -29,45 +29,85 @@
 
   /* ------------------------------------------------------------ the page */
 
-  const HEADER_SEL = 'th, [role="columnheader"], .e-headercell, .k-header, .dx-header-row td';
-  const ROW_SEL = 'tbody tr, [role="row"]';
+  // Two kinds of grid are understood: SlickGrid (div rows, only the visible ones exist) and plain tables.
+  const slickViewport = () => q('.slick-viewport').filter(visible).sort((x, y) => y.clientHeight * y.clientWidth - x.clientHeight * x.clientWidth)[0] || null;
+  const isSlick = () => !!slickViewport();
 
-  function headerCells() {
-    return q(HEADER_SEL).filter(visible);
+  /** column names in order (header cells) */
+  function headerNames() {
+    if (isSlick()) return q('.slick-header-column').filter(visible).map(h => norm((h.querySelector('.slick-column-name') || h).textContent));
+    return q('th, [role="columnheader"]').filter(visible).map(h => norm(h.textContent));
   }
-  /** index of a column among its row's cells, by header text */
   function columnIndex(re) {
-    const h = headerCells().find(c => re.test(norm(c.textContent)));
-    if (!h) return null;
-    const row = h.parentElement;
-    const cells = [...row.children];
-    return { header: h, index: cells.indexOf(h), count: cells.length };
+    const i = headerNames().findIndex(n => re.test(n));
+    return i < 0 ? null : i;
   }
-  function dataRows() {
-    return q(ROW_SEL).filter(r => visible(r) && !r.querySelector('th, [role="columnheader"]') && r.querySelector('input[type="checkbox"], [role="checkbox"], .e-checkbox-wrapper'));
+  function cellText(row, index) {
+    if (isSlick()) return norm((row.querySelector('.slick-cell.l' + index) || {}).textContent);
+    return norm(([...row.children][index] || {}).textContent);
   }
-  const cellOf = (row, index) => [...row.children][index];
-  function checkboxOf(row) {
-    return row.querySelector('input[type="checkbox"]') || row.querySelector('[role="checkbox"]') || row.querySelector('.e-checkbox-wrapper, .e-frame');
-  }
+  const TICK_SEL = '.select-item, .check-box, input[type="checkbox"], [role="checkbox"], .e-checkbox-wrapper';
+  const checkboxOf = row => row.querySelector(TICK_SEL);
   function isTicked(row) {
     const c = checkboxOf(row);
     if (!c) return false;
     if (c.tagName === 'INPUT') return c.checked;
-    return c.getAttribute('aria-checked') === 'true' || /checked|e-check/.test(c.className) || row.getAttribute('aria-selected') === 'true';
+    return c.getAttribute('aria-checked') === 'true' || /\bchecked\b|e-check/.test(c.className) || /\bselected\b/.test(row.className);
+  }
+  /** the same row again: grids redraw a row when it is ticked, so the element we hold may be a stale copy */
+  function freshRow(row) {
+    if (!row.isConnected && isSlick()) {
+      const vp = slickViewport();
+      return [...vp.querySelectorAll('.slick-row')].find(r => r.style.top === row.style.top) || row;
+    }
+    return row;
   }
   async function setTick(row, on) {
     if (isTicked(row) === on) return true;
     const c = checkboxOf(row);
     if (!c) return false;
     press(c);
-    await sleep(40);
-    if (isTicked(row) !== on && c.tagName === 'INPUT') {
-      // some grids listen on the wrapper
+    await sleep(80);
+    let now = freshRow(row);
+    if (isTicked(now) !== on && c.tagName === 'INPUT') {
       press(c.closest('label, .e-checkbox-wrapper, td') || c);
-      await sleep(40);
+      await sleep(80);
+      now = freshRow(row);
     }
-    return isTicked(row) === on;
+    return isTicked(now) === on;
+  }
+
+  /** calls fn(row) for every row of the grid once; for SlickGrid it scrolls down the list so every row gets drawn */
+  async function scan(fn) {
+    if (!isSlick()) {
+      for (const r of q('tbody tr, [role="row"]').filter(r => visible(r) && checkboxOf(r) && !r.querySelector('th'))) {
+        if (stop) return;
+        if ((await fn(r)) === 'done') return;
+      }
+      return;
+    }
+    const vp = slickViewport();
+    const seen = new Set();
+    vp.scrollTop = 0;
+    await sleep(200);
+    let guard = 0;
+    for (;;) {
+      if (stop) return;
+      for (const r of [...vp.querySelectorAll('.slick-row')]) {
+        const key = r.style.top || r.getAttribute('data-row') || r.className;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if ((await fn(r)) === 'done') {
+          vp.scrollTop = 0;
+          return;
+        }
+      }
+      if (vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 2 || ++guard > 400) break;
+      vp.scrollTop += Math.max(60, vp.clientHeight - 60);
+      await sleep(140);
+    }
+    vp.scrollTop = 0;
+    await sleep(100);
   }
 
   function pageInfo() {
@@ -78,19 +118,20 @@
   async function showAll(log) {
     const info = pageInfo();
     if (!info || info.to - info.from + 1 >= info.total) return true;
-    const sel = q('select').find(s => visible(s) && [...s.options].some(o => +o.value >= 100 || +norm(o.textContent) >= 100));
+    const sel = q('select.slick-pg-size, select').find(s => visible(s) && [...s.options].some(o => +o.value >= 100));
     if (!sel) {
       log('Could not find the page-size list (the "100" at the bottom). Set it to the largest size yourself, then try again.', 'warn');
       return false;
     }
-    const opts = [...sel.options].map(o => ({ o, n: +o.value || +norm(o.textContent) || 0 })).sort((a, b) => b.n - a.n);
+    const opts = [...sel.options].map(o => ({ o, n: +o.value || 0 })).sort((a, b) => b.n - a.n);
     const best = opts.find(x => x.n >= info.total) || opts[0];
     sel.value = best.o.value;
     sel.dispatchEvent(new Event('change', { bubbles: true }));
-    const ok = await waitFor(() => dataRows().length >= Math.min(info.total, best.n), 15000, 250);
-    await sleep(300);
+    if (window.jQuery) window.jQuery(sel).trigger('change');
+    await waitFor(() => { const i = pageInfo(); return i && i.to - i.from + 1 >= Math.min(i.total, best.n); }, 20000, 250);
+    await sleep(500);
     const after = pageInfo();
-    if (!ok || !after || after.to - after.from + 1 < info.total) log(`The page shows ${dataRows().length} of ${info.total} rows. Choose a bigger page size, or work in rounds.`, 'warn');
+    if (!after || after.to - after.from + 1 < info.total) log(`The page shows ${after ? after.to - after.from + 1 : '?'} of ${info.total} rows. Choose a bigger page size, or work in rounds.`, 'warn');
     return true;
   }
 
@@ -191,71 +232,92 @@
     }
   };
 
-  /** the rows of this page that belong to the chosen machine, in plan order; reports what it could not find */
-  async function locate(machine) {
+  /** which columns identify a row */
+  function columns() {
+    const box = columnIndex(/^box\s*code/i);
+    const ord = columnIndex(/^order\s*number/i);
+    if (box === null && ord === null) throw new Error('Could not find the "Box Code" or "Order Number" column. Press "Describe page" and send me the result.');
+    return { box, ord };
+  }
+  /** a plan entry is matched to a row by its order number, else by a box code that is unique */
+  function matcher(mine, col) {
+    const byOrder = new Map(mine.filter(p => p.order).map(p => [p.order, p]));
+    const byBox = new Map();
+    for (const p of mine) if (p.box) byBox.set(p.box, [...(byBox.get(p.box) || []), p]);
+    return row => {
+      const o = col.ord !== null ? cellText(row, col.ord) : '';
+      if (o && byOrder.has(o)) return byOrder.get(o);
+      if (col.box !== null) {
+        const b = cellText(row, col.box).padStart(4, '0');
+        const c = byBox.get(b);
+        if (c && c.length === 1 && (!c[0].order || col.ord === null)) return c[0];
+      }
+      return null;
+    };
+  }
+  const mineOf = machine => {
     const mine = readPlan().filter(p => p.machine === machine).sort((a, b) => a.seq - b.seq);
     if (!mine.length) throw new Error('Paste the plan first and choose a machine.');
+    return mine;
+  };
+
+  /** reads the whole list once: which of the machine's boxes are on the page, which are ticked, and which others are ticked */
+  async function survey(machine) {
+    const mine = mineOf(machine);
     await showAll(log);
-    const boxCol = columnIndex(/^box\s*code/i);
-    const ordCol = columnIndex(/^order\s*number/i);
-    if (!boxCol && !ordCol) throw new Error('Could not find the "Box Code" or "Order Number" column. Press "Describe page" and send me the result.');
-    const rows = dataRows();
-    if (!rows.length) throw new Error('Could not find the table rows. Press "Describe page" and send me the result.');
-    const byOrder = new Map();
-    const byBox = new Map();
-    for (const r of rows) {
-      if (ordCol) byOrder.set(norm(cellOf(r, ordCol.index)?.textContent), r);
-      if (boxCol) {
-        const b = norm(cellOf(r, boxCol.index)?.textContent).padStart(4, '0');
-        byBox.set(b, [...(byBox.get(b) || []), r]);
-      }
-    }
-    const found = [];
-    const missing = [];
-    for (const p of mine) {
-      let row = p.order ? byOrder.get(p.order) : undefined;
-      if (!row && p.box) {
-        const c = byBox.get(p.box) || [];
-        if (c.length === 1) row = c[0];
-        else if (c.length > 1) log(`Box ${p.box} appears ${c.length} times on the page and the order number was not copied: skipped.`, 'warn');
-      }
-      if (row) found.push({ p, row });
-      else missing.push(p);
-    }
-    return { mine, found, missing, rows };
+    const col = columns();
+    const match = matcher(mine, col);
+    const found = new Map();
+    let others = 0;
+    let rows = 0;
+    await scan(row => {
+      rows++;
+      const p = match(row);
+      const t = isTicked(row);
+      if (p) found.set(p, t);
+      else if (t) others++;
+    });
+    if (!rows) throw new Error('Could not find any table rows. Press "Describe page" and send me the result.');
+    const missing = mine.filter(p => !found.has(p));
+    return { mine, found, missing, others, rows, col, match };
   }
 
   async function doCheck() {
     const machine = $('[data-machine]').value;
-    const { mine, found, missing, rows } = await locate(machine);
-    log(`${machine}: ${mine.length} in the plan, ${found.length} found on this page (${rows.length} rows shown), ${missing.length} not found.`, missing.length ? 'warn' : 'ok');
-    if (missing.length) log('Not found: ' + missing.map(m => m.box || m.order).join(', ') + ' (already sent, filtered out, or on another page)', 'warn');
-    const already = found.filter(f => isTicked(f.row)).length;
+    const r = await survey(machine);
+    log(`${machine}: ${r.mine.length} in the plan, ${r.found.size} found on the page (${r.rows} rows read), ${r.missing.length} not found.`, r.missing.length ? 'warn' : 'ok');
+    if (r.missing.length) log('Not found: ' + r.missing.map(m => m.box || m.order).join(', ') + ' (already sent, filtered out, or not in the list)', 'warn');
+    const already = [...r.found.values()].filter(Boolean).length;
     if (already) log(`${already} of them are already ticked.`);
-    const others = rows.filter(r => isTicked(r) && !found.some(f => f.row === r)).length;
-    if (others) log(`${others} other rows are ticked. "Untick all" clears them.`, 'warn');
+    if (r.others) log(`${r.others} other rows are ticked. "Untick all" clears them.`, 'warn');
   }
 
   async function untickAll() {
     let n = 0;
-    for (const r of dataRows()) if (isTicked(r)) {
-      if (await setTick(r, false)) n++;
-    }
+    await scan(async row => {
+      if (isTicked(row) && (await setTick(row, false))) n++;
+    });
     log(`Unticked ${n} rows.`);
   }
 
-  async function tickMachine(machine, allowedOthers = false) {
-    const { found, missing, rows } = await locate(machine);
-    const others = rows.filter(r => isTicked(r) && !found.some(f => f.row === r));
-    if (others.length && !allowedOthers) throw new Error(`${others.length} other rows are ticked. Press "Untick all" first.`);
+  async function tickMachine(machine, onlyThese, pre) {
+    const r = pre || (await survey(machine));
+    if (r.others && !onlyThese) throw new Error(`${r.others} other rows are ticked. Press "Untick all" first.`);
+    const want = new Set(onlyThese || r.mine);
     let ok = 0;
-    for (const f of found) {
-      if (stop) break;
-      if (await setTick(f.row, true)) ok++;
-      else log(`Could not tick box ${f.p.box}.`, 'warn');
-    }
-    log(`${machine}: ticked ${ok} of ${found.length}${missing.length ? `, ${missing.length} not found (${missing.map(m => m.box || m.order).join(', ')})` : ''}.`, ok === found.length && !missing.length ? 'ok' : 'warn');
-    return { found, missing, ticked: ok };
+    const failed = [];
+    const done = new Set();
+    const target = [...want].filter(p => r.found.has(p)).length;
+    await scan(async row => {
+      const p = r.match(row);
+      if (!p || !want.has(p)) return;
+      if (await setTick(row, true)) ok++;
+      else failed.push(p.box);
+      done.add(p);
+      if (done.size >= target) return 'done'; // everything wanted is ticked: no need to read the rest of the list
+    });
+    log(`${machine}: ticked ${ok} of ${target}${r.missing.length ? `, ${r.missing.length} not found (${r.missing.map(m => m.box || m.order).join(', ')})` : ''}${failed.length ? `, could not tick ${failed.join(', ')}` : ''}.`, ok === target && !r.missing.length ? 'ok' : 'warn');
+    return { ...r, ticked: ok };
   }
 
   /** "Send to machine" -> dialog -> pick the machine -> OK */
@@ -263,7 +325,7 @@
     const btn = [...q('a, button, span, div, li')].filter(visible).find(e => /^send to machine$/i.test(norm(e.textContent)) && e.children.length <= 2);
     if (!btn) throw new Error('Could not find the "Send to machine" button.');
     press(btn);
-    const dialog = await waitFor(() => q('[role="dialog"], .modal, .e-dialog, .k-window, .ui-dialog, .dialog, div').filter(visible).find(d => /choice machine|choose machine/i.test(norm(d.firstElementChild?.textContent || '')) || (/choice machine/i.test(norm(d.textContent)) && d.textContent.length < 300)), 8000);
+    const dialog = await waitFor(() => q('.ui-dialog, [role="dialog"], .modal, .e-dialog, .k-window, .dialog').filter(visible).find(d => /choice machine|choose machine/i.test(norm(d.textContent))) || q('div').filter(visible).find(d => /choice machine/i.test(norm(d.textContent)) && d.textContent.length < 300 && d.querySelector('select, input, .select2-container')), 8000);
     if (!dialog) throw new Error('The "Choice Machine" box did not open.');
     const native = dialog.querySelector('select');
     if (native) {
@@ -272,8 +334,11 @@
       native.value = o.value;
       native.dispatchEvent(new Event('change', { bubbles: true }));
     } else {
-      const field =
-        dialog.querySelector('[role="combobox"], .e-ddl, .select2-selection, .k-dropdown, .k-input, .dropdown, input[placeholder], input[type="text"]') ||
+      const prefer = ['.select2-choice', '.select2-selection', '.select2-container', '[role="combobox"]', '.e-ddl', '.k-dropdown', '.k-input', '.dropdown', 'input[placeholder]', 'input[type="text"]'];
+      let field = null;
+      for (const sel of prefer) if ((field = dialog.querySelector(sel))) break;
+      field =
+        field ||
         [...dialog.querySelectorAll('span, div, a, input')].filter(visible).find(e => /^([-–\s]*(select|choose)[-–\s.]*|(fanuc|haas)\s*-\s*\d)$/i.test(norm(e.textContent || e.value || e.placeholder))) ||
         dialog.querySelector('input, span[class*="select"]');
       if (!field) throw new Error('Could not find the machine list in the box.');
@@ -285,7 +350,7 @@
         typed.dispatchEvent(new Event('input', { bubbles: true }));
         typed.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
       }
-      const item = await waitFor(() => q('li, [role="option"], .e-list-item, .select2-results__option, .k-item').filter(visible).find(e => norm(e.textContent).toLowerCase() === machine.toLowerCase()), 5000);
+      const item = await waitFor(() => q('.select2-result-label, li.select2-result, li, [role="option"], .e-list-item, .select2-results__option, .k-item').filter(visible).find(e => norm(e.textContent).toLowerCase() === machine.toLowerCase()), 5000);
       if (!item) throw new Error(`Could not pick "${machine}" in the list.`);
       press(item);
     }
@@ -302,29 +367,29 @@
   async function doSend() {
     const machine = $('[data-machine]').value;
     const one = $('[data-one]').checked;
-    const { mine, found, missing } = await locate(machine);
-    if (!found.length) throw new Error('Nothing to send: no box of this machine is on the page.');
-    if (!confirm(`Send ${found.length} boxes to ${machine}${one ? ', one at a time in plan order' : ''}?${missing.length ? `\n\n${missing.length} are not on this page and will be skipped.` : ''}`)) return log('Cancelled.');
+    const r = await survey(machine);
+    if (!r.found.size) throw new Error('Nothing to send: no box of this machine is in the list.');
+    if (r.others) throw new Error(`${r.others} other rows are ticked. Press "Untick all" first.`);
+    if (!confirm(`Send ${r.found.size} boxes to ${machine}${one ? ', one at a time in plan order' : ''}?${r.missing.length ? `\n\n${r.missing.length} are not in the list and will be skipped.` : ''}`)) return log('Cancelled.');
     if (!one) {
-      await tickMachine(machine);
+      const t = await tickMachine(machine, undefined, r);
       if (stop) return;
+      if (t.ticked !== r.found.size) throw new Error(`Only ${t.ticked} of ${r.found.size} could be ticked: nothing was sent.`);
       await sendTicked(machine);
-      log(`Sent ${found.length} boxes to ${machine}. Check the machine's workload.`, 'ok');
+      log(`Sent ${r.found.size} boxes to ${machine}. Check the machine's workload.`, 'ok');
       return;
     }
     let n = 0;
-    for (const f of found) {
+    for (const p of r.mine.filter(x => r.found.has(x))) {
       if (stop) return log('Stopped.');
-      await untickAll();
-      const fresh = (await locate(machine)).found.find(x => x.p === f.p || (x.p.order && x.p.order === f.p.order) || (x.p.box && x.p.box === f.p.box));
-      if (!fresh) {
-        log(`Box ${f.p.box} is no longer listed (already sent?): skipped.`, 'warn');
+      const t = await tickMachine(machine, [p], r);
+      if (!t.ticked) {
+        log(`Box ${p.box} could not be ticked (already sent?): skipped.`, 'warn');
         continue;
       }
-      if (!(await setTick(fresh.row, true))) throw new Error(`Could not tick box ${f.p.box}.`);
       await sendTicked(machine);
       n++;
-      log(`${n}/${found.length} sent: ${f.p.box}`);
+      log(`${n}/${r.found.size} sent: ${p.box}`, 'ok');
     }
     log(`Sent ${n} boxes to ${machine} in plan order.`, 'ok');
   }
@@ -333,20 +398,22 @@
     const lines = [];
     const add = (k, v) => lines.push(`${k}: ${v}`);
     add('path', location.pathname);
-    add('hints', ['jQuery', 'ej', 'kendo', 'DevExpress', 'Vue', 'angular', 'React', 'DataTable', 'Tabulator', 'agGrid'].filter(k => k in window).join(', ') || 'none');
+    add('hints', ['jQuery', 'Slick', 'Serenity', 'Q', 'select2'].filter(k => k in window).join(', ') || 'none');
+    add('jquery', window.jQuery ? window.jQuery.fn.jquery : 'none');
     add('pager', JSON.stringify(pageInfo()));
-    add('headers', headerCells().map(c => norm(c.textContent) || '(empty)').join(' | '));
-    const rows = dataRows();
-    add('data rows seen', rows.length);
-    if (rows[0]) add('first row html', rows[0].outerHTML.slice(0, 1800));
-    add('toolbar', [...q('a, button')].filter(visible).map(e => norm(e.textContent)).filter(t => t && t.length < 30).slice(0, 40).join(' | '));
-    add('selects', q('select').filter(visible).map(s => s.outerHTML.slice(0, 300)).join('\n'));
-    const d = q('[role="dialog"], .modal, .e-dialog, .k-window, .ui-dialog').filter(visible)[0];
-    if (d) add('open dialog html', d.outerHTML.slice(0, 2500));
+    add('slick viewport', isSlick() ? 'yes' : 'no');
+    add('headers', headerNames().join(' | '));
+    const vp = slickViewport();
+    if (vp) add('viewport', `height ${vp.clientHeight}, content ${vp.scrollHeight}`);
+    const row = vp ? vp.querySelector('.slick-row') : q('tbody tr')[0];
+    if (row) add('first row html', row.outerHTML.slice(0, 2000));
+    add('tick elements', q(TICK_SEL).length);
+    const dlg = q('.ui-dialog, [role="dialog"], .modal').filter(visible)[0];
+    if (dlg) add('open dialog html', dlg.outerHTML.slice(0, 3000));
     const text = lines.join('\n');
     try {
       navigator.clipboard.writeText(text);
-      log('Page description copied. Paste it to me. (It contains one table row with box and order data.)', 'ok');
+      log('Page description copied. Paste it to me. (It holds one table row with box and order data.)', 'ok');
     } catch {
       log('Select and copy the text below:', 'warn');
     }

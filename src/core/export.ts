@@ -108,10 +108,8 @@ interface ViewerWindow {
 
 export type ExportOutcome = 'saved' | 'declined' | 'failed';
 
-/** Saves the plan as an Excel file: through the viewer's save prompt when hosted in one, as a normal download otherwise. */
-export async function downloadPlan(plan: PlanResult, settings: PlannerSettings): Promise<ExportOutcome> {
-  const filename = `cnc-plan-${new Date().toISOString().slice(0, 10)}.xlsx`;
-  const wb = buildWorkbook(plan, settings);
+/** Saves a workbook: through the viewer's save prompt when hosted in one, as a normal download otherwise. */
+export async function saveWorkbook(wb: XLSX.WorkBook, filename: string): Promise<ExportOutcome> {
   const viewer = (window as unknown as ViewerWindow).claude;
   if (typeof viewer?.use === 'function') {
     try {
@@ -131,4 +129,9 @@ export async function downloadPlan(plan: PlanResult, settings: PlannerSettings):
   } catch {
     return 'failed';
   }
+}
+
+/** Saves the plan as an Excel file. */
+export function downloadPlan(plan: PlanResult, settings: PlannerSettings): Promise<ExportOutcome> {
+  return saveWorkbook(buildWorkbook(plan, settings), `cnc-plan-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }

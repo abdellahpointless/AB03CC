@@ -20,8 +20,9 @@ npm run check:data -- BoxShelf.xlsx [CarpenterList.xlsx] [PartsTimeList.xlsx]   
 4. **Orders & Bulk Efficiency** – every planned operation; select rows and set "runs at %" in bulk.
 5. **Run Sheets** – per-machine sequence; print one A4 page per machine.
    **Hourly Output** – how many master orders and parts finish in each hour, shift or day of the plan.
-6. **Exceptions** – blocked, no eligible machine, out-of-scope ERP machines, master orders 30000* (assign manually), missing warehouse pick.
-7. **Variable Editor** – machines (who makes what: materials, backup materials, size limits, part types, with live counts of what each machine may take), operator breaks, material offsets and aliases, changeover times, calendar, planning rules, carpenter handling, efficiency matrix and calibration.
+6. **Send to Machines** – the plan as entries for the shop system: per machine the box codes in running order (copy all, a batch, or only what changed), Production Status numbers, and a memory of what you last sent so a changed plan highlights only the parts that moved or need a new number.
+7. **Exceptions** – blocked, no eligible machine, out-of-scope ERP machines, master orders 30000* (assign manually), missing warehouse pick.
+8. **Variable Editor** – machines (who makes what: materials, backup materials, size limits, part types, with live counts of what each machine may take), operator breaks, material offsets and aliases, changeover times, calendar, planning rules, carpenter handling, efficiency matrix and calibration.
 
 Settings, overrides and the imported data are kept in the browser's local storage.
 

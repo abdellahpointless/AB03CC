@@ -7,7 +7,6 @@ import { ExceptionsView } from './ui/ExceptionsView';
 import { GanttView } from './ui/GanttView';
 import { Header, type View } from './ui/Header';
 import { HelpModal } from './ui/HelpModal';
-import { DispatchView } from './ui/DispatchView';
 import { HourlyView } from './ui/HourlyView';
 import { ImportReportModal } from './ui/ImportReportModal';
 import { JobDetailModal } from './ui/JobDetailModal';
@@ -68,7 +67,6 @@ export default function App() {
               {view === 'runsheet' && <RunSheetView onPrint={() => setDialog('print')} />}
               {view === 'hourly' && <HourlyView />}
               {view === 'tables' && <TablesView />}
-              {view === 'dispatch' && <DispatchView />}
               {view === 'exceptions' && <ExceptionsView />}
             </div>
           </>

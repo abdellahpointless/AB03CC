@@ -8,7 +8,6 @@ import {
   Package,
   Printer,
   RotateCcw,
-  Send,
   Siren,
   Settings as SettingsIcon,
   SlidersHorizontal,
@@ -21,7 +20,7 @@ import { useProgress, useStore } from '../state/store';
 import { Button } from './kit';
 import { useImport } from './useImport';
 
-export type View = 'gantt' | 'priority' | 'orders' | 'runsheet' | 'hourly' | 'tables' | 'dispatch' | 'exceptions';
+export type View = 'gantt' | 'priority' | 'orders' | 'runsheet' | 'hourly' | 'tables' | 'exceptions';
 
 const TABS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
   { id: 'gantt', label: 'Gantt Diagram', icon: <BarChart3 className="h-3.5 w-3.5" /> },
@@ -30,7 +29,6 @@ const TABS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
   { id: 'runsheet', label: 'Machine Output (Run Sheets)', icon: <FileText className="h-3.5 w-3.5" /> },
   { id: 'hourly', label: 'Hourly Output', icon: <Activity className="h-3.5 w-3.5" /> },
   { id: 'tables', label: 'Tables & Spares', icon: <Table2 className="h-3.5 w-3.5" /> },
-  { id: 'dispatch', label: 'Send to Machines', icon: <Send className="h-3.5 w-3.5" /> },
   { id: 'exceptions', label: 'Exceptions', icon: <AlertTriangle className="h-3.5 w-3.5" /> },
 ];
 

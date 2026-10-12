@@ -1,7 +1,7 @@
 import { WorkCalendar, formatClock } from '../calendar';
 import { buildCarpenterMap, normalizeMo } from '../parse/carpenter';
 import { partKey } from '../parse/partTimes';
-import { MAX_OPTIMIZED_JOBS, budgetFor } from '../optimizer/budget';
+import { MAX_OPTIMIZED_JOBS } from '../optimizer/budget';
 import { compareByRules, decidingRule, type RankContext } from '../priority';
 import type {
   Bottleneck,
@@ -451,22 +451,9 @@ export function planProduction(
 
   /* ---- everything after the search: rework parts, pinned starts, exact timing, KPIs ---- */
   // `assemble` can run more than once (first for the fast plan, then for the optimized one), so it works on copies.
-  const assemble = (base: Record<string, Job[]>, windowSteps: number): PlanResult => {
-    let queues: Record<string, Job[]> = {};
+  const assemble = (base: Record<string, Job[]>): PlanResult => {
+    const queues: Record<string, Job[]> = {};
     for (const m of active) queues[m.id] = [...base[m.id]];
-    // tables and spares go in last, where they disturb the other orders least
-    if (windowJobs.length) {
-      queues = insertWindowJobs({
-        active,
-        queues,
-        windowJobs,
-        settings,
-        ctx,
-        classes,
-        protectedIds: new Set([...emergencyIds, ...[...kinds].filter(([, k]) => k === 'rework').map(([id]) => id)]),
-        steps: windowSteps,
-      });
-    }
     const windowOf = new Map(windowJobs.map(w => [w.job.id, w.group]));
     const exceptionsOut: PlanResult['exceptions'] = { ...exceptions, noEligibleMachine: [...exceptions.noEligibleMachine] };
     const droppedStarts = new Map<string, number>();
@@ -697,15 +684,49 @@ export function planProduction(
   };
 
   /* ---- the optimizer: finish master orders as early as possible ------------ */
-  const fast = assemble(queues, 20000);
-  const jobCount = active.reduce((n, m) => n + queues[m.id].length, 0);
+  // the quick plan: tables and spares go in where they disturb the other orders least
+  const withWindows = windowJobs.length
+    ? insertWindowJobs({
+        active,
+        queues,
+        windowJobs,
+        settings,
+        ctx,
+        classes,
+        protectedIds: new Set([...emergencyIds, ...[...kinds].filter(([, k]) => k === 'rework').map(([id]) => id)]),
+        steps: 20000,
+      })
+    : queues;
+  const fast = assemble(withWindows);
+  const jobCount = active.reduce((n, m) => n + withWindows[m.id].length, 0);
   if (settings.planningMode === 'classic' || jobCount < 3 || jobCount > MAX_OPTIMIZED_JOBS) return fast;
 
   opts.onQuick?.(fast);
   const startModuleEnd = new Map(Object.values(fast.moSync).map(m => [m.masterOrder, m.lastFinish]));
+  // The optimizer plans tables and spares together with the modules (not squeezed in afterwards): each group joins the
+  // first priority class that is still running when the group has to be finished, so it never jumps ahead of a stronger
+  // class it does not need to, and its start and finish are hard limits inside that class.
+  const windowTier = new Map<string, number>();
+  if (windowJobs.length) {
+    const tierEnd = new Array<number>(classes.tierCount).fill(0);
+    let firstRuleTier = classes.tierCount - 1;
+    for (const q of Object.values(fast.queues))
+      for (const it of q) {
+        const t = classes.tierOf.get(it.job.id);
+        if (t === undefined) continue;
+        tierEnd[t] = Math.max(tierEnd[t], it.endMinute);
+        if (!emergencyIds.has(it.job.id) && kinds.get(it.job.id) !== 'rework') firstRuleTier = Math.min(firstRuleTier, t);
+      }
+    for (const w of windowJobs) {
+      let t = firstRuleTier;
+      while (t < classes.tierCount - 1 && tierEnd[t] < w.due) t++;
+      windowTier.set(w.job.id, t);
+    }
+  }
   const improved = improveQueues({
     active,
-    queues,
+    queues: withWindows,
+    windows: windowJobs.map(w => ({ ...w, tier: windowTier.get(w.job.id)! })),
     tied: finalLocked,
     settings,
     ctx,
@@ -728,7 +749,7 @@ export function planProduction(
   };
   if (!improved) return { ...fast, optimization: info(fast) };
 
-  const final = assemble(improved.queues, Math.min(400000, budgetFor(jobCount, effort).queueIters));
+  const final = assemble(improved.queues);
   // Judge both plans the way the search did, class by class (a stronger class always wins), on the real timing
   // (rework parts and pinned starts included).
   const worth = (p: PlanResult): number[] => {
@@ -740,10 +761,11 @@ export function planProduction(
         const key = `${tier}|${it.job.masterOrder}`;
         finish.set(key, Math.max(finish.get(key) ?? 0, it.endMinute));
       }
-    const v = new Array<number>(classes.tierCount).fill(0);
+    // a table or spare group that misses its finish loses against everything else
+    const v = [Object.values(p.windowReport ?? {}).reduce((a, r) => a + r.lateBy, 0), ...new Array<number>(classes.tierCount).fill(0)];
     finish.forEach((e, key) => {
       const cut = key.indexOf('|');
-      v[Number(key.slice(0, cut))] += (classes.weights.get(key.slice(cut + 1)) ?? 1) * e;
+      v[1 + Number(key.slice(0, cut))] += (classes.weights.get(key.slice(cut + 1)) ?? 1) * e;
     });
     return v;
   };

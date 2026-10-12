@@ -436,7 +436,7 @@ function RulesTab({ s, set }: TabProps) {
       </Section>
       <Section title="Assignment rules">
         <div className="grid gap-2">
-          <Toggle checked={s.keepErpAssignments} onChange={v => set({ keepErpAssignments: v })} label="Keep ERP machine assignments" hint="Jobs already assigned to one of your machines in the ERP stay there, at the head of its queue." />
+          <Toggle checked={s.keepErpAssignments} onChange={v => set({ keepErpAssignments: v })} label="Keep ERP machine assignments" hint="Jobs already assigned to one of your machines in the ERP stay on that machine; the optimizer chooses where in its queue they run." />
           <Toggle checked={s.allowHaas5Overflow} onChange={v => set({ allowHaas5Overflow: v })} label="Allow overflow materials on machines that define them" hint="By default HAAS - 5 may then also take ALU and PCGF." />
           <Toggle checked={s.fanuc2UsesIdealMinutes} onChange={v => set({ fanuc2UsesIdealMinutes: v })} label="Small-part limit uses ideal NC minutes" hint="Off: the limit is checked against efficiency-adjusted planned minutes instead." />
           <Toggle checked={s.restartJobOnEvent} onChange={v => set({ restartJobOnEvent: v })} label="Restart a job hit by a disruption" hint="Off: the job pauses and resumes after the disruption." />

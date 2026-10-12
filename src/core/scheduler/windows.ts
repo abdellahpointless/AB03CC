@@ -29,6 +29,7 @@ export interface InsertInput {
 }
 
 const SEED = 20261011;
+const MAX_TRIES = 60;
 
 /**
  * Puts table and spare parts into a finished plan so that the other orders are disturbed as little as possible: the
@@ -68,33 +69,50 @@ export function insertWindowJobs(inp: InsertInput): Record<string, Job[]> {
   });
   const index = new Map(inst.jobs.map((j, i) => [j.id, i]));
 
-  // start: everything else where it is, each window part at the end of the machine that frees up first
+  // start: everything else where it is; each window part (tightest finish first, longest first) goes to the place in a
+  // queue where it costs least: on time if it can be, then disturbing the other orders as little as possible
   const K = active.length;
+  const w = { makespan: 0, partEnd: 0, setup: DEFAULT_WEIGHTS.setup };
   const start: Queues = active.map(m => queues[m.id].map(j => index.get(j.id)!));
-  const ends = evaluate(inst, start).machineEnd.slice();
-  for (const w of [...windowJobs].sort((a, b) => a.release - b.release || a.due - b.due)) {
-    const j = index.get(w.job.id)!;
-    let best = -1;
-    for (const k of inst.eligList[j]) if (best < 0 || ends[k] + inst.dur[j * K + k] < ends[best] + inst.dur[j * K + best]) best = k;
-    if (best < 0) continue; // checked before: has an eligible machine
-    start[best].push(j);
-    ends[best] += inst.dur[j * K + best];
+  const headOf = active.map(m => {
+    let c = 0;
+    for (const j of queues[m.id]) {
+      if (!inp.protectedIds.has(j.id)) break;
+      c++;
+    }
+    return c;
+  });
+  const longest = (x: WindowJob) => Math.max(...inst.eligList[index.get(x.job.id)!].map(k => inst.dur[index.get(x.job.id)! * K + k]));
+  for (const wj of [...windowJobs].sort((a, b) => a.due - b.due || longest(b) - longest(a))) {
+    const j = index.get(wj.job.id)!;
+    const now = evaluate(inst, start);
+    let best: { k: number; i: number; v: number } | null = null;
+    for (const k of inst.eligList[j]) {
+      const q = start[k];
+      // only places that start before the finish are worth trying, plus the end of the queue
+      const from = Math.max(headOf[k], inst.head[k].length);
+      let to = from;
+      while (to < q.length && now.start[q[to]] < wj.due) to++;
+      // at most MAX_TRIES places per machine on a long queue (evenly spread), so big workloads stay quick
+      const stride = Math.max(1, Math.ceil((to - from) / MAX_TRIES));
+      const cands: number[] = [];
+      for (let i = from; i < to; i += stride) cands.push(i);
+      cands.push(q.length);
+      for (const i of cands) {
+        q.splice(i, 0, j);
+        const v = objectiveValue(inst, start, w);
+        q.splice(i, 1);
+        if (!best || v < best.v - 1e-9) best = { k, i, v };
+      }
+    }
+    if (best) start[best.k].splice(best.i, 0, j); // checked before: has an eligible machine
   }
 
   let queuesOut = start;
   if (inp.steps > 0) {
     const movable = new Uint8Array(inst.n);
     for (const w of windowJobs) movable[index.get(w.job.id)!] = 1;
-    const minPos = new Int32Array(K);
-    active.forEach((m, k) => {
-      let c = 0;
-      for (const j of queues[m.id]) {
-        if (!inp.protectedIds.has(j.id)) break;
-        c++;
-      }
-      minPos[k] = c;
-    });
-    const w = { makespan: 0, partEnd: 0, setup: DEFAULT_WEIGHTS.setup };
+    const minPos = Int32Array.from(headOf);
     const search = makeQueueSearch(inst, start, w, { movable, minPos });
     const rng = makeRng(SEED);
     const T0 = search.sampleTemperature(rng, 400) * 0.3;

@@ -21,7 +21,7 @@ export function instanceFromPlan(plan: PlanResult, settings: PlannerSettings, pa
   for (const m of machines) {
     for (const it of plan.queues[m.id] ?? []) {
       if (keepModules && !keepModules.has(it.job.masterOrder)) continue;
-      items.push({ job: it.job, fixedMachine: it.erpLocked || it.userLocked ? m.id : undefined });
+      items.push({ job: it.job, onlyMachine: it.erpLocked || it.userLocked ? m.id : undefined });
     }
   }
   const inst = buildInstance(items, instanceOptions(machines, settings, ctx));

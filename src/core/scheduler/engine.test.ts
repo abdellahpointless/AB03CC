@@ -125,14 +125,10 @@ describe('modules-first planner', () => {
     expect(shape(again)).toEqual(shape(fast));
   });
 
-  it('keeps ERP-assigned parts on the machine ERP gave them, at the head of its queue', () => {
+  it('keeps ERP-assigned parts on the machine ERP gave them (the optimizer chooses their place in its queue)', () => {
     const tied = Object.values(fast.queues).flat().filter(i => i.erpLocked);
     expect(tied.length).toBeGreaterThan(0);
-    for (const [machineId, items] of Object.entries(fast.queues)) {
-      const lockedHere = items.filter(i => i.erpLocked);
-      expect(items.slice(0, lockedHere.length).every(i => i.erpLocked)).toBe(true);
-      expect(lockedHere.every(i => i.job.erpMachine === machineId)).toBe(true);
-    }
+    for (const [machineId, items] of Object.entries(fast.queues)) expect(items.filter(i => i.erpLocked).every(i => i.job.erpMachine === machineId)).toBe(true);
   });
 
   it('shows the fast plan first, then reports progress up to 100% and returns the optimized plan', () => {
@@ -269,6 +265,34 @@ describe('part kinds, tables and spares', () => {
     const tableMinutes = table.reduce((a, i) => a + i.durationMin, 0);
     const otherEnd = (pl: PlanResult) => Object.values(pl.queues).flat().filter(i => !i.windowGroup && i.kind === 'module').reduce((m, i) => Math.max(m, i.endMinute), 0);
     expect(otherEnd(p) - otherEnd(without)).toBeLessThanOrEqual(tableMinutes + 90);
+  });
+
+  it('plans a table with a tight finish together with the modules: on time, and the modules finish sooner than with the quick insertion', () => {
+    const jobs = tableJobs();
+    const s = base({ priorityRules: finishOnly });
+    s.partWindows = { 'table|SO-TABLE': { start: '2026-10-09T06:00', finish: '2026-10-09T09:00' } };
+    let quick: PlanResult | null = null;
+    const p = planProduction(jobs, s, {}, [], {}, { onQuick: q => (quick = q) });
+    expect(quick).not.toBeNull();
+    expect(p.windowReport['table|SO-TABLE'].lateBy).toBe(0);
+    const modules = (pl: PlanResult) => Object.values(pl.moSync).filter(m => !m.masterOrder.startsWith('6') && !m.masterOrder.startsWith('3')).reduce((a, m) => a + m.lastFinish, 0);
+    expect(modules(p)).toBeLessThanOrEqual(modules(quick!));
+  });
+
+  it('keeps a table inside the class that is running when it has to be finished', () => {
+    const jobs = tableJobs();
+    const so = jobs.find(j => j.salesOrder && !j.blocked && !j.orderNumber.startsWith('6') && !j.orderNumber.startsWith('3'))!.salesOrder;
+    const rules: PriorityRule[] = [{ id: 'a', type: 'sales_order', level: 1, enabled: true, name: 'a', values: [so] }, ...finishOnly.map(r => ({ ...r, level: 2 }))];
+    const s = base({ priorityRules: rules });
+    s.partWindows = { 'table|SO-TABLE': { start: '2026-10-09T06:00', finish: '2026-10-12T20:00' } };
+    const p = planProduction(jobs, s);
+    expect(p.windowReport['table|SO-TABLE'].lateBy).toBe(0);
+    // a late finish: the table waits for the first class, it does not jump ahead of it
+    for (const q of Object.values(p.queues)) {
+      const lastFirst = q.map(i => i.job.salesOrder === so).lastIndexOf(true);
+      const firstTable = q.findIndex(i => i.windowGroup === 'table|SO-TABLE');
+      if (lastFirst >= 0 && firstTable >= 0) expect(firstTable).toBeGreaterThan(lastFirst);
+    }
   });
 
   it('runs rework parts before anything else on their machine, whatever the rules say', () => {

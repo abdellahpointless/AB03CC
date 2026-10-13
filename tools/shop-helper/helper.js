@@ -12,10 +12,14 @@
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
   const visible = el => !!el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length) > 0;
-  const q = (sel, root = document) => [...root.querySelectorAll(sel)];
+  // the page the helper works on: this tab's page, or the same page loaded in a frame (so its reloads do not stop us)
+  let DOC = document;
+  let WIN = window;
+  const q = (sel, root = DOC) => [...root.querySelectorAll(sel)];
   const press = el => {
     el.scrollIntoView({ block: 'center' });
-    for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(t, { bubbles: true, cancelable: true, view: window }));
+    const V = (el.ownerDocument && el.ownerDocument.defaultView) || WIN;
+    for (const t of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) el.dispatchEvent(new V.MouseEvent(t, { bubbles: true, cancelable: true, view: V }));
   };
   const waitFor = async (fn, ms = 6000, step = 100) => {
     const end = Date.now() + ms;
@@ -30,7 +34,7 @@
   /* ------------------------------------------------------------ the page */
 
   // Two kinds of grid are understood: SlickGrid (div rows, only the visible ones exist) and plain tables.
-  let scope = document; // the whole page, or the dialog being worked on
+  let scope = DOC; // the whole page, or the dialog being worked on
   const slickViewport = () => q('.slick-viewport', scope).filter(visible).sort((x, y) => y.clientHeight * y.clientWidth - x.clientHeight * x.clientWidth)[0] || null;
   const isSlick = () => !!slickViewport();
 
@@ -110,7 +114,7 @@
   }
 
   function pageInfo() {
-    const m = /showing\s+(\d+)\s+to\s+(\d+)\s+of\s+(\d+)/i.exec(document.body.innerText);
+    const m = /showing\s+(\d+)\s+to\s+(\d+)\s+of\s+(\d+)/i.exec(DOC.body ? DOC.body.innerText : '');
     return m ? { from: +m[1], to: +m[2], total: +m[3] } : null;
   }
   /** shows every record on one page, when the page offers a size that is big enough */
@@ -125,8 +129,8 @@
     const opts = [...sel.options].map(o => ({ o, n: +o.value || 0 })).sort((a, b) => b.n - a.n);
     const best = opts.find(x => x.n >= info.total) || opts[0];
     sel.value = best.o.value;
-    sel.dispatchEvent(new Event('change', { bubbles: true }));
-    if (window.jQuery) window.jQuery(sel).trigger('change');
+    sel.dispatchEvent(new WIN.Event('change', { bubbles: true }));
+    if (WIN.jQuery) WIN.jQuery(sel).trigger('change');
     await waitFor(() => { const i = pageInfo(); return i && i.to - i.from + 1 >= Math.min(i.total, best.n); }, 20000, 250);
     await sleep(500);
     const after = pageInfo();
@@ -267,7 +271,7 @@
     panel.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #334155"><b>Carpenter list: refresh</b><button data-a="close" style="all:unset;cursor:pointer;padding:0 6px">✕</button></div>
       <div style="padding:10px;display:flex;flex-direction:column;gap:8px">
-        <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="missing" checked> Only rows missing a PDF or an NC file (refreshed again, up to 3 times, until both are there)</label>
+        <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="missing" checked> Only rows with no PDF and no NC file (refreshed again, up to 3 times, until one of them is there)</label>
         <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="all"> Every row in the list</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button data-a="count" class="cnc-b">Count</button>
@@ -303,7 +307,8 @@
       return { wo, pdf: col(/^pdf/i), nc: col(/^nc\s*files?/i) };
     }
     const missing = (row, c) => [!hasFiles(cell(row, c.pdf)) && 'PDF', !hasFiles(cell(row, c.nc)) && 'NC'].filter(Boolean);
-    const needs = (row, c, m) => m === 'all' || missing(row, c).length > 0;
+    // a row with a PDF or an NC file counts as good: only rows with neither are refreshed
+    const needs = (row, c, m) => m === 'all' || missing(row, c).length === 2;
 
     /** walks the list from top to bottom; fn(row) may return 'refreshed' when it changed the list */
     async function walk(fn) {
@@ -351,7 +356,7 @@
         seen.add(wo);
         if (needs(r, c, m)) need++;
       });
-      log(`${seen.size} rows read, ${need} ${m === 'all' ? 'to refresh' : 'missing a PDF or NC file'}.`, 'ok');
+      log(`${seen.size} rows read, ${need} ${m === 'all' ? 'to refresh' : 'with no PDF and no NC file'}.`, 'ok');
     }
 
     const MAX_TRIES = 3;
@@ -360,7 +365,7 @@
       const st = resume ? load() : { mode: mode(), tries: {} };
       const tries = st.tries || {};
       const m = st.mode;
-      if (!resume && !confirm(m === 'all' ? 'Press Refresh on every row of the list?' : 'Press Refresh on every row that is missing a PDF or NC file?')) return log('Cancelled.');
+      if (!resume && !confirm(m === 'all' ? 'Press Refresh on every row of the list?' : 'Press Refresh on every row that has no PDF and no NC file?')) return log('Cancelled.');
       save({ mode: m, tries, running: true });
       let n = 0;
       let silent = 0;
@@ -393,7 +398,7 @@
           return 'refreshed';
         });
         if (!changed || m === 'all') break;
-        if (!stopNow) log(`Pass ${pass} done: ${changed} refreshes. Checking the list again for rows still missing a file.`);
+        if (!stopNow) log(`Pass ${pass} done: ${changed} refreshes. Checking the list again for rows that still have no file.`);
       }
       if (stopNow) {
         log(`Stopped after ${n} refreshes. Press "Continue" to go on.`, 'warn');
@@ -405,12 +410,12 @@
       if (m !== 'all') await walk(r => {
         const wo = woOf(r);
         const miss = missing(r, c);
-        if (wo && miss.length && !left.some(x => x.wo === wo)) left.push({ wo, miss });
+        if (wo && miss.length === 2 && !left.some(x => x.wo === wo)) left.push({ wo, miss });
       });
       save({});
       panel.querySelector('[data-a=resume]').style.display = 'none';
       log(`Done: ${n} refreshes in ${Math.round((Date.now() - t0) / 1000)} s.`, 'ok');
-      if (left.length) log(`${left.length} rows still miss a file after ${MAX_TRIES} tries (probably not uploaded yet): ${left.slice(0, 25).map(x => `${x.wo} (${x.miss.join('+')})`).join(', ')}${left.length > 25 ? ' …' : ''}`, 'warn');
+      if (left.length) log(`${left.length} rows still have no PDF and no NC file after ${MAX_TRIES} tries (probably not uploaded yet): ${left.slice(0, 25).map(x => x.wo).join(', ')}${left.length > 25 ? ' …' : ''}`, 'warn');
     }
 
     const guard = async fn => {
@@ -472,6 +477,12 @@
         <span style="color:#94a3b8">2. Machine:</span><select data-machine style="background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:4px"></select>
         <label style="color:#94a3b8"><input type="checkbox" data-one> one at a time, in order</label>
       </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
+        <button data-act="all" class="cnc-b" style="background:#15803d;border-color:#22c55e;font-weight:600">Do everything: send all machines + order</button>
+        <button data-act="autoresume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue the full run</button>
+        <button data-act="stop" class="cnc-b">Stop</button>
+      </div>
+      <div style="color:#94a3b8">Or one machine at a time:</div>
       <div style="display:flex;gap:6px;flex-wrap:wrap">
         <button data-act="check" class="cnc-b">Check</button>
         <button data-act="tick" class="cnc-b">Tick the boxes</button>
@@ -546,7 +557,7 @@
     if (busy) return;
     busy = true;
     stop = false;
-    panel.querySelectorAll('.cnc-b').forEach(b => (b.disabled = true));
+    panel.querySelectorAll('.cnc-b').forEach(b => b.getAttribute('data-act') !== 'stop' && (b.disabled = true));
     try {
       await fn();
     } catch (e) {
@@ -671,7 +682,8 @@
       const o = [...native.options].find(x => norm(x.textContent).toLowerCase() === machine.toLowerCase());
       if (!o) throw new Error(`The list has no machine "${machine}".`);
       native.value = o.value;
-      native.dispatchEvent(new Event('change', { bubbles: true }));
+      native.dispatchEvent(new WIN.Event('change', { bubbles: true }));
+      if (WIN.jQuery) WIN.jQuery(native).trigger('change');
     } else {
       const prefer = ['.select2-choice', '.select2-selection', '.select2-container', '[role="combobox"]', '.e-ddl', '.k-dropdown', '.k-input', '.dropdown', 'input[placeholder]', 'input[type="text"]'];
       let field = null;
@@ -686,8 +698,8 @@
       if (typed && typed.getAttribute('readonly') === null) {
         typed.focus();
         typed.value = machine;
-        typed.dispatchEvent(new Event('input', { bubbles: true }));
-        typed.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+        typed.dispatchEvent(new WIN.Event('input', { bubbles: true }));
+        typed.dispatchEvent(new WIN.KeyboardEvent('keyup', { bubbles: true }));
       }
       const item = await waitFor(() => q('.select2-result-label, li.select2-result, li, [role="option"], .e-list-item, .select2-results__option, .k-item').filter(visible).find(e => norm(e.textContent).toLowerCase() === machine.toLowerCase()), 5000);
       if (!item) throw new Error(`Could not pick "${machine}" in the list.`);
@@ -698,10 +710,17 @@
     if (!shown.includes(machine.toLowerCase()) && !(native && native.options[native.selectedIndex]?.textContent.trim().toLowerCase() === machine.toLowerCase())) throw new Error(`The box does not show "${machine}" after choosing it: not pressing OK.`);
     const ok = q('button, a, input[type="button"], input[type="submit"]', dialog).filter(visible).find(b => /^ok$/i.test(norm(b.textContent || b.value)));
     if (!ok) throw new Error('Could not find OK in the box.');
+    let reloaded = false;
+    if (frame) frame.addEventListener('load', () => (reloaded = true), { once: true });
     press(ok);
-    await waitFor(() => !visible(dialog), 8000);
+    await waitFor(() => !visible(dialog) || reloaded, 10000);
+    // the page reloads itself a moment after OK: in the frame we wait for it and carry on
+    if (frame) {
+      await waitFor(() => reloaded, 6000, 100);
+      if (reloaded) await frameReady();
+    }
     await sleep(800);
-    await waitFor(() => slickViewport() && slickViewport().querySelector('.slick-row') && pageInfo(), 20000, 200);
+    await waitFor(() => slickViewport() && slickViewport().querySelector('.slick-row') && pageInfo(), 30000, 200);
     await sleep(300);
   }
 
@@ -718,7 +737,7 @@
     const list = r.mine.filter(x => r.found.has(x) && (!wanted || wanted.has(keyOf(x))));
     if (!list.length) throw new Error('Nothing to send: no box of this machine is in the list.');
     if (r.others) throw new Error(`${r.others} other rows are ticked. Press "Untick all" first.`);
-    if (!confirm(`Send ${list.length} boxes to ${machine}${one ? ', one at a time in plan order' : ''}?${r.missing.length && !resume ? `\n\n${r.missing.length} are not in the list and will be skipped.` : ''}`)) return log('Cancelled.');
+    if (!auto && !confirm(`Send ${list.length} boxes to ${machine}${one ? ', one at a time in plan order' : ''}?${r.missing.length && !resume ? `\n\n${r.missing.length} are not in the list and will be skipped.` : ''}`)) return log('Cancelled.');
     if (!one) {
       const t = await tickMachine(machine, undefined, r);
       if (stop) return;
@@ -756,7 +775,7 @@
 
   /* ------------------------------------------------------------ order the machine workload list */
 
-  const fire = (el, type, x, y, extra = {}) => el.dispatchEvent(new MouseEvent(type, { bubbles: true, cancelable: true, view: window, clientX: x, clientY: y, button: 0, buttons: type === 'mouseup' ? 0 : 1, ...extra }));
+  const fire = (el, type, x, y, extra = {}) => el.dispatchEvent(new WIN.MouseEvent(type, { bubbles: true, cancelable: true, view: WIN, clientX: x, clientY: y, button: 0, buttons: type === 'mouseup' ? 0 : 1, ...extra }));
   const center = el => {
     const r = el.getBoundingClientRect();
     return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -772,12 +791,12 @@
     await sleep(60);
     for (const dy of [3, 6, 9]) {
       fire(grab, 'mousemove', x, y + dy);
-      fire(document, 'mousemove', x, y + dy);
+      fire(DOC, 'mousemove', x, y + dy);
       await sleep(30);
     }
     const tgt = await findTarget();
     if (!tgt) {
-      fire(document, 'mouseup', x, y);
+      fire(DOC, 'mouseup', x, y);
       return false;
     }
     const to = center(tgt.querySelector('.slick-cell.l' + boxIdx) || tgt);
@@ -785,12 +804,12 @@
     for (let i = 1; i <= steps; i++) {
       const px = x + ((to.x - x) * i) / steps;
       const py = y + ((to.y - y) * i) / steps;
-      const el = document.elementFromPoint(px, py) || tgt;
+      const el = DOC.elementFromPoint(px, py) || tgt;
       fire(el, 'mousemove', px, py);
-      fire(document, 'mousemove', px, py);
+      fire(DOC, 'mousemove', px, py);
       await sleep(30);
     }
-    const end = document.elementFromPoint(to.x, to.y) || tgt;
+    const end = DOC.elementFromPoint(to.x, to.y) || tgt;
     fire(end, 'mousemove', to.x, to.y);
     await sleep(120);
     fire(end, 'mouseup', to.x, to.y);
@@ -832,10 +851,10 @@
     return found;
   }
 
-  async function doOrder() {
+  async function doOrder(machineArg) {
     const dlg = workloadDialog();
     if (!dlg) throw new Error('Open the "Machines workload" list first (the button next to "Send to machine"), then press this again.');
-    const machine = $('[data-machine]').value;
+    const machine = machineArg || $('[data-machine]').value;
     scope = dlg;
     try {
       const boxIdx = columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
@@ -845,7 +864,10 @@
       const present = new Set(rows.filter(r => r.p).map(r => r.p));
       log(`List columns: box ${boxIdx}, order ${ordIdx}; ${rows.length} rows read, ${present.size} are ${machine} boxes.`);
       const desired = mineOf(machine).filter(p => present.has(p));
-      if (desired.length < 2) throw new Error(`Only ${desired.length} of ${machine}'s boxes are in this list: nothing to order.`);
+      if (desired.length < 2) {
+        if (auto) return log(`${machine}: ${desired.length} of its boxes in the list, nothing to order.`);
+        throw new Error(`Only ${desired.length} of ${machine}'s boxes are in this list: nothing to order.`);
+      }
       log(`${desired.length} of ${machine}'s boxes are in the list (${rows.length} rows). Ordering them like the plan.`);
       const match = matcher(mineOf(machine), { box: boxIdx, ord: ordIdx });
       const orderNow = () => rows.filter(r => r.p).map(r => r.p);
@@ -869,7 +891,7 @@
       const keep = new Set([first, ...best]);
       const moves = desired.filter((p, i) => i > 0 && !keep.has(p));
       if (!moves.length) return log('The list is already in plan order.', 'ok');
-      if (!confirm(`Move ${moves.length} rows in the "${machine}" list to put its ${desired.length} boxes in plan order?`)) return log('Cancelled.');
+      if (!auto && !confirm(`Move ${moves.length} rows in the "${machine}" list to put its ${desired.length} boxes in plan order?`)) return log('Cancelled.');
       let done = 0;
       for (const p of moves) {
         if (stop) return log('Stopped.');
@@ -894,7 +916,7 @@
       const right = desired.every((p, i) => i === 0 || o.indexOf(p) > o.indexOf(desired[i - 1]));
       log(right ? `Done: ${desired.length} boxes of ${machine} are in plan order.` : 'Finished the moves, but the list does not look in plan order. Check it by eye.', right ? 'ok' : 'warn');
     } finally {
-      scope = document;
+      scope = DOC;
     }
   }
 
@@ -936,6 +958,146 @@
     log('Recording. Now drag ONE row in the Machines workload list by hand, then press "Stop recording".', 'ok');
   }
 
+  /* ------------------------------------------------------------ everything at once */
+
+  let auto = false;
+  let frame = null;
+  const frameDocReady = () => {
+    try {
+      const d = frame && frame.contentDocument;
+      return d && d.readyState === 'complete' && d.querySelector('.slick-viewport .slick-row') ? d : null;
+    } catch {
+      return null; // the page does not let itself be framed
+    }
+  };
+  async function frameReady() {
+    const d = await waitFor(frameDocReady, 60000, 250);
+    if (!d) throw new Error('The page in the frame did not load.');
+    DOC = d;
+    WIN = frame.contentWindow;
+    scope = DOC;
+    await sleep(600);
+  }
+  /** the same page in a frame over this one: when it reloads after a send, this helper keeps running */
+  async function openFrame() {
+    frame = document.createElement('iframe');
+    frame.src = location.href;
+    frame.title = 'CNC Workload (driven by the helper)';
+    frame.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;border:0;z-index:2147483646;background:#fff';
+    document.body.appendChild(frame);
+    if (!(await waitFor(frameDocReady, 45000, 300))) {
+      frame.remove();
+      frame = null;
+      return false;
+    }
+    await frameReady();
+    return true;
+  }
+  function closeFrame() {
+    if (frame) frame.remove();
+    frame = null;
+    DOC = document;
+    WIN = window;
+    scope = DOC;
+  }
+  async function openWorkload() {
+    let dlg = workloadDialog();
+    if (dlg) return dlg;
+    const btn = q('a, button, span, div, li').filter(visible).find(e => /^machines workload$/i.test(norm(e.textContent)) && e.children.length <= 2);
+    if (!btn) throw new Error('Could not find the "Machines workload" button.');
+    press(btn);
+    dlg = await waitFor(() => {
+      const d = workloadDialog();
+      return d && d.querySelector('.slick-row') ? d : null;
+    }, 20000, 200);
+    if (!dlg) throw new Error('The "Machines workload" list did not open.');
+    await sleep(500);
+    return dlg;
+  }
+  function closeWorkload() {
+    const d = workloadDialog();
+    if (!d) return;
+    const x = d.querySelector('.ui-dialog-titlebar-close') || q('button', d).find(b => /^(cancel|close)$/i.test(norm(b.textContent)));
+    if (x) press(x);
+  }
+
+  async function runAll(resume) {
+    const machines = [...new Set(readPlan().map(p => p.machine))];
+    if (!machines.length) throw new Error('Paste the plan first (columns A to D of Plan_All).');
+    let st = resume ? stored().auto : null;
+    if (!st) {
+      if (!confirm(`Send every part of the plan to its machine (${machines.join(', ')}), then put each machine's workload list in plan order?`)) return log('Cancelled.');
+      st = { phase: 'send', i: 0, machines };
+    }
+    auto = true;
+    keep({ auto: st });
+    $('[data-act=autoresume]').style.display = 'none';
+    try {
+      if (!frame) {
+        const framed = await openFrame();
+        log(framed ? 'Working on the page in a frame: its reloads do not stop me.' : 'This page cannot be put in a frame: when it reloads, run the helper again and it carries on by itself.', framed ? 'ok' : 'warn');
+      }
+      while (st.phase === 'send' && st.i < st.machines.length) {
+        if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
+        const m = st.machines[st.i];
+        let r = await survey(m);
+        if (r.others) {
+          await untickAll();
+          r = await survey(m);
+        }
+        const list = r.mine.filter(x => r.found.has(x));
+        st = { ...st, i: st.i + 1 };
+        if (!list.length) {
+          log(`${m}: nothing to send (already sent, or not in the list).`);
+          keep({ auto: st });
+          continue;
+        }
+        const t = await tickMachine(m, undefined, r);
+        if (!t.ticked) {
+          log(`${m}: nothing could be ticked, skipped.`, 'warn');
+          keep({ auto: st });
+          continue;
+        }
+        // written before OK: if this tab reloads, the next run goes on with the next machine
+        keep({ auto: st, last: { msg: `full run: sent ${t.ticked} boxes to ${m}`, at: nowText() } });
+        log(`${m}: sending ${t.ticked} boxes…`);
+        await sendTicked(m);
+        log(`${m}: sent ${t.ticked} boxes.`, 'ok');
+      }
+      if (st.phase === 'send') {
+        st = { ...st, phase: 'order', i: 0 };
+        keep({ auto: st });
+      }
+      while (st.phase === 'order' && st.i < st.machines.length) {
+        if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
+        const m = st.machines[st.i];
+        for (let attempt = 1; ; attempt++) {
+          try {
+            await openWorkload();
+            log(`${m}: putting its list in plan order…`);
+            await doOrder(m);
+            break;
+          } catch (e) {
+            if (attempt >= 3 || stop) throw e;
+            log(`${m}: ${e && e.message ? e.message : e} Trying again.`, 'warn');
+            if (frame) await frameReady();
+            await sleep(1000);
+          }
+        }
+        st = { ...st, i: st.i + 1 };
+        keep({ auto: st });
+      }
+      closeWorkload();
+      keep({ auto: null, last: { msg: 'full run finished', at: nowText() } });
+      log('All done: every machine got its parts and its list is in plan order.', 'ok');
+    } catch (e) {
+      $('[data-act=autoresume]').style.display = '';
+      throw e;
+    } finally {
+      auto = false;
+    }
+  }
+
   function probe() {
     const lines = [];
     const add = (k, v) => lines.push(`${k}: ${v}`);
@@ -971,6 +1133,7 @@
     const act = e.target && e.target.getAttribute && e.target.getAttribute('data-act');
     if (!act) return;
     if (act === 'close') {
+      closeFrame();
       panel.remove();
       style.remove();
       delete window.__cncHelper;
@@ -985,6 +1148,9 @@
     else if (act === 'probe') guard(async () => probe());
     else if (act === 'order') guard(doOrder);
     else if (act === 'record') toggleRecord();
+    else if (act === 'all') guard(() => runAll(false));
+    else if (act === 'autoresume') guard(() => runAll(true));
+    else if (act === 'stop') stop = true;
   });
   // drag by the title
   const bar = panel.querySelector('[data-drag]');
@@ -1021,5 +1187,14 @@
     $('[data-act=resume]').style.display = '';
     log(`A send to ${saved.queue.machine} was interrupted by the page reload: ${saved.queue.remaining.length} of ${saved.queue.total} boxes are left. Press "Continue interrupted send".`, 'warn');
   }
-  log(saved.plan ? 'Ready.' : 'Ready. Paste the plan above, pick a machine, press Check.');
+  if (saved.auto && saved.auto.machines) {
+    $('[data-act=autoresume]').style.display = '';
+    const where = saved.auto.phase === 'send' ? `sending, ${saved.auto.i} of ${saved.auto.machines.length} machines done` : `ordering, ${saved.auto.i} of ${saved.auto.machines.length} machines done`;
+    log(`A full run was interrupted (${where}). It carries on in 5 seconds; press Stop to cancel.`, 'warn');
+    setTimeout(() => {
+      if (!stop && !busy) guard(() => runAll(true));
+      else keep({ auto: null });
+    }, 5000);
+  }
+  log(saved.plan ? 'Ready. "Do everything" sends every machine its parts and then orders every list.' : 'Ready. Paste the plan above, then press "Do everything" (or work one machine at a time).');
 })();

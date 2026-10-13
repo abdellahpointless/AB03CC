@@ -156,6 +156,228 @@
 
   /* ------------------------------------------------------------ the screen */
 
+  /* ============================================================ Carpenter produce list: refresh every row */
+
+  if (/carpenterproduce/i.test(location.pathname)) {
+    carpenterPanel();
+    return;
+  }
+
+  function carpenterPanel() {
+    const KEY = 'cncHelper.carpenter.v1';
+    const load = () => {
+      try {
+        return JSON.parse(localStorage.getItem(KEY) || '{}');
+      } catch {
+        return {};
+      }
+    };
+    const save = v => {
+      try {
+        localStorage.setItem(KEY, JSON.stringify(v));
+      } catch {
+        /* storage blocked */
+      }
+    };
+
+    // requests the page is waiting for: a refresh is finished when they are all back
+    let inflight = 0;
+    let lastActivity = 0;
+    if (!window.__cncNetHook) {
+      window.__cncNetHook = true;
+      const send = XMLHttpRequest.prototype.send;
+      XMLHttpRequest.prototype.send = function () {
+        inflightAdd(1);
+        this.addEventListener('loadend', () => inflightAdd(-1));
+        return send.apply(this, arguments);
+      };
+      if (window.fetch) {
+        const f = window.fetch;
+        window.fetch = function () {
+          inflightAdd(1);
+          return f.apply(this, arguments).finally(() => inflightAdd(-1));
+        };
+      }
+    }
+    function inflightAdd(d) {
+      inflight = Math.max(0, inflight + d);
+      lastActivity = Date.now();
+      window.__cncInflight = inflight;
+    }
+    async function settle(maxMs = 25000) {
+      const start = Date.now();
+      // give the click a moment to start its request
+      await waitFor(() => lastActivity >= start, 1500, 50);
+      await waitFor(() => inflight === 0 && Date.now() - lastActivity > 350, maxMs, 100);
+      await sleep(150);
+    }
+
+    const vp = () => q('.slick-viewport').filter(visible).sort((x, y) => y.clientHeight * y.clientWidth - x.clientHeight * x.clientWidth)[0] || null;
+    const headers = () => q('.slick-header-column').filter(visible).map(h => norm((h.querySelector('.slick-column-name') || h).textContent));
+    const col = re => headers().findIndex(n => re.test(n));
+    const cell = (row, i) => (i < 0 ? null : row.querySelector('.slick-cell.l' + i));
+    const refreshButton = row => [...row.querySelectorAll('a, button, span, div')].filter(visible).find(e => /^refresh$/i.test(norm(e.textContent)) && e.querySelectorAll('a, button').length === 0 && e.children.length <= 3);
+    const hasFiles = c => !!c && (c.querySelector('img, a, i, svg, [class*="pdf"], [class*="file"]') || norm(c.textContent).length > 0);
+
+    const panel = document.createElement('div');
+    panel.id = 'cnc-helper';
+    panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:400px;max-height:80vh;z-index:2147483647;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:10px;font:12px system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.5);display:flex;flex-direction:column';
+    panel.innerHTML = `
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #334155"><b>Carpenter list: refresh</b><button data-a="close" style="all:unset;cursor:pointer;padding:0 6px">✕</button></div>
+      <div style="padding:10px;display:flex;flex-direction:column;gap:8px">
+        <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="missing" checked> Only rows without PDF / NC files</label>
+        <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="all"> Every row in the list</label>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button data-a="count" class="cnc-b">Count</button>
+          <button data-a="run" class="cnc-b" style="background:#2563eb;border-color:#3b82f6">Refresh them all</button>
+          <button data-a="stop" class="cnc-b">Stop</button>
+          <button data-a="resume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue</button>
+        </div>
+        <pre data-log style="margin:0;white-space:pre-wrap;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:6px;max-height:220px;overflow:auto;font:11px ui-monospace,monospace"></pre>
+      </div>`;
+    const style = document.createElement('style');
+    style.textContent = '#cnc-helper .cnc-b{all:unset;cursor:pointer;padding:5px 9px;border:1px solid #475569;border-radius:6px;background:#1e293b;color:#e2e8f0}#cnc-helper .cnc-b[disabled]{opacity:.5}';
+    document.head.appendChild(style);
+    document.body.appendChild(panel);
+    const logEl = panel.querySelector('[data-log]');
+    const log = (m, tone) => {
+      const d = document.createElement('div');
+      d.textContent = m;
+      d.style.color = tone === 'warn' ? '#fbbf24' : tone === 'bad' ? '#f87171' : tone === 'ok' ? '#4ade80' : '';
+      logEl.appendChild(d);
+      logEl.scrollTop = logEl.scrollHeight;
+    };
+    const mode = () => panel.querySelector('input[name="cnc-mode"]:checked').value;
+    let stopNow = false;
+    let busy = false;
+
+    function columns() {
+      const wo = col(/^work\s*order/i);
+      if (wo < 0) throw new Error('Could not find the "Work Order" column.');
+      return { wo, pdf: col(/^pdf/i), nc: col(/^nc\s*files?/i) };
+    }
+    const needs = (row, c, m) => m === 'all' || !(hasFiles(cell(row, c.pdf)) || hasFiles(cell(row, c.nc)));
+
+    /** walks the list from top to bottom; fn(row) may return 'refreshed' when it changed the list */
+    async function walk(fn) {
+      const v = vp();
+      if (!v) throw new Error('Could not find the list.');
+      v.scrollTop = 0;
+      await sleep(250);
+      for (let guard = 0; guard < 5000; guard++) {
+        if (stopNow) return;
+        const top = v.scrollTop;
+        const rows = [...v.querySelectorAll('.slick-row')].sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top));
+        let changed = false;
+        for (const r of rows) {
+          const rt = parseFloat(r.style.top);
+          if (rt + r.offsetHeight <= top || rt >= top + v.clientHeight) continue; // only rows in view
+          if ((await fn(r)) === 'refreshed') {
+            changed = true;
+            break;
+          }
+          if (stopNow) return;
+        }
+        if (changed) {
+          // the list may have been redrawn: go back to the same place and read the view again
+          await waitFor(() => vp() && vp().querySelector('.slick-row'), 15000, 150);
+          const nv = vp();
+          if (nv !== v) return walk(fn);
+          v.scrollTop = Math.min(top, v.scrollHeight);
+          await sleep(200);
+          continue;
+        }
+        if (v.scrollTop + v.clientHeight >= v.scrollHeight - 2) return;
+        v.scrollTop = top + Math.max(40, v.clientHeight - 40);
+        await sleep(160);
+      }
+    }
+
+    async function count() {
+      const c = columns();
+      const m = mode();
+      const seen = new Set();
+      let need = 0;
+      await walk(r => {
+        const wo = norm(cell(r, c.wo)?.textContent);
+        if (!wo || seen.has(wo)) return;
+        seen.add(wo);
+        if (needs(r, c, m)) need++;
+      });
+      log(`${seen.size} rows read, ${need} ${m === 'all' ? 'to refresh' : 'without PDF / NC files'}.`, 'ok');
+    }
+
+    async function run(resume) {
+      const c = columns();
+      const st = resume ? load() : { mode: mode(), done: [] };
+      const done = new Set(st.done || []);
+      const m = st.mode;
+      if (!resume && !confirm(m === 'all' ? 'Press Refresh on every row of the list?' : 'Press Refresh on every row that has no PDF / NC files?')) return log('Cancelled.');
+      save({ mode: m, done: [...done], running: true });
+      let n = 0;
+      let failed = 0;
+      const t0 = Date.now();
+      await walk(async r => {
+        const wo = norm(cell(r, c.wo)?.textContent);
+        if (!wo || done.has(wo) || !needs(r, c, m)) return;
+        const b = refreshButton(r);
+        if (!b) {
+          failed++;
+          done.add(wo);
+          return;
+        }
+        press(b);
+        await settle();
+        done.add(wo);
+        n++;
+        save({ mode: m, done: [...done], running: true });
+        if (n % 10 === 0) log(`${n} refreshed (${Math.round((Date.now() - t0) / 1000)} s)`);
+        return 'refreshed';
+      });
+      if (stopNow) {
+        log(`Stopped after ${n}. Press "Continue" to go on.`, 'warn');
+        panel.querySelector('[data-a=resume]').style.display = '';
+        return;
+      }
+      save({});
+      panel.querySelector('[data-a=resume]').style.display = 'none';
+      log(`Done: ${n} rows refreshed in ${Math.round((Date.now() - t0) / 1000)} s${failed ? `, ${failed} rows had no Refresh button` : ''}.`, 'ok');
+    }
+
+    const guard = async fn => {
+      if (busy) return;
+      busy = true;
+      stopNow = false;
+      panel.querySelectorAll('.cnc-b').forEach(b => b.getAttribute('data-a') !== 'stop' && (b.disabled = true));
+      try {
+        await fn();
+      } catch (e) {
+        log('Stopped: ' + (e && e.message ? e.message : e), 'bad');
+      } finally {
+        busy = false;
+        panel.querySelectorAll('.cnc-b').forEach(b => (b.disabled = false));
+      }
+    };
+    panel.addEventListener('click', e => {
+      const a = e.target && e.target.getAttribute && e.target.getAttribute('data-a');
+      if (a === 'close') {
+        panel.remove();
+        style.remove();
+        delete window.__cncHelper;
+      } else if (a === 'count') guard(count);
+      else if (a === 'run') guard(() => run(false));
+      else if (a === 'resume') guard(() => run(true));
+      else if (a === 'stop') stopNow = true;
+    });
+    window.__cncHelper = { open: () => (panel.style.display = 'flex'), stop: () => (stopNow = true) };
+    const st = load();
+    if (st.running && st.done && st.done.length) {
+      panel.querySelector('[data-a=resume]').style.display = '';
+      log(`A refresh run was interrupted after ${st.done.length} rows. Press "Continue" to go on with the rest.`, 'warn');
+    }
+    log('Ready. "Count" shows how many rows need a refresh; "Refresh them all" presses Refresh on each, one after another, waiting for each to finish.');
+  }
+
   const panel = document.createElement('div');
   panel.id = 'cnc-helper';
   panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:430px;max-height:86vh;z-index:2147483647;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:10px;font:12px system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.5);display:flex;flex-direction:column';

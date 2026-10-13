@@ -4,7 +4,7 @@ import type {
   CarpenterPart,
   CarpenterReport,
 } from '../types';
-import { RowReader, num, str, toBool, type Row } from './cells';
+import { RowReader, num, str, toBool, toIsoDate, type Row } from './cells';
 
 /** Master order keys differ in formatting between exports ("123.0", spaces) - compare them normalized. */
 export function normalizeMo(raw: unknown): string {
@@ -13,27 +13,100 @@ export function normalizeMo(raw: unknown): string {
   return s;
 }
 
+const padDigits = (v: string, len: number) => (/^\d+$/.test(v) && v.length < len ? v.padStart(len, '0') : v);
+
+/** Numbers re-saved by Excel come back as "200170251.0". */
+function keyText(v: unknown): string {
+  const s = str(v);
+  return /^\d+\.0+$/.test(s) ? s.replace(/\.0+$/, '') : s;
+}
+
+/**
+ * Whether a PDF / NC file cell holds files. The export writes a JSON list ("[{...}]"); an empty list, "[]", "null" or
+ * an empty cell means none. Anything else that is not empty counts as files (a re-saved sheet may hold plain text).
+ */
+export function hasFiles(v: unknown): boolean {
+  if (v === undefined || v === null) return false;
+  if (Array.isArray(v)) return v.length > 0;
+  const s = String(v).trim();
+  if (!s || s === '[]' || s === '{}' || s.toLowerCase() === 'null') return false;
+  if (s.startsWith('[') || s.startsWith('{')) {
+    try {
+      const parsed: unknown = JSON.parse(s);
+      if (Array.isArray(parsed)) return parsed.length > 0;
+      if (parsed && typeof parsed === 'object') return Object.keys(parsed).length > 0;
+      return Boolean(parsed);
+    } catch {
+      return true;
+    }
+  }
+  return true;
+}
+
+/** The content of the "N<k> ( ... )" line of an NC header, or undefined. */
+export function ncHeaderLine(ncDescription: string, k: number): string | undefined {
+  for (const raw of ncDescription.split(/\r?\n/)) {
+    const line = raw.trim();
+    const m = new RegExp(`^N${k}(?![0-9])\\s*\\(?(.*)$`, 'i').exec(line);
+    if (!m) continue;
+    const body = m[1].replace(/\)\s*$/, '').trim();
+    return body || undefined;
+  }
+  return undefined;
+}
+
 export function parseCarpenter(rows: Row[]): { parts: CarpenterPart[]; uniqueMasterOrders: number } {
   const r = new RowReader(rows[0]);
   const parts: CarpenterPart[] = [];
   const mos = new Set<string>();
+  const hasPdfColumn = r.has('pdffiles', 'pdffile', 'pdf');
+  const hasNcColumn = r.has('ncfiles', 'ncfile');
   for (const row of rows) {
     const masterOrder = normalizeMo(r.get(row, 'masterorderno', 'masterorder', 'masterordernumber', 'mainorder'));
     if (!masterOrder) continue;
     mos.add(masterOrder);
     const alert = str(r.get(row, 'alertmessage', 'alert', 'warning'));
-    parts.push({
+    const text = str(r.get(row, 'text', 'description', 'partname')) || undefined;
+    const mText = str(r.get(row, 'mtext', 'materialtext')) || undefined;
+    const materialNr = keyText(r.get(row, 'materialnr', 'matnr', 'partnumber')) || undefined;
+    const modulNo = keyText(r.get(row, 'modulno', 'modul', 'module', 'modulnumber')) || undefined;
+    const scheduleRaw = r.get(row, 'schedule', 'plannedschedulednumber');
+    const schedule = scheduleRaw === undefined ? NaN : num(scheduleRaw, NaN);
+    const nc = str(r.get(row, 'ncdescription'));
+    const salesOrder = padDigits(keyText(r.get(row, 'salesorder')), 10);
+    const part: CarpenterPart = {
       masterOrder,
-      workOrder: str(r.get(row, 'workorder', 'works')) || undefined,
-      text: str(r.get(row, 'text', 'description', 'partname')) || undefined,
-      mText: str(r.get(row, 'mtext', 'materialtext')) || undefined,
+      workOrder: keyText(r.get(row, 'workorder', 'works')) || undefined,
+      text,
+      mText,
       materialType: str(r.get(row, 'materialtype')) || undefined,
-      qty: Math.max(1, num(r.get(row, 'qty'), 1)),
+      qty: Math.max(1, num(r.get(row, 'qty', 'quantity'), 1)),
       cuttedStatus: toBool(r.get(row, 'cuttedstatus', 'cutstatus', 'cutted')),
       carpenterStatus: toBool(r.get(row, 'carpenterstatus')),
       alertMessage: alert || undefined,
       customer: str(r.get(row, 'customername', 'customer')) || undefined,
-    });
+    };
+    const optional: Partial<CarpenterPart> = {
+      salesOrder: salesOrder || undefined,
+      schedule: Number.isFinite(schedule) ? schedule : undefined,
+      materialNr,
+      modulNo,
+      measure: str(r.get(row, 'measure')) || undefined,
+      descriptionDe: str(r.get(row, 'descriptionde')) || undefined,
+      boxInfo: str(r.get(row, 'boxinformation', 'boxinfo')) || undefined,
+      n3: nc ? ncHeaderLine(nc, 3) : undefined,
+      ncProgram: nc ? ncHeaderLine(nc, 1) : undefined,
+      hasPdf: hasPdfColumn ? hasFiles(r.get(row, 'pdffiles', 'pdffile', 'pdf')) : undefined,
+      hasNc: hasNcColumn ? hasFiles(r.get(row, 'ncfiles', 'ncfile')) : undefined,
+      productionDate: toIsoDate(r.get(row, 'productiondate', 'proddate')) ?? undefined,
+      plannedPickDate: toIsoDate(r.get(row, 'plannedpickdate')) ?? undefined,
+      warehousePickDate: toIsoDate(r.get(row, 'warehousepickdate')) ?? undefined,
+      partName: mText && !/^\d+$/.test(mText) ? mText : text,
+      moduleName: modulNo !== undefined && modulNo !== materialNr ? text : undefined,
+    };
+    // only fields that hold something, so the saved list stays small and old shapes compare equal
+    for (const [k, v] of Object.entries(optional)) if (v !== undefined) (part as unknown as Record<string, unknown>)[k] = v;
+    parts.push(part);
   }
   return { parts, uniqueMasterOrders: mos.size };
 }

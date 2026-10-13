@@ -184,6 +184,10 @@ export type PlanningEffort = 'quick' | 'standard' | 'thorough';
 export type CarpenterCutColumn = 'cutted_status' | 'carpenter_status' | 'either';
 export type CarpenterDelayMode = 'off' | 'soft' | 'hard';
 
+/**
+ * One row of the carpenter list. The fields after `customer` are optional so carpenter data saved before they existed
+ * stays valid; the PDF / NC file lists themselves are never kept, only whether they are there.
+ */
 export interface CarpenterPart {
   masterOrder: string;
   workOrder?: string;
@@ -195,6 +199,214 @@ export interface CarpenterPart {
   carpenterStatus: boolean;
   alertMessage?: string;
   customer?: string;
+  /** padded to 10 digits like the workload's sales order */
+  salesOrder?: string;
+  schedule?: number;
+  /** drawing / part key (= workload Matnr) */
+  materialNr?: string;
+  /** module type (= workload Material No) */
+  modulNo?: string;
+  /** raw Measure ("TOP PLATE FH/200099707/100X50X40"); the website cuts it at 40 characters */
+  measure?: string;
+  /** raw stock text "103314 - FH8221 40x1000x1000mm  B1409" */
+  descriptionDe?: string;
+  /** raw Box Information ("<stock> - <qty> <unit>") */
+  boxInfo?: string;
+  /** the N3 line of Nc Description without "N3 (" and ")": the untruncated twin of Measure */
+  n3?: string;
+  /** N1 line content: the NC program's machine (CHIRON, HAAS, ...) */
+  ncProgram?: string;
+  hasPdf?: boolean;
+  hasNc?: boolean;
+  /** ISO dates */
+  productionDate?: string;
+  plannedPickDate?: string;
+  warehousePickDate?: string;
+  /** M.text unless it is all digits, else Text */
+  partName?: string;
+  /** Text when it is the module name (Modul No differs from MaterialNr) */
+  moduleName?: string;
+}
+
+/** Saw family of a material: 'metal' | 'plastic' | 'laminate' | 'wood' | 'other' by default, user-editable. */
+export type SawGroup = string;
+
+/**
+ * cut = Cutted Status (or ticked done in the app); not_ready = no cut size (no Measure and no size in the NC header,
+ * usually no NC file yet); blocked = the alert says the stock may not be cut and names no replacement; premade = the
+ * stock is a pre-made blank (or 3D-print filament): nothing to saw, it is only picked.
+ */
+export type CutItemStatus = 'to_cut' | 'cut' | 'not_ready' | 'blocked' | 'premade';
+
+export type CutMaterialSource =
+  | 'user'
+  | 'measure'
+  | 'measure_suffix'
+  | 'n3'
+  | 'stock'
+  | 'box_info'
+  | 'alert_stock'
+  | 'column'
+  | 'text'
+  | 'history';
+
+export type StockKind = 'plate' | 'bar' | 'profile' | 'round' | 'sheet' | 'blank' | 'filament' | 'unknown';
+
+export interface CutAlert {
+  kind: 'blocked' | 'dont_cut' | 'not_available' | 'other_material' | 'other';
+  text: string;
+  replacementStock?: string;
+}
+
+/** One carpenter row as the cut list sees it. */
+export interface CutItem {
+  /** `cut:${workOrder || masterOrder+'#'+i}` (de-duplicated) */
+  id: string;
+  part: CarpenterPart;
+  status: CutItemStatus;
+  statusReason?: string;
+  /** resolved code after the user's token map and the material aliases: ALU FH POM PCGF MS INOX PEEK RES EPO FR4 ... */
+  material: string | null;
+  materialSource: CutMaterialSource | null;
+  /** the text fragment that decided it */
+  materialEvidence?: string;
+  /** when unresolved or without a CNC code: the token to ask the user about */
+  unknownToken?: string;
+  /** human text when the part and its stock disagree ("part says POM, bar is PCGF") */
+  conflict?: string;
+  saw: SawGroup;
+  /** effective stock: alert replacement > Description De > Box Information */
+  stockNo: string | null;
+  stockText: string | null;
+  stockKind: StockKind;
+  /** smallest stock dimension (plate thickness) when known */
+  thickness: number | null;
+  /** cut size as written (mm) */
+  cut: [number, number, number] | null;
+  cutSource?: string;
+  /** "5 ST. aus Roht." -> 5 parts from one sawn blank; else 1 */
+  piecesPerBlank: number;
+  /** filled by planCuts per stock group: the non-thickness dim shared by most parts of that stock */
+  stripWidth: number | null;
+  /** filled by planCuts: the remaining dim */
+  length: number | null;
+  qty: number;
+  alert?: CutAlert;
+}
+
+export interface CutStep {
+  /** 1-based position in the carpenter's list */
+  index: number;
+  item: CutItem;
+  /** plan-minute axis (WorkCalendar), carpenter time; the step's setup comes first */
+  startMinute: number;
+  endMinute: number;
+  startTime: string;
+  endTime: string;
+  /** biggest change before this step (null for the first step, for a step that runs straight on and for picks) */
+  setup: 'saw' | 'stock' | 'strip' | 'length' | null;
+  setupMinutes: number;
+  /** consecutive sawn steps with the same saw + stock + strip share a series; a pick joins the series it is done in */
+  seriesId: number;
+  /** short reasons: 'urgent order', 'sales order in the Gantt', 'due 17.10', 'same bar as #12', ... */
+  why: string[];
+}
+
+export interface CutSeries {
+  id: number;
+  saw: SawGroup;
+  stockNo: string | null;
+  stockText: string | null;
+  material: string | null;
+  thickness: number | null;
+  stripWidth: number | null;
+  /** first and last step index (1-based) */
+  first: number;
+  last: number;
+  pieces: number;
+  startMinute: number;
+  endMinute: number;
+}
+
+/** One master order (box) as the cut list sees it. */
+export interface CutModule {
+  masterOrder: string;
+  salesOrder?: string;
+  schedule?: number;
+  customer?: string;
+  moduleName?: string;
+  /** rows of the box in the list (cut ones included) */
+  parts: number;
+  toCut: number;
+  /** when its last part is cut (null = cannot complete: a part is not ready or blocked) */
+  doneMinute: number | null;
+  doneTime?: string;
+  /** why it cannot complete */
+  blockedBy?: string;
+  /** what the optimiser used */
+  tier: number;
+  weight: number;
+  /** its sales order (+ schedule if set) has real boxes in the workload */
+  inGantt: boolean;
+}
+
+export interface CutStats {
+  /** steps in the list (sawn parts and picked blanks) */
+  parts: number;
+  /** pieces sawn or picked */
+  pieces: number;
+  cutMinutes: number;
+  setupMinutes: number;
+  /** changes between consecutive sawn steps; a saw change is also a stock and a strip change, a stock change also a strip change */
+  sawChanges: number;
+  stockChanges: number;
+  stripChanges: number;
+  finishMinute: number;
+}
+
+export interface CutPlan {
+  steps: CutStep[];
+  series: CutSeries[];
+  modules: CutModule[];
+  notReady: CutItem[];
+  blocked: CutItem[];
+  premade: CutItem[];
+  alreadyCut: number;
+  unknownMaterials: Array<{ token: string; count: number; examples: Array<{ workOrder?: string; measure?: string; descriptionDe?: string; text?: string }> }>;
+  conflicts: Array<{ text: string; count: number; examples: Array<{ workOrder?: string; measure?: string; descriptionDe?: string }> }>;
+  stats: CutStats;
+  /** the same parts in file order, for "x fewer saw changes" comparisons */
+  naive: CutStats;
+}
+
+/** How the carpenter list is ordered and forecast. */
+export interface CarpenterSettings {
+  /** uncut boxes become expected CNC jobs */
+  forecast: boolean;
+  /** only boxes the carpenter finishes within this many working hours are forecast in the CNC plan */
+  forecastHorizonHours: number;
+  maxForecastJobs: number;
+  /** from the last cut to the box being in the CNC workload */
+  transferMinutes: number;
+  /** sawing per piece */
+  minutesPerPiece: number;
+  sawChangeMin: number;
+  /** other plate / bar on the same saw */
+  stockChangeMin: number;
+  /** new strip width on the same plate */
+  stripChangeMin: number;
+  /** new stop length */
+  lengthChangeMin: number;
+  /** per piece, just picking a pre-cut blank */
+  premadeMinutes: number;
+  /** material code -> saw group */
+  sawGroups: Record<string, SawGroup>;
+  /** the user's answers: token (upper case) -> material code, e.g. "ERTA" -> "PETP"; applied first */
+  materialTokens: Record<string, string>;
+  /** weight factor for boxes whose sales order is already in the Gantt */
+  inGanttBoost: number;
+  /** work orders ticked as cut in the app (left out of the list and the forecast) */
+  doneWorkOrders: string[];
 }
 
 export interface CarpenterOpenPart {
@@ -247,6 +459,8 @@ export interface PlannerSettings {
   carpenterDelayMode: CarpenterDelayMode;
   carpenterMaxDelayHours: number;
   simulatedUncutMasterOrders: string[];
+  /** the carpenter's cut list and the forecast of boxes still to be cut */
+  carpenter: CarpenterSettings;
 
   globalEfficiencyPercent: number;
   efficiencyMatrix: Record<string, Record<string, number>>; // machine -> material -> %

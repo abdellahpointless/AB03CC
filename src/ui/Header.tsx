@@ -4,23 +4,26 @@ import {
   BarChart3,
   Download,
   FileText,
+  Hammer,
   HelpCircle,
   Package,
   Printer,
   RotateCcw,
   Siren,
+  SquareTerminal,
   Settings as SettingsIcon,
   SlidersHorizontal,
   Table2,
   Trash2,
   Upload,
 } from 'lucide-react';
-import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 import { useProgress, useStore } from '../state/store';
 import { Button } from './kit';
+import { PillBg, usePill } from './motion';
 import { useImport } from './useImport';
 
-export type View = 'gantt' | 'priority' | 'orders' | 'runsheet' | 'hourly' | 'tables' | 'exceptions';
+export type View = 'gantt' | 'priority' | 'orders' | 'runsheet' | 'hourly' | 'carpenter' | 'tables' | 'exceptions';
 
 const TABS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
   { id: 'gantt', label: 'Gantt Diagram', icon: <BarChart3 className="h-3.5 w-3.5" /> },
@@ -28,16 +31,10 @@ const TABS: Array<{ id: View; label: string; icon: React.ReactNode }> = [
   { id: 'orders', label: 'Orders & Bulk Efficiency', icon: <Package className="h-3.5 w-3.5" /> },
   { id: 'runsheet', label: 'Machine Output (Run Sheets)', icon: <FileText className="h-3.5 w-3.5" /> },
   { id: 'hourly', label: 'Hourly Output', icon: <Activity className="h-3.5 w-3.5" /> },
+  { id: 'carpenter', label: 'Carpenter', icon: <Hammer className="h-3.5 w-3.5" /> },
   { id: 'tables', label: 'Tables & Spares', icon: <Table2 className="h-3.5 w-3.5" /> },
   { id: 'exceptions', label: 'Exceptions', icon: <AlertTriangle className="h-3.5 w-3.5" /> },
 ];
-
-interface Pill {
-  left: number;
-  top: number;
-  width: number;
-  height: number;
-}
 
 export function Header({
   view,
@@ -47,6 +44,7 @@ export function Header({
   onPrint,
   onExport,
   onHelp,
+  onScripts,
   onReport,
   onEmergency,
 }: {
@@ -57,6 +55,7 @@ export function Header({
   onPrint: () => void;
   onExport: () => void;
   onHelp: () => void;
+  onScripts: () => void;
   onReport: () => void;
   onEmergency: () => void;
 }) {
@@ -67,27 +66,26 @@ export function Header({
   const { handleFiles, inputRef, openPicker } = useImport();
   const hasData = jobs.length > 0;
 
-  // sliding highlight behind the active tab
-  const nav = useRef<HTMLElement>(null);
-  const tabs = useRef<Partial<Record<View, HTMLButtonElement | null>>>({});
-  const [pill, setPill] = useState<Pill | null>(null);
-  const measure = useCallback(() => {
-    const b = tabs.current[view];
-    if (b) setPill({ left: b.offsetLeft, top: b.offsetTop, width: b.offsetWidth, height: b.offsetHeight });
-  }, [view]);
-  useLayoutEffect(measure, [measure, hasData, exceptionCount]);
+  // sliding highlight behind the active tab (transform + width, so it never counts as a layout shift)
+  const { container: nav, setItem, pill } = usePill<View>(view, [hasData, exceptionCount]);
+
+  // publish the header height, so the Gantt can size itself to the space under it
+  const header = useRef<HTMLElement>(null);
   useEffect(() => {
-    const ro = new ResizeObserver(measure);
-    if (nav.current) ro.observe(nav.current);
-    window.addEventListener('resize', measure);
-    return () => {
-      ro.disconnect();
-      window.removeEventListener('resize', measure);
-    };
-  }, [measure, hasData]);
+    const el = header.current;
+    if (!el) return;
+    const root = document.documentElement;
+    const publish = () => root.style.setProperty('--header-h', `${Math.round(el.getBoundingClientRect().height)}px`);
+    publish();
+    const ro = new ResizeObserver(publish);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  const pct = Math.round(progress * 100);
 
   return (
-    <header className="no-print sticky top-0 z-30 border-b border-slate-800/80 bg-slate-900/80 backdrop-blur-xl">
+    <header ref={header} className="no-print sticky top-0 z-30 border-b border-slate-800/80 bg-slate-900/80 backdrop-blur-xl">
       <div className="flex min-h-16 flex-wrap items-center justify-between gap-x-4 gap-y-2 px-4 py-2 lg:px-6">
         <div className="flex shrink-0 items-center gap-3">
           <div className="relative">
@@ -103,22 +101,14 @@ export function Header({
         </div>
 
         {hasData && (
-          <nav ref={nav} className="relative flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/70 p-1">
-            {pill && (
-              <span
-                aria-hidden
-                className="absolute rounded-md bg-blue-600 shadow-[0_6px_20px_-8px_rgba(37,99,235,0.95)]"
-                style={{ ...pill, transition: 'left .38s var(--ease-out), top .38s var(--ease-out), width .38s var(--ease-out), height .38s var(--ease-out)' }}
-              />
-            )}
+          <nav ref={el => void (nav.current = el)} className="relative flex flex-wrap items-center gap-1 rounded-lg border border-slate-800 bg-slate-950/70 p-1">
+            <PillBg pill={pill} className="rounded-md bg-blue-600 shadow-[0_6px_20px_-8px_rgba(37,99,235,0.95)]" />
             {TABS.map(t => (
               <button
                 key={t.id}
-                ref={el => {
-                  tabs.current[t.id] = el;
-                }}
+                ref={setItem(t.id)}
                 onClick={() => setView(t.id)}
-                className={`relative z-10 flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-bold transition-colors duration-200 ${
+                className={`relative z-10 flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-bold transition-colors duration-(--dur-2) ${
                   view === t.id ? 'text-white' : 'text-slate-300 hover:text-white'
                 }`}
               >
@@ -139,13 +129,17 @@ export function Header({
             <span className="xl:hidden">Settings</span>
           </Button>
           {hasData && (
-            <button
-              onClick={onEmergency}
-              title="Put an order ahead of everything else"
-              className={`flex items-center gap-1.5 rounded-md border border-rose-400 bg-rose-600 px-3.5 py-1.5 text-xs font-extrabold uppercase tracking-wide text-white shadow-[0_0_22px_-4px_rgba(244,63,94,0.9)] transition hover:bg-rose-500 active:scale-95 ${urgent ? 'animate-pulse' : ''}`}
-            >
-              <Siren className="h-4 w-4" /> Emergency{urgent ? ` · ${urgent}` : ''}
-            </button>
+            <span className="relative inline-flex">
+              {/* an urgent order is in the plan: a soft ring breathes behind the button (the label itself stays solid) */}
+              {urgent > 0 && <span aria-hidden className="pointer-events-none absolute inset-0 rounded-md bg-rose-500" style={{ animation: 'ring-soft 2s var(--ease-out) infinite' }} />}
+              <button
+                onClick={onEmergency}
+                title="Put an order ahead of everything else"
+                className="relative flex items-center gap-1.5 rounded-md border border-rose-400 bg-rose-600 px-3.5 py-1.5 text-xs font-extrabold uppercase tracking-wide text-white shadow-[0_0_22px_-4px_rgba(244,63,94,0.9)] transition-[background-color,scale] duration-(--dur-1) hover:bg-rose-500 active:scale-[0.97]"
+              >
+                <Siren className="h-4 w-4" /> Emergency{urgent ? ` · ${urgent}` : ''}
+              </button>
+            </span>
           )}
           {hasData && (
             <>
@@ -165,9 +159,20 @@ export function Header({
               <Button onClick={onReport} title={report?.fileName ?? 'Import report'}>
                 Report
               </Button>
-              <Button variant="primary" className="min-w-[164px] tabular-nums" onClick={replanNow} disabled={busy} title="Re-run the scheduler">
-                <RotateCcw className={`h-3.5 w-3.5 ${busy ? 'animate-spin' : ''}`} />
-                {improving ? `Optimizing ${Math.round(progress * 100)}%` : planning ? 'Planning…' : 'Re-optimize'}
+              {/* fixed width, left-aligned label, fixed-width percentage: the icon never moves while the text changes */}
+              <Button variant="primary" className="w-[168px] tabular-nums" onClick={replanNow} disabled={busy} title="Re-run the scheduler">
+                <span className="flex w-full items-center gap-1.5">
+                  <RotateCcw className={`h-3.5 w-3.5 shrink-0 ${busy ? 'animate-spin' : ''}`} />
+                  {improving ? (
+                    <>
+                      Optimizing<span className="inline-block w-[4ch] text-right">{pct}%</span>
+                    </>
+                  ) : planning ? (
+                    'Planning…'
+                  ) : (
+                    'Re-optimize'
+                  )}
+                </span>
               </Button>
               <Button
                 variant="ghost"
@@ -178,6 +183,9 @@ export function Header({
               </Button>
             </>
           )}
+          <Button variant="ghost" onClick={onScripts} title="Shop website scripts to copy">
+            <SquareTerminal className="h-4 w-4" />
+          </Button>
           <Button variant="ghost" onClick={onHelp} title="How the plan is built">
             <HelpCircle className="h-4 w-4" />
           </Button>
@@ -189,8 +197,8 @@ export function Header({
         </div>
       )}
       {improving && (
-        <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden" role="progressbar" aria-label="Optimizing the plan" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.round(progress * 100)}>
-          <div className="h-full bg-gradient-to-r from-blue-500 to-emerald-400" style={{ width: `${Math.max(2, progress * 100)}%`, transition: 'width .25s linear' }} />
+        <div className="absolute inset-x-0 bottom-0 h-[2px] overflow-hidden" role="progressbar" aria-label="Optimizing the plan" aria-valuemin={0} aria-valuemax={100} aria-valuenow={pct}>
+          <div className="h-full w-full origin-left bg-gradient-to-r from-blue-500 to-emerald-400" style={{ transform: `scaleX(${Math.max(0.02, Math.min(1, progress))})`, transition: 'transform .25s linear' }} />
         </div>
       )}
     </header>

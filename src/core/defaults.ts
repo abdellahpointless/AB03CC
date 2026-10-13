@@ -1,5 +1,6 @@
 import type {
   CalendarSettings,
+  CarpenterSettings,
   MachineConfig,
   PlannerSettings,
   PriorityRule,
@@ -101,6 +102,74 @@ export function defaultCalendar(): CalendarSettings {
   };
 }
 
+/** Default saw family of each material code (the user can change them). */
+export const DEFAULT_SAW_GROUPS: Record<string, string> = {
+  ALU: 'metal',
+  MS: 'metal',
+  INOX: 'metal',
+  POM: 'plastic',
+  PCGF: 'plastic',
+  PEEK: 'plastic',
+  PETP: 'plastic',
+  PA: 'plastic',
+  PP: 'plastic',
+  PMMA: 'plastic',
+  ABS: 'plastic',
+  FH: 'laminate',
+  RES: 'laminate',
+  EPO: 'laminate',
+  FR4: 'laminate',
+  MDF: 'wood',
+};
+
+export function defaultCarpenterSettings(): CarpenterSettings {
+  return {
+    forecast: true,
+    forecastHorizonHours: 24,
+    maxForecastJobs: 600,
+    transferMinutes: 30,
+    minutesPerPiece: 1.5,
+    sawChangeMin: 15,
+    stockChangeMin: 6,
+    stripChangeMin: 3,
+    lengthChangeMin: 0.5,
+    premadeMinutes: 0.3,
+    sawGroups: { ...DEFAULT_SAW_GROUPS },
+    materialTokens: {},
+    inGanttBoost: 3,
+    doneWorkOrders: [],
+  };
+}
+
+/** Saved carpenter settings over the defaults; maps and lists that are not the right shape fall back. */
+export function mergeCarpenterSettings(saved: unknown): CarpenterSettings {
+  const base = defaultCarpenterSettings();
+  if (!saved || typeof saved !== 'object') return base;
+  const s = saved as Partial<CarpenterSettings>;
+  const out: CarpenterSettings = { ...base, ...s };
+  const isMap = (v: unknown): v is Record<string, string> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
+  out.sawGroups = { ...base.sawGroups, ...(isMap(s.sawGroups) ? s.sawGroups : {}) };
+  out.materialTokens = isMap(s.materialTokens) ? { ...s.materialTokens } : {};
+  out.doneWorkOrders = Array.isArray(s.doneWorkOrders) ? s.doneWorkOrders.map(String) : [];
+  for (const k of [
+    'forecastHorizonHours',
+    'maxForecastJobs',
+    'transferMinutes',
+    'minutesPerPiece',
+    'sawChangeMin',
+    'stockChangeMin',
+    'stripChangeMin',
+    'lengthChangeMin',
+    'premadeMinutes',
+    'inGanttBoost',
+  ] as const) {
+    const v = out[k];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) out[k] = base[k];
+  }
+  out.forecast = typeof out.forecast === 'boolean' ? out.forecast : base.forecast;
+  return out;
+}
+
 export const RULE_PRESETS: Record<string, { label: string; description: string; rules: PriorityRule[] }> = {
   finishModule: {
     label: 'Finish full module first',
@@ -182,6 +251,7 @@ export function defaultSettings(): PlannerSettings {
     carpenterDelayMode: 'soft',
     carpenterMaxDelayHours: 8,
     simulatedUncutMasterOrders: [],
+    carpenter: defaultCarpenterSettings(),
     globalEfficiencyPercent: 100,
     efficiencyMatrix: {},
     efficiencyVariability: {},
@@ -213,6 +283,7 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
   if (savedCal.startHour === undefined) merged.calendar.startHour = merged.calendar.shiftStartHour;
   if (!Array.isArray(merged.calendar.breaks)) merged.calendar.breaks = [];
   merged.changeover = { ...base.changeover, ...(saved.changeover ?? {}) };
+  merged.carpenter = mergeCarpenterSettings(saved.carpenter);
   if (!Array.isArray(merged.machines) || merged.machines.length === 0) merged.machines = base.machines;
   if (!Array.isArray(merged.priorityRules)) merged.priorityRules = base.priorityRules;
 

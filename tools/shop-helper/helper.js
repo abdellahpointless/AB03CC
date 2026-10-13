@@ -219,8 +219,11 @@
     /** everything that could be "the Refresh button" of a row, from the innermost element out to the cell */
     function refreshCandidates(row) {
       const out = [];
-      const icon = row.querySelector('[class*="refresh"], [class*="Refresh"], [title="Refresh"], [title="refresh"]');
-      if (icon) out.push(icon);
+      // the site's own button: <span class="btn btn-app btn-refresh"><i class="fa fa-refresh btn-refresh"></i>Refresh</span>
+      const btn = row.querySelector('span.btn-refresh, .btn.btn-refresh, .btn-refresh:not(i)');
+      if (btn) out.push(btn);
+      const icon = row.querySelector('i.btn-refresh, i.fa-refresh');
+      if (icon && !out.includes(icon)) out.push(icon);
       const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
       let label = null;
       for (let n = walker.nextNode(); n; n = walker.nextNode()) if (/^\s*refresh\s*$/i.test(n.nodeValue)) {
@@ -252,7 +255,8 @@
       }
       return 'silent';
     }
-    const hasFiles = c => !!c && (c.querySelector('img, a, i, svg, [class*="pdf"], [class*="file"]') || norm(c.textContent).length > 0);
+    // a file cell holds one link per file (an empty list of files has no links)
+    const hasFiles = c => !!c && !!c.querySelector('a[href]:not([href="#"]):not([href^="javascript"]), img');
 
     const panel = document.createElement('div');
     panel.id = 'cnc-helper';

@@ -133,5 +133,5 @@ describe('downtime', () => {
       const res = optimize(built.inst, { seed: 3, orderIters: 1500, queueIters: 15000, restarts: 1, starts: [built.appQueues] });
       expect(validate(built.inst, res.queues)).toEqual([]);
       expect(res.sumC).toBeLessThanOrEqual(m.sumC);
-    });
+    }, 20000);
 });

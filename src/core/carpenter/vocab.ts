@@ -32,7 +32,7 @@ export const MATERIALS: MaterialDef[] = [
   def('SILICONE', null, 'soft', ['SILICON']),
   def('FH', 'FH', 'laminate', [String.raw`\bFH\d*\b`, String.raw`\bHGW\b`, 'HARTGEWEBE', 'PERTINAX']),
   def('RES', 'FH', 'laminate', ['RESOPAL', String.raw`\bRESO\b`, String.raw`\bRES\b`, String.raw`\bHPL\b`]),
-  def('EPO', null, 'laminate', [String.raw`\bEPO\b`, 'EPOXI', 'EPOXY', String.raw`\bCEM[\s\-]?1\b`]),
+  def('EPO', 'FH', 'laminate', [String.raw`\bEPO\b`, 'EPOXI', 'EPOXY', String.raw`\bCEM[\s\-]?1\b`]),
   def('FR4', null, 'laminate', [String.raw`\bFR[\s\-]?4\b`, String.raw`BASE MATERIAL FR\b`]),
   def('MDF', null, 'wood', [String.raw`\bMDF\b`]),
   def('MS', 'MS', 'metal', [String.raw`\bMS\s?58`, String.raw`\bMS\b`, 'MESSING', String.raw`\bBRASS\b`, 'LAITON', String.raw`\bCUZN`]),

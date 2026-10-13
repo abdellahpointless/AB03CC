@@ -30,12 +30,19 @@ export function sawGroupOf(code: string | null | undefined, sawGroups: Record<st
   return fam && fam !== 'soft' ? fam : 'other';
 }
 
+/** What the shop told us: RES (Resopal) and EPO (epoxy / CEM1) are planned as FH. */
+export const BUILTIN_MATERIAL_TOKENS: Record<string, string> = { RES: 'FH', EPO: 'FH' };
+/** Made on the laser, not cut by the carpenter for the CNC. */
+export const LASER_MATERIALS = new Set(['FR4', 'PETP', 'PA', 'PMMA', 'MDF', 'SILICONE']);
+/** Turning parts (lathe), not cut by the carpenter for the CNC. */
+const TURNING_NAME = /\b(SWITCH\s*PIN|SCHALTSTIFT|BOLT|BOLZEN)\b/i;
+
 export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions = {}): CutItem[] {
   const sawGroups = opts.settings?.sawGroups ?? {};
   const done = new Set((opts.settings?.doneWorkOrders ?? []).map(s => String(s).trim()));
   const catalog = stockCatalog(parts);
   const matOpts: MaterialOptions = {
-    tokens: opts.settings?.materialTokens,
+    tokens: { ...BUILTIN_MATERIAL_TOKENS, ...(opts.settings?.materialTokens ?? {}) },
     aliases: opts.materialAliases,
     cncCodes: opts.cncCodes,
     history: opts.history,
@@ -64,6 +71,12 @@ export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions
     if (isDone) {
       status = 'cut';
       statusReason = part.cuttedStatus ? undefined : 'ticked as cut in the app';
+    } else if (mat.material && LASER_MATERIALS.has(mat.material)) {
+      status = 'elsewhere';
+      statusReason = `laser part (${mat.material}): not made on the CNC`;
+    } else if (stockKind === 'round' || (!part.measure && TURNING_NAME.test(`${part.partName ?? ''} ${part.mText ?? ''} ${part.text ?? ''}`))) {
+      status = 'elsewhere';
+      statusReason = 'turning part: not made on the CNC';
     } else if (!cut && !(stockKind === 'blank' && part.hasNc !== false)) {
       status = 'not_ready';
       statusReason = part.hasNc === false ? 'no NC file and no cut size yet' : 'no cut size (Measure and NC header empty)';
@@ -99,7 +112,7 @@ export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions
     };
     if (statusReason) item.statusReason = statusReason;
     if (mat.evidence) item.materialEvidence = mat.evidence;
-    if (mat.unknownToken) item.unknownToken = mat.unknownToken;
+    if (mat.unknownToken && status !== 'elsewhere') item.unknownToken = mat.unknownToken;
     if (mat.conflict) item.conflict = mat.conflict;
     if (cutSource) item.cutSource = cutSource;
     if (alert) {

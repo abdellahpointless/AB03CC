@@ -145,6 +145,7 @@ export function buildCutListWorkbook(cut: CutPlan): XLSX.WorkBook {
   );
   const other = (items: CutItem[], why: string) => items.map(i => ({ 'Work Order': i.part.workOrder ?? '', 'Master Order': i.part.masterOrder, Measure: i.part.measure ?? '', 'Description De': i.part.descriptionDe ?? '', Why: i.statusReason ?? why }));
   add('Not_Ready', [...other(cut.notReady, 'not ready'), ...other(cut.blocked, 'blocked')]);
+  add('Other_Departments', other(cut.elsewhere, 'laser or turning part'));
   add('Pre-cut_Blanks', other(cut.premade, 'pre-cut blank'));
   add('Unknown_Material', cut.unknownMaterials.flatMap(u => u.examples.map(e => ({ Token: u.token, Rows: u.count, 'Work Order': e.workOrder ?? '', Measure: e.measure ?? '', 'Description De': e.descriptionDe ?? '' }))));
   return wb;

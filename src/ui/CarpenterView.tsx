@@ -130,7 +130,7 @@ export function CarpenterView() {
           options={[
             { value: 'order', label: `Cut order (${cut.steps.length})` },
             { value: 'questions', label: `Materials to confirm (${questions})` },
-            { value: 'notready', label: `Not ready / blocked (${cut.notReady.length + cut.blocked.length})` },
+            { value: 'notready', label: `Not ready / other departments (${cut.notReady.length + cut.blocked.length + cut.elsewhere.length})` },
           ]}
         />
         {tab === 'order' && (
@@ -246,7 +246,7 @@ export function CarpenterView() {
               </tr>
             </thead>
             <tbody>
-              {[...cut.blocked, ...cut.notReady, ...cut.premade].map(it => (
+              {[...cut.blocked, ...cut.notReady, ...cut.elsewhere, ...cut.premade].map(it => (
                 <tr key={it.id} className="border-b border-slate-900">
                   <td className="mono px-2 py-1">{it.part.workOrder}</td>
                   <td className="mono px-2 py-1 text-slate-400">{it.part.masterOrder}</td>

@@ -115,10 +115,10 @@ export const DEFAULT_SAW_GROUPS: Record<string, string> = {
   PP: 'plastic',
   PMMA: 'plastic',
   ABS: 'plastic',
-  FH: 'laminate',
-  RES: 'laminate',
-  EPO: 'laminate',
-  FR4: 'laminate',
+  FH: 'wood',
+  RES: 'wood',
+  EPO: 'wood',
+  FR4: 'laser',
   MDF: 'wood',
 };
 
@@ -148,7 +148,8 @@ export function mergeCarpenterSettings(saved: unknown): CarpenterSettings {
   const s = saved as Partial<CarpenterSettings>;
   const out: CarpenterSettings = { ...base, ...s };
   const isMap = (v: unknown): v is Record<string, string> => Boolean(v) && typeof v === 'object' && !Array.isArray(v);
-  out.sawGroups = { ...base.sawGroups, ...(isMap(s.sawGroups) ? s.sawGroups : {}) };
+  // not editable in the app yet: always the shop's saws (FH, RES and EPO on the wood saw)
+  out.sawGroups = { ...base.sawGroups };
   out.materialTokens = isMap(s.materialTokens) ? { ...s.materialTokens } : {};
   out.doneWorkOrders = Array.isArray(s.doneWorkOrders) ? s.doneWorkOrders.map(String) : [];
   for (const k of [

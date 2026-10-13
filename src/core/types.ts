@@ -236,7 +236,8 @@ export type SawGroup = string;
  * usually no NC file yet); blocked = the alert says the stock may not be cut and names no replacement; premade = the
  * stock is a pre-made blank (or 3D-print filament): nothing to saw, it is only picked.
  */
-export type CutItemStatus = 'to_cut' | 'cut' | 'not_ready' | 'blocked' | 'premade';
+/** elsewhere = made by another department (laser parts, turning parts): not in the cut list */
+export type CutItemStatus = 'to_cut' | 'cut' | 'not_ready' | 'blocked' | 'premade' | 'elsewhere';
 
 export type CutMaterialSource =
   | 'user'
@@ -371,6 +372,8 @@ export interface CutPlan {
   notReady: CutItem[];
   blocked: CutItem[];
   premade: CutItem[];
+  /** laser and turning parts: another department makes them */
+  elsewhere: CutItem[];
   alreadyCut: number;
   unknownMaterials: Array<{ token: string; count: number; examples: Array<{ workOrder?: string; measure?: string; descriptionDe?: string; text?: string }> }>;
   conflicts: Array<{ text: string; count: number; examples: Array<{ workOrder?: string; measure?: string; descriptionDe?: string }> }>;

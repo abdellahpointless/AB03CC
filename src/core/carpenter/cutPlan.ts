@@ -235,6 +235,7 @@ export function planCuts(itemsIn: CutItem[], opts: PlanCutsOptions): CutPlan {
   const notReady = items.filter(i => i.status === 'not_ready');
   const blocked = items.filter(i => i.status === 'blocked');
   const premade = items.filter(i => i.status === 'premade');
+  const elsewhere = items.filter(i => i.status === 'elsewhere');
   const alreadyCut = items.filter(i => i.status === 'cut').length;
   const sawnItems = items.filter(i => i.status === 'to_cut');
 
@@ -244,7 +245,7 @@ export function planCuts(itemsIn: CutItem[], opts: PlanCutsOptions): CutPlan {
   const boxIndex = new Map<string, number>();
   const boxes: Box[] = [];
   items.forEach((it, i) => {
-    if (it.status === 'cut') return;
+    if (it.status === 'cut' || it.status === 'elsewhere') return;
     const mo = it.part.masterOrder;
     let b = boxIndex.get(mo);
     if (b === undefined) {
@@ -823,6 +824,7 @@ export function planCuts(itemsIn: CutItem[], opts: PlanCutsOptions): CutPlan {
     notReady,
     blocked,
     premade,
+    elsewhere,
     alreadyCut,
     unknownMaterials: collectUnknown(items),
     conflicts: collectConflicts(items),
@@ -834,7 +836,7 @@ export function planCuts(itemsIn: CutItem[], opts: PlanCutsOptions): CutPlan {
 function collectUnknown(items: CutItem[]): CutPlan['unknownMaterials'] {
   const map = new Map<string, CutPlan['unknownMaterials'][number]>();
   for (const it of items) {
-    if (it.status === 'cut' || !it.unknownToken) continue;
+    if (it.status === 'cut' || it.status === 'elsewhere' || !it.unknownToken) continue;
     let e = map.get(it.unknownToken);
     if (!e) map.set(it.unknownToken, (e = { token: it.unknownToken, count: 0, examples: [] }));
     e.count++;
@@ -847,7 +849,7 @@ function collectUnknown(items: CutItem[]): CutPlan['unknownMaterials'] {
 function collectConflicts(items: CutItem[]): CutPlan['conflicts'] {
   const map = new Map<string, CutPlan['conflicts'][number]>();
   for (const it of items) {
-    if (it.status === 'cut' || !it.conflict) continue;
+    if (it.status === 'cut' || it.status === 'elsewhere' || !it.conflict) continue;
     let e = map.get(it.conflict);
     if (!e) map.set(it.conflict, (e = { text: it.conflict, count: 0, examples: [] }));
     e.count++;

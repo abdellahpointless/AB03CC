@@ -1009,24 +1009,84 @@
     WIN = window;
     scope = DOC;
   }
-  async function openWorkload() {
-    let dlg = workloadDialog();
-    if (dlg) return dlg;
-    const btn = q('a, button, span, div, li').filter(visible).find(e => /^machines workload$/i.test(norm(e.textContent)) && e.children.length <= 2);
-    if (!btn) throw new Error('Could not find the "Machines workload" button.');
-    press(btn);
-    dlg = await waitFor(() => {
-      const d = workloadDialog();
-      return d && d.querySelector('.slick-row') ? d : null;
-    }, 20000, 200);
-    if (!dlg) throw new Error('The "Machines workload" list did not open.');
-    await sleep(500);
-    return dlg;
+  const DIALOGS = '.ui-dialog, [role="dialog"], .modal';
+  const machineName = t => norm(t).toUpperCase().replace(/\s*-\s*/, ' - ');
+  /** the "Machine Staus" list that the "Machines workload" button opens: one row per machine, with its number of boxes */
+  const statusDialog = () => q(DIALOGS).filter(visible).find(d => d !== workloadDialog() && /machine\s*sta/i.test(norm(d.textContent).slice(0, 80)) && d.querySelector('.slick-row'));
+  const listOpen = () => {
+    const d = workloadDialog();
+    return d && d.querySelector('.slick-row') ? d : null;
+  };
+  /** opens the parts list of one machine: "Machines workload", then that machine in the "Machine Staus" list */
+  async function openWorkload(machine) {
+    if (workloadDialog()) {
+      closeWorkload();
+      await waitFor(() => !workloadDialog(), 4000, 100);
+      await sleep(300);
+    }
+    let st = statusDialog();
+    if (!st) {
+      const btn = q('a, button, span, div, li').filter(visible).find(e => /^machines workload$/i.test(norm(e.textContent)) && e.children.length <= 2);
+      if (!btn) throw new Error('Could not find the "Machines workload" button.');
+      press(btn);
+      await waitFor(() => statusDialog() || listOpen(), 20000, 200);
+      st = statusDialog();
+      if (!st) {
+        if (listOpen()) return listOpen(); // a site that opens the parts list straight away
+        throw new Error('After "Machines workload", neither the "Machine Staus" list nor a parts list opened.');
+      }
+      await sleep(400);
+    }
+    const row = await waitFor(() => q('.slick-row', st).find(r => q('.slick-cell', r).some(c => machineName(c.textContent) === machine)), 8000, 200);
+    if (!row) throw new Error(`${machine} is not in the "Machine Staus" list.`);
+    const cells = q('.slick-cell', row);
+    const nameCell = cells.find(c => machineName(c.textContent) === machine);
+    const heads = q('.slick-header-column', st).filter(visible).map(h => norm(h.textContent));
+    const at = re => {
+      const i = heads.findIndex(h => re.test(h));
+      return i < 0 ? null : row.querySelector('.slick-cell.l' + i);
+    };
+    const boxCell = at(/total\s*box/i);
+    const timeCell = at(/total\s*time/i);
+    const dbl = el => {
+      const V = el.ownerDocument.defaultView;
+      el.dispatchEvent(new V.MouseEvent('dblclick', { bubbles: true, cancelable: true, view: V }));
+    };
+    // what opens a machine's list is not known for sure: the most likely first, and anything else that pops up is closed again
+    const tries = [
+      ['its Total Box number', boxCell && (boxCell.querySelector('a') || boxCell), press],
+      ['its Total Time number', timeCell && (timeCell.querySelector('a') || timeCell), press],
+      ['its name', nameCell && (nameCell.querySelector('a') || nameCell), press],
+      ['a double click on its row', nameCell, dbl],
+    ];
+    for (const [what, el, act] of tries) {
+      if (!el) continue;
+      const before = new Set(q(DIALOGS).filter(visible));
+      act(el);
+      const d = await waitFor(listOpen, 5000, 150);
+      if (d) {
+        log(`${machine}: its list opened from ${what} in "Machine Staus".`);
+        await sleep(500);
+        return d;
+      }
+      for (const x of q(DIALOGS).filter(visible)) {
+        if (before.has(x) || x === st) continue;
+        const close = x.querySelector('.ui-dialog-titlebar-close') || q('button', x).find(b => /^(cancel|close)$/i.test(norm(b.textContent)));
+        if (close) press(close);
+      }
+      await sleep(400);
+    }
+    throw new Error(`Could not open the list of ${machine} from "Machine Staus". Open it by hand once and tell me what you click.`);
   }
   function closeWorkload() {
     const d = workloadDialog();
     if (!d) return;
     const x = d.querySelector('.ui-dialog-titlebar-close') || q('button', d).find(b => /^(cancel|close)$/i.test(norm(b.textContent)));
+    if (x) press(x);
+  }
+  function closeStatus() {
+    const d = statusDialog();
+    const x = d && (d.querySelector('.ui-dialog-titlebar-close') || q('button', d).find(b => /^(cancel|close)$/i.test(norm(b.textContent))));
     if (x) press(x);
   }
 
@@ -1102,7 +1162,7 @@
         const m = st.machines[st.i];
         for (let attempt = 1; ; attempt++) {
           try {
-            await openWorkload();
+            await openWorkload(m);
             log(`${m}: putting its list in plan order…`);
             await doOrder(m);
             break;
@@ -1117,6 +1177,8 @@
         keep({ auto: st });
       }
       closeWorkload();
+      await sleep(400);
+      closeStatus();
       keep({ auto: null, last: { msg: 'full run finished', at: nowText() } });
       log(`All done: every machine got its parts and its list is in plan order.${work ? ' You can close the second window.' : ''}`, 'ok');
       leaveWork(false);

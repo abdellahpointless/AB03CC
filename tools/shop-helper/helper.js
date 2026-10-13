@@ -9,10 +9,17 @@
     return;
   }
 
-  const sleep = ms => new Promise(r => setTimeout(r, ms));
+  // also timed by the work window when there is one: this tab may sit behind it, where the browser slows its timers down
+  const sleep = ms =>
+    new Promise(r => {
+      setTimeout(r, ms);
+      try {
+        if (WIN !== window && !WIN.closed) WIN.setTimeout(r, ms);
+      } catch {}
+    });
   const norm = s => (s || '').replace(/\s+/g, ' ').trim();
   const visible = el => !!el && (el.offsetWidth || el.offsetHeight || el.getClientRects().length) > 0;
-  // the page the helper works on: this tab's page, or the same page loaded in a frame (so its reloads do not stop us)
+  // the page the helper works on: this tab's page, or the same page in a second window (so its reloads do not stop us)
   let DOC = document;
   let WIN = window;
   const q = (sel, root = DOC) => [...root.querySelectorAll(sel)];
@@ -710,14 +717,13 @@
     if (!shown.includes(machine.toLowerCase()) && !(native && native.options[native.selectedIndex]?.textContent.trim().toLowerCase() === machine.toLowerCase())) throw new Error(`The box does not show "${machine}" after choosing it: not pressing OK.`);
     const ok = q('button, a, input[type="button"], input[type="submit"]', dialog).filter(visible).find(b => /^ok$/i.test(norm(b.textContent || b.value)));
     if (!ok) throw new Error('Could not find OK in the box.');
-    let reloaded = false;
-    if (frame) frame.addEventListener('load', () => (reloaded = true), { once: true });
+    const before = DOC;
+    const reloaded = () => !!work && popDoc() !== before;
     press(ok);
-    await waitFor(() => !visible(dialog) || reloaded, 10000);
-    // the page reloads itself a moment after OK: in the frame we wait for it and carry on
-    if (frame) {
-      await waitFor(() => reloaded, 6000, 100);
-      if (reloaded) await frameReady();
+    await waitFor(() => !visible(dialog) || reloaded(), 10000);
+    // the page reloads itself a moment after OK: in the work window we wait for it and carry on
+    if (work) {
+      if (await waitFor(reloaded, 8000, 100)) await workReady();
     }
     await sleep(800);
     await waitFor(() => slickViewport() && slickViewport().querySelector('.slick-row') && pageInfo(), 30000, 200);
@@ -961,41 +967,44 @@
   /* ------------------------------------------------------------ everything at once */
 
   let auto = false;
-  let frame = null;
-  const frameDocReady = () => {
+  let work = null; // the second window the full run works in
+  const popDoc = () => {
     try {
-      const d = frame && frame.contentDocument;
-      return d && d.readyState === 'complete' && d.querySelector('.slick-viewport .slick-row') ? d : null;
+      return work && !work.closed ? work.document : null;
     } catch {
-      return null; // the page does not let itself be framed
+      return null;
     }
   };
-  async function frameReady() {
-    const d = await waitFor(frameDocReady, 60000, 250);
-    if (!d) throw new Error('The page in the frame did not load.');
+  const workDocReady = () => {
+    const d = popDoc();
+    return d && d.readyState === 'complete' && d.querySelector('.slick-viewport .slick-row') ? d : null;
+  };
+  async function workReady() {
+    const d = await waitFor(workDocReady, 60000, 250);
+    if (!d) throw new Error(work && work.closed ? 'The work window was closed.' : 'The page in the work window did not load.');
     DOC = d;
-    WIN = frame.contentWindow;
+    WIN = work;
     scope = DOC;
     await sleep(600);
   }
-  /** the same page in a frame over this one: when it reloads after a send, this helper keeps running */
-  async function openFrame() {
-    frame = document.createElement('iframe');
-    frame.src = location.href;
-    frame.title = 'CNC Workload (driven by the helper)';
-    frame.style.cssText = 'position:fixed;left:0;top:0;width:100vw;height:100vh;border:0;z-index:2147483646;background:#fff';
-    document.body.appendChild(frame);
-    if (!(await waitFor(frameDocReady, 45000, 300))) {
-      frame.remove();
-      frame = null;
-      return false;
+  /**
+   * The same page in a second window, which this tab drives: when that page reloads after a send, the helper keeps
+   * running here. It must be opened straight from a click, or the browser blocks it. It leaves the right side of the
+   * screen free, so this panel stays in view.
+   */
+  function openWork() {
+    if (work && !work.closed) return true;
+    const w = Math.max(700, screen.availWidth - 470);
+    try {
+      work = window.open(location.href, 'cncHelperWork', `popup=yes,left=0,top=0,width=${w},height=${screen.availHeight}`);
+    } catch {
+      work = null;
     }
-    await frameReady();
-    return true;
+    return !!work;
   }
-  function closeFrame() {
-    if (frame) frame.remove();
-    frame = null;
+  function leaveWork(close) {
+    if (close && work && !work.closed) work.close();
+    work = null;
     DOC = document;
     WIN = window;
     scope = DOC;
@@ -1021,22 +1030,42 @@
     if (x) press(x);
   }
 
+  /** a click on "Do everything" or "Continue the full run": the work window has to be opened inside the click */
+  let armed = 0;
+  function startAll(resume) {
+    if (busy) return;
+    if (!resume) {
+      const machines = [...new Set(readPlan().map(p => p.machine))];
+      if (!machines.length) return log('Paste the plan first (columns A to D of Plan_All).', 'warn');
+      const btn = $('[data-act=all]');
+      if (Date.now() - armed > 10000) {
+        armed = Date.now();
+        btn.textContent = `Press again to start: ${plan.length} parts to ${machines.join(', ')}`;
+        setTimeout(() => (btn.textContent = 'Do everything: send all machines + order'), 10000);
+        return;
+      }
+      armed = 0;
+      btn.textContent = 'Do everything: send all machines + order';
+    }
+    if (!openWork()) {
+      return log('The browser blocked the work window. Click the blocked pop-up sign at the right end of the address bar, choose "Always allow pop-ups" for this site, then press the button again.', 'err');
+    }
+    guard(() => runAll(resume));
+  }
+
   async function runAll(resume) {
     const machines = [...new Set(readPlan().map(p => p.machine))];
     if (!machines.length) throw new Error('Paste the plan first (columns A to D of Plan_All).');
     let st = resume ? stored().auto : null;
-    if (!st) {
-      if (!confirm(`Send every part of the plan to its machine (${machines.join(', ')}), then put each machine's workload list in plan order?`)) return log('Cancelled.');
-      st = { phase: 'send', i: 0, machines };
-    }
+    if (!st) st = { phase: 'send', i: 0, machines };
     auto = true;
     keep({ auto: st });
     $('[data-act=autoresume]').style.display = 'none';
     try {
-      if (!frame) {
-        const framed = await openFrame();
-        log(framed ? 'Working on the page in a frame: its reloads do not stop me.' : 'This page cannot be put in a frame: when it reloads, run the helper again and it carries on by itself.', framed ? 'ok' : 'warn');
-      }
+      if (work) {
+        log('Working in the second window. Leave it alone until I say done; its reloads do not stop me.', 'ok');
+        await workReady();
+      } else log('Working in this tab: when it reloads, run the helper again and it carries on by itself.', 'warn');
       while (st.phase === 'send' && st.i < st.machines.length) {
         if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
         const m = st.machines[st.i];
@@ -1080,7 +1109,7 @@
           } catch (e) {
             if (attempt >= 3 || stop) throw e;
             log(`${m}: ${e && e.message ? e.message : e} Trying again.`, 'warn');
-            if (frame) await frameReady();
+            if (work) await workReady();
             await sleep(1000);
           }
         }
@@ -1089,12 +1118,17 @@
       }
       closeWorkload();
       keep({ auto: null, last: { msg: 'full run finished', at: nowText() } });
-      log('All done: every machine got its parts and its list is in plan order.', 'ok');
+      log(`All done: every machine got its parts and its list is in plan order.${work ? ' You can close the second window.' : ''}`, 'ok');
+      leaveWork(false);
     } catch (e) {
       $('[data-act=autoresume]').style.display = '';
       throw e;
     } finally {
       auto = false;
+      // the other buttons work on this tab again; "Continue the full run" picks the second window up again
+      DOC = document;
+      WIN = window;
+      scope = DOC;
     }
   }
 
@@ -1133,7 +1167,7 @@
     const act = e.target && e.target.getAttribute && e.target.getAttribute('data-act');
     if (!act) return;
     if (act === 'close') {
-      closeFrame();
+      leaveWork(true);
       panel.remove();
       style.remove();
       delete window.__cncHelper;
@@ -1148,8 +1182,8 @@
     else if (act === 'probe') guard(async () => probe());
     else if (act === 'order') guard(doOrder);
     else if (act === 'record') toggleRecord();
-    else if (act === 'all') guard(() => runAll(false));
-    else if (act === 'autoresume') guard(() => runAll(true));
+    else if (act === 'all') startAll(false);
+    else if (act === 'autoresume') startAll(true);
     else if (act === 'stop') stop = true;
   });
   // drag by the title

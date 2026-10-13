@@ -216,7 +216,42 @@
     const headers = () => q('.slick-header-column').filter(visible).map(h => norm((h.querySelector('.slick-column-name') || h).textContent));
     const col = re => headers().findIndex(n => re.test(n));
     const cell = (row, i) => (i < 0 ? null : row.querySelector('.slick-cell.l' + i));
-    const refreshButton = row => [...row.querySelectorAll('a, button, span, div')].filter(visible).find(e => /^refresh$/i.test(norm(e.textContent)) && e.querySelectorAll('a, button').length === 0 && e.children.length <= 3);
+    /** everything that could be "the Refresh button" of a row, from the innermost element out to the cell */
+    function refreshCandidates(row) {
+      const out = [];
+      const icon = row.querySelector('[class*="refresh"], [class*="Refresh"], [title="Refresh"], [title="refresh"]');
+      if (icon) out.push(icon);
+      const walker = document.createTreeWalker(row, NodeFilter.SHOW_TEXT);
+      let label = null;
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) if (/^\s*refresh\s*$/i.test(n.nodeValue)) {
+        label = n.parentElement;
+        break;
+      }
+      for (let e = label; e && e !== row; e = e.parentElement) {
+        if (!out.includes(e)) out.push(e);
+        if (e.classList.contains('slick-cell')) break;
+      }
+      return out;
+    }
+    let learned = null; // which of the candidates made the page call the server last time
+    /** clicks the row's Refresh, and checks that the page really asked the server for something */
+    async function clickRefresh(row) {
+      const cands = refreshCandidates(row);
+      if (!cands.length) return 'none';
+      const order = learned !== null && cands[learned] ? [learned, ...cands.keys()].filter((v, i, a) => a.indexOf(v) === i) : [...cands.keys()];
+      for (const i of order) {
+        const before = lastActivity;
+        const el = cands[i];
+        press(el);
+        if (el.tagName === 'A' || el.tagName === 'BUTTON') el.click();
+        const went = await waitFor(() => lastActivity > before, 1500, 50);
+        if (went) {
+          learned = i;
+          return 'ok';
+        }
+      }
+      return 'silent';
+    }
     const hasFiles = c => !!c && (c.querySelector('img, a, i, svg, [class*="pdf"], [class*="file"]') || norm(c.textContent).length > 0);
 
     const panel = document.createElement('div');
@@ -231,6 +266,7 @@
           <button data-a="count" class="cnc-b">Count</button>
           <button data-a="run" class="cnc-b" style="background:#2563eb;border-color:#3b82f6">Refresh them all</button>
           <button data-a="stop" class="cnc-b">Stop</button>
+          <button data-a="describe" class="cnc-b" title="Copies the HTML of the first row, for me to fit the script">Describe row</button>
           <button data-a="resume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue</button>
         </div>
         <pre data-log style="margin:0;white-space:pre-wrap;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:6px;max-height:220px;overflow:auto;font:11px ui-monospace,monospace"></pre>
@@ -320,13 +356,17 @@
       await walk(async r => {
         const wo = norm(cell(r, c.wo)?.textContent);
         if (!wo || done.has(wo) || !needs(r, c, m)) return;
-        const b = refreshButton(r);
-        if (!b) {
+        const res = await clickRefresh(r);
+        if (res !== 'ok') {
           failed++;
           done.add(wo);
+          if (failed <= 3) log(`Row ${wo}: ${res === 'none' ? 'no Refresh button found' : 'pressed Refresh but the page did not react'}.`, 'warn');
+          if (failed === 3 && n === 0) {
+            stopNow = true;
+            log('Stopped: Refresh does not react to the script. Press "Describe row" and send me the text it copies.', 'bad');
+          }
           return;
         }
-        press(b);
         await settle();
         done.add(wo);
         n++;
@@ -368,6 +408,17 @@
       else if (a === 'run') guard(() => run(false));
       else if (a === 'resume') guard(() => run(true));
       else if (a === 'stop') stopNow = true;
+      else if (a === 'describe') {
+        const v = vp();
+        const r = v && [...v.querySelectorAll('.slick-row')].sort((x, y) => parseFloat(x.style.top) - parseFloat(y.style.top))[0];
+        const text = `path: ${location.pathname}\nheaders: ${headers().join(' | ')}\nhints: ${['jQuery', 'Slick', 'Serenity', 'Q'].filter(k => k in window).join(', ')}\nrow: ${r ? r.outerHTML.slice(0, 3500) : 'none'}`;
+        try {
+          navigator.clipboard.writeText(text);
+          log('Row description copied. Paste it to me.', 'ok');
+        } catch {
+          log(text.slice(0, 1500));
+        }
+      }
     });
     window.__cncHelper = { open: () => (panel.style.display = 'flex'), stop: () => (stopNow = true) };
     const st = load();

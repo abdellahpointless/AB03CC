@@ -181,34 +181,33 @@
     };
 
     // requests the page is waiting for: a refresh is finished when they are all back
-    let inflight = 0;
-    let lastActivity = 0;
-    if (!window.__cncNetHook) {
-      window.__cncNetHook = true;
+    // the counters live on window: a second run of the helper (same page) shares the hook installed by the first
+    const net = (window.__cncNet = window.__cncNet || { inflight: 0, last: 0, hooked: false });
+    if (!net.hooked) {
+      net.hooked = true;
+      const bump = d => {
+        net.inflight = Math.max(0, net.inflight + d);
+        net.last = Date.now();
+      };
       const send = XMLHttpRequest.prototype.send;
       XMLHttpRequest.prototype.send = function () {
-        inflightAdd(1);
-        this.addEventListener('loadend', () => inflightAdd(-1));
+        bump(1);
+        this.addEventListener('loadend', () => bump(-1));
         return send.apply(this, arguments);
       };
       if (window.fetch) {
         const f = window.fetch;
         window.fetch = function () {
-          inflightAdd(1);
-          return f.apply(this, arguments).finally(() => inflightAdd(-1));
+          bump(1);
+          return f.apply(this, arguments).finally(() => bump(-1));
         };
       }
-    }
-    function inflightAdd(d) {
-      inflight = Math.max(0, inflight + d);
-      lastActivity = Date.now();
-      window.__cncInflight = inflight;
     }
     async function settle(maxMs = 25000) {
       const start = Date.now();
       // give the click a moment to start its request
-      await waitFor(() => lastActivity >= start, 1500, 50);
-      await waitFor(() => inflight === 0 && Date.now() - lastActivity > 350, maxMs, 100);
+      await waitFor(() => net.last >= start, 1500, 50);
+      await waitFor(() => net.inflight === 0 && Date.now() - net.last > 350, maxMs, 100);
       await sleep(150);
     }
 
@@ -242,12 +241,16 @@
       const cands = refreshCandidates(row);
       if (!cands.length) return 'none';
       const order = learned !== null && cands[learned] ? [learned, ...cands.keys()].filter((v, i, a) => a.indexOf(v) === i) : [...cands.keys()];
+      const wo = woOf(row);
+      const top = row.style.top;
+      // the page reacted if it asked the server for something, or if this row was redrawn or moved away
+      const reacted = before => net.last > before || !row.isConnected || woOf(row) !== wo || (vp() && ![...vp().querySelectorAll('.slick-row')].some(r => r.style.top === top && woOf(r) === wo));
       for (const i of order) {
-        const before = lastActivity;
+        const before = net.last;
         const el = cands[i];
         press(el);
         if (el.tagName === 'A' || el.tagName === 'BUTTON') el.click();
-        const went = await waitFor(() => lastActivity > before, 1500, 50);
+        const went = await waitFor(() => reacted(before), 2500, 50);
         if (went) {
           learned = i;
           return 'ok';
@@ -264,7 +267,7 @@
     panel.innerHTML = `
       <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #334155"><b>Carpenter list: refresh</b><button data-a="close" style="all:unset;cursor:pointer;padding:0 6px">✕</button></div>
       <div style="padding:10px;display:flex;flex-direction:column;gap:8px">
-        <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="missing" checked> Only rows without PDF / NC files</label>
+        <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="missing" checked> Only rows missing a PDF or an NC file (refreshed again, up to 3 times, until both are there)</label>
         <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="all"> Every row in the list</label>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button data-a="count" class="cnc-b">Count</button>
@@ -291,12 +294,16 @@
     let stopNow = false;
     let busy = false;
 
+    let woCol = -1;
+    const woOf = r => norm(cell(r, woCol)?.textContent);
     function columns() {
       const wo = col(/^work\s*order/i);
+      woCol = wo;
       if (wo < 0) throw new Error('Could not find the "Work Order" column.');
       return { wo, pdf: col(/^pdf/i), nc: col(/^nc\s*files?/i) };
     }
-    const needs = (row, c, m) => m === 'all' || !(hasFiles(cell(row, c.pdf)) || hasFiles(cell(row, c.nc)));
+    const missing = (row, c) => [!hasFiles(cell(row, c.pdf)) && 'PDF', !hasFiles(cell(row, c.nc)) && 'NC'].filter(Boolean);
+    const needs = (row, c, m) => m === 'all' || missing(row, c).length > 0;
 
     /** walks the list from top to bottom; fn(row) may return 'refreshed' when it changed the list */
     async function walk(fn) {
@@ -344,48 +351,66 @@
         seen.add(wo);
         if (needs(r, c, m)) need++;
       });
-      log(`${seen.size} rows read, ${need} ${m === 'all' ? 'to refresh' : 'without PDF / NC files'}.`, 'ok');
+      log(`${seen.size} rows read, ${need} ${m === 'all' ? 'to refresh' : 'missing a PDF or NC file'}.`, 'ok');
     }
 
+    const MAX_TRIES = 3;
     async function run(resume) {
       const c = columns();
-      const st = resume ? load() : { mode: mode(), done: [] };
-      const done = new Set(st.done || []);
+      const st = resume ? load() : { mode: mode(), tries: {} };
+      const tries = st.tries || {};
       const m = st.mode;
-      if (!resume && !confirm(m === 'all' ? 'Press Refresh on every row of the list?' : 'Press Refresh on every row that has no PDF / NC files?')) return log('Cancelled.');
-      save({ mode: m, done: [...done], running: true });
+      if (!resume && !confirm(m === 'all' ? 'Press Refresh on every row of the list?' : 'Press Refresh on every row that is missing a PDF or NC file?')) return log('Cancelled.');
+      save({ mode: m, tries, running: true });
       let n = 0;
-      let failed = 0;
+      let silent = 0;
       const t0 = Date.now();
-      await walk(async r => {
-        const wo = norm(cell(r, c.wo)?.textContent);
-        if (!wo || done.has(wo) || !needs(r, c, m)) return;
-        const res = await clickRefresh(r);
-        if (res !== 'ok') {
-          failed++;
-          done.add(wo);
-          if (failed <= 3) log(`Row ${wo}: ${res === 'none' ? 'no Refresh button found' : 'pressed Refresh but the page did not react'}.`, 'warn');
-          if (failed === 3 && n === 0) {
-            stopNow = true;
-            log('Stopped: Refresh does not react to the script. Press "Describe row" and send me the text it copies.', 'bad');
+      // a refreshed row can move anywhere in the list, so the list is walked again until a pass changes nothing
+      for (let pass = 1; pass <= MAX_TRIES + 1 && !stopNow; pass++) {
+        let changed = 0;
+        await walk(async r => {
+          const wo = woOf(r);
+          if (!wo) return;
+          const t = tries[wo] || 0;
+          if (m === 'all' ? t >= 1 : t >= MAX_TRIES || !needs(r, c, m)) return;
+          if (t > 0) await sleep(1200); // give the server a moment before asking the same row again
+          const res = await clickRefresh(r);
+          tries[wo] = t + 1;
+          if (res !== 'ok') {
+            silent++;
+            if (silent <= 3) log(`Row ${wo}: ${res === 'none' ? 'no Refresh button found' : 'pressed Refresh but nothing happened'}.`, 'warn');
+            if (silent >= 5 && n === 0) {
+              stopNow = true;
+              log('Stopped: Refresh does not react to the script. Press "Describe row" and send me the text it copies.', 'bad');
+            }
+            return;
           }
-          return;
-        }
-        await settle();
-        done.add(wo);
-        n++;
-        save({ mode: m, done: [...done], running: true });
-        if (n % 10 === 0) log(`${n} refreshed (${Math.round((Date.now() - t0) / 1000)} s)`);
-        return 'refreshed';
-      });
+          await settle();
+          n++;
+          changed++;
+          save({ mode: m, tries, running: true });
+          if (n % 10 === 0) log(`${n} refreshes done (${Math.round((Date.now() - t0) / 1000)} s)`);
+          return 'refreshed';
+        });
+        if (!changed || m === 'all') break;
+        if (!stopNow) log(`Pass ${pass} done: ${changed} refreshes. Checking the list again for rows still missing a file.`);
+      }
       if (stopNow) {
-        log(`Stopped after ${n}. Press "Continue" to go on.`, 'warn');
+        log(`Stopped after ${n} refreshes. Press "Continue" to go on.`, 'warn');
         panel.querySelector('[data-a=resume]').style.display = '';
         return;
       }
+      // what is still incomplete after the retries
+      const left = [];
+      if (m !== 'all') await walk(r => {
+        const wo = woOf(r);
+        const miss = missing(r, c);
+        if (wo && miss.length && !left.some(x => x.wo === wo)) left.push({ wo, miss });
+      });
       save({});
       panel.querySelector('[data-a=resume]').style.display = 'none';
-      log(`Done: ${n} rows refreshed in ${Math.round((Date.now() - t0) / 1000)} s${failed ? `, ${failed} rows had no Refresh button` : ''}.`, 'ok');
+      log(`Done: ${n} refreshes in ${Math.round((Date.now() - t0) / 1000)} s.`, 'ok');
+      if (left.length) log(`${left.length} rows still miss a file after ${MAX_TRIES} tries (probably not uploaded yet): ${left.slice(0, 25).map(x => `${x.wo} (${x.miss.join('+')})`).join(', ')}${left.length > 25 ? ' …' : ''}`, 'warn');
     }
 
     const guard = async fn => {
@@ -426,9 +451,9 @@
     });
     window.__cncHelper = { open: () => (panel.style.display = 'flex'), stop: () => (stopNow = true) };
     const st = load();
-    if (st.running && st.done && st.done.length) {
+    if (st.running && st.tries && Object.keys(st.tries).length) {
       panel.querySelector('[data-a=resume]').style.display = '';
-      log(`A refresh run was interrupted after ${st.done.length} rows. Press "Continue" to go on with the rest.`, 'warn');
+      log(`A refresh run was interrupted after ${Object.keys(st.tries).length} rows. Press "Continue" to go on with the rest.`, 'warn');
     }
     log('Ready. "Count" shows how many rows need a refresh; "Refresh them all" presses Refresh on each, one after another, waiting for each to finish.');
   }

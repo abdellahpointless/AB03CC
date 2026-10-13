@@ -175,6 +175,7 @@
         <button data-act="tick" class="cnc-b">Tick the boxes</button>
         <button data-act="send" class="cnc-b" style="background:#2563eb;border-color:#3b82f6">Tick + send to machine</button>
         <button data-act="clear" class="cnc-b">Untick all</button>
+        <button data-act="resume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue interrupted send</button>
         <button data-act="order" class="cnc-b" title="With the Machines workload list open: drags the rows into plan order">Order the open workload list</button>
         <button data-act="record" class="cnc-b" title="Logs what the page sends while you drag one row by hand">Record a drag</button>
         <button data-act="probe" class="cnc-b" title="Copies a description of this page (no clicking)">Describe page</button>
@@ -196,6 +197,22 @@
     logEl.appendChild(d);
     logEl.scrollTop = logEl.scrollHeight;
   };
+  // what you typed survives a page reload (the shop page reloads itself after a send)
+  const STORE = 'cncHelper.v1';
+  const stored = () => {
+    try {
+      return JSON.parse(localStorage.getItem(STORE) || '{}');
+    } catch {
+      return {};
+    }
+  };
+  const keep = patch => {
+    try {
+      localStorage.setItem(STORE, JSON.stringify({ ...stored(), ...patch }));
+    } catch {
+      /* storage blocked: the helper still works, it just forgets */
+    }
+  };
   let plan = [];
   let planSource = null;
   const readPlan = () => {
@@ -211,6 +228,7 @@
     return plan;
   };
   $('[data-plan]').addEventListener('input', () => {
+    keep({ plan: $('[data-plan]').value });
     readPlan();
     logEl.textContent = '';
     const by = {};
@@ -385,33 +403,52 @@
     await sleep(300);
   }
 
-  async function doSend() {
+  const nowText = () => new Date().toLocaleTimeString();
+  const keyOf = p => p.order || p.box;
+  async function doSend(resume) {
+    const queue = resume ? stored().queue : null;
+    if (resume && !(queue && queue.remaining && queue.remaining.length)) throw new Error('Nothing to continue.');
+    if (resume) $('[data-machine]').value = queue.machine;
     const machine = $('[data-machine]').value;
-    const one = $('[data-one]').checked;
+    const one = resume ? true : $('[data-one]').checked;
     const r = await survey(machine);
-    if (!r.found.size) throw new Error('Nothing to send: no box of this machine is in the list.');
+    const wanted = resume ? new Set(queue.remaining) : null;
+    const list = r.mine.filter(x => r.found.has(x) && (!wanted || wanted.has(keyOf(x))));
+    if (!list.length) throw new Error('Nothing to send: no box of this machine is in the list.');
     if (r.others) throw new Error(`${r.others} other rows are ticked. Press "Untick all" first.`);
-    if (!confirm(`Send ${r.found.size} boxes to ${machine}${one ? ', one at a time in plan order' : ''}?${r.missing.length ? `\n\n${r.missing.length} are not in the list and will be skipped.` : ''}`)) return log('Cancelled.');
+    if (!confirm(`Send ${list.length} boxes to ${machine}${one ? ', one at a time in plan order' : ''}?${r.missing.length && !resume ? `\n\n${r.missing.length} are not in the list and will be skipped.` : ''}`)) return log('Cancelled.');
     if (!one) {
       const t = await tickMachine(machine, undefined, r);
       if (stop) return;
-      if (t.ticked !== r.found.size) throw new Error(`Only ${t.ticked} of ${r.found.size} could be ticked: nothing was sent.`);
+      if (t.ticked !== list.length) throw new Error(`Only ${t.ticked} of ${list.length} could be ticked: nothing was sent.`);
+      // the page may reload as soon as OK is pressed: leave a note for the next run
+      keep({ last: { msg: `sent ${list.length} boxes to ${machine}`, at: nowText() }, queue: null });
       await sendTicked(machine);
-      log(`Sent ${r.found.size} boxes to ${machine}. Check the machine's workload.`, 'ok');
+      log(`Sent ${list.length} boxes to ${machine}. Check the machine's workload.`, 'ok');
+      $('[data-act=resume]').style.display = 'none';
       return;
     }
-    let n = 0;
-    for (const p of r.mine.filter(x => r.found.has(x))) {
+    const total = resume ? queue.total : list.length;
+    let n = resume ? total - list.length : 0;
+    const left = list.map(keyOf);
+    for (const p of list) {
       if (stop) return log('Stopped.');
       const t = await tickMachine(machine, [p], r);
       if (!t.ticked) {
         log(`Box ${p.box} could not be ticked (already sent?): skipped.`, 'warn');
+        left.shift();
         continue;
       }
+      // if the page reloads after this send, the next run offers to continue with the boxes that are left
+      keep({ queue: { machine, total, remaining: [...left] }, last: { msg: `sending ${machine} one by one, ${n} of ${total} done`, at: nowText() } });
       await sendTicked(machine);
+      left.shift();
       n++;
-      log(`${n}/${r.found.size} sent: ${p.box}`, 'ok');
+      keep({ queue: { machine, total, remaining: [...left] }, last: { msg: `sent ${n} of ${total} boxes to ${machine}`, at: nowText() } });
+      log(`${n}/${total} sent: ${p.box}`, 'ok');
     }
+    keep({ queue: null });
+    $('[data-act=resume]').style.display = 'none';
     log(`Sent ${n} boxes to ${machine} in plan order.`, 'ok');
   }
 
@@ -641,7 +678,8 @@
     } else if (act === 'check') guard(doCheck);
     else if (act === 'tick') guard(() => tickMachine($('[data-machine]').value));
     else if (act === 'clear') guard(untickAll);
-    else if (act === 'send') guard(doSend);
+    else if (act === 'send') guard(() => doSend(false));
+    else if (act === 'resume') guard(() => doSend(true));
     else if (act === 'probe') guard(async () => probe());
     else if (act === 'order') guard(doOrder);
     else if (act === 'record') toggleRecord();
@@ -664,5 +702,22 @@
   window.addEventListener('mouseup', () => (drag = null));
 
   window.__cncHelper = { open: () => (panel.style.display = 'flex'), stop: () => (stop = true) };
-  log('Ready. Paste the plan above, pick a machine, press Check.');
+  $('[data-machine]').addEventListener('change', () => keep({ machine: $('[data-machine]').value }));
+  $('[data-one]').addEventListener('change', () => keep({ one: $('[data-one]').checked }));
+  const saved = stored();
+  if (saved.plan) {
+    $('[data-plan]').value = saved.plan;
+    readPlan();
+    if (saved.machine && [...$('[data-machine]').options].some(o => o.value === saved.machine)) $('[data-machine]').value = saved.machine;
+    $('[data-one]').checked = !!saved.one;
+    const by = {};
+    plan.forEach(p => (by[p.machine] = (by[p.machine] || 0) + 1));
+    log(`Your plan from last time is back: ${plan.length} parts (${Object.entries(by).map(([m, n]) => `${m} ${n}`).join(', ')}).`, 'ok');
+  }
+  if (saved.last) log(`Before the page reloaded: ${saved.last.msg} (${saved.last.at})`, 'ok');
+  if (saved.queue && saved.queue.remaining && saved.queue.remaining.length) {
+    $('[data-act=resume]').style.display = '';
+    log(`A send to ${saved.queue.machine} was interrupted by the page reload: ${saved.queue.remaining.length} of ${saved.queue.total} boxes are left. Press "Continue interrupted send".`, 'warn');
+  }
+  log(saved.plan ? 'Ready.' : 'Ready. Paste the plan above, pick a machine, press Check.');
 })();

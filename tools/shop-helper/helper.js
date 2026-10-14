@@ -519,6 +519,48 @@
     const finishOf = row => row.querySelector('span.btn-finish, .btn.btn-finish, .btn-finish:not(i)') || row.querySelector('i.btn-finish, i.fa-check');
     const choiceBox = () => q('.ui-dialog, [role="dialog"], .modal').filter(visible).find(d => /choice\s*box|box\s*code/i.test(norm(d.textContent).slice(0, 300)));
     let scanChoice = null;
+    /** what the website's own row says: quantity, material type, measure (used when the pasted list lacks them) */
+    function rowFacts(row) {
+      const get = re => {
+        const i = col(re);
+        return i < 0 ? '' : norm(cell(row, i)?.textContent);
+      };
+      const qty = get(/^qty$|^quantity$/i);
+      const material = get(/^material\s*type$/i);
+      const measure = get(/^measure$/i);
+      const size = (measure.match(/(?:CUT|ZUSCHNITT)\s*:?\s*([\d.,]+\s*[x×*]\s*[\d.,]+\s*[x×*]\s*[\d.,]+)/i) || measure.match(/([\d.,]+\s*[x×*]\s*[\d.,]+\s*[x×*]\s*[\d.,]+)/i) || [])[1] || '';
+      return { qty: /^\d+$/.test(qty) ? qty : '', material: material.toUpperCase(), size: size.replace(/\s*[x×*]\s*/gi, ' × ') };
+    }
+    // the planner's material names that the website writes differently
+    const SITE_NAMES = { PETP: ['ERTALYTE'], RES: ['FH'], EPO: ['FH', 'EPO'] };
+    /** sets the box's Material Type to the part's material; returns what the box shows afterwards */
+    async function pickMaterial(dlg, material) {
+      const want = [material, ...(SITE_NAMES[material] || [])].map(x => x.replace(/\s+/g, '').toUpperCase());
+      const same = t => want.includes(norm(t).replace(/\s+/g, '').toUpperCase());
+      const native = dlg.querySelector('select');
+      if (native) {
+        if (same(native.options[native.selectedIndex]?.textContent || '')) return true;
+        const o = [...native.options].find(x => same(x.textContent));
+        if (!o) return false;
+        native.value = o.value;
+        native.dispatchEvent(new Event('change', { bubbles: true }));
+        if (window.jQuery) window.jQuery(native).trigger('change');
+        await sleep(200);
+        return same(native.options[native.selectedIndex]?.textContent || '');
+      }
+      const field = dlg.querySelector('.select2-choice, .select2-selection, .select2-container');
+      if (!field) return false;
+      if (same(field.querySelector('.select2-chosen, .select2-selection__rendered')?.textContent || field.textContent)) return true;
+      press(field);
+      const item = await waitFor(() => q('.select2-result-label, .select2-results__option, li[role="option"]').filter(visible).find(e => same(e.textContent)), 3000);
+      if (!item) {
+        document.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Escape' }));
+        return false;
+      }
+      press(item);
+      await sleep(200);
+      return true;
+    }
 
     async function scan(resume) {
       columns();
@@ -547,6 +589,9 @@
         }
         const fin = finishOf(row);
         if (!fin) throw new Error(`No Finish button on the row of ${p.wo}. Press "Describe row" and send me the text.`);
+        // quantity, material and size: from the pasted list, else from the website's row
+        const rf = rowFacts(row);
+        const facts = { ...p, qty: p.qty || rf.qty, material: p.material || rf.material, size: p.size || rf.size };
         press(row.querySelector('.slick-cell.l' + woCol) || row);
         await sleep(150);
         press(finishOf(row.isConnected ? row : (await findRow(p.wo)) || row));
@@ -580,8 +625,20 @@
         note.style.cssText = 'margin:6px 8px;padding:8px 10px;border-radius:6px;background:#dbeafe;color:#1e3a8a;font:13px system-ui,sans-serif;line-height:1.35';
         note.innerHTML = `<div style="font-size:11px">Part ${st.i + 1} of ${st.list.length} · ${esc(p.wo)}${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(p)}<div style="margin-top:4px;font-weight:600">Type the box code, then OK</div>`;
         (dlg.querySelector('.ui-dialog-content') || dlg.querySelector('.ui-dialog-titlebar')?.nextElementSibling || dlg).prepend(note);
+        // the quantity is what the carpenter has to put in the box; the material is chosen for him
+        note.innerHTML = `<div style="font-size:11px">Part ${st.i + 1} of ${st.list.length} · ${esc(p.wo)}${p.part ? ` · ${esc(p.part)}` : ''}</div>${
+          facts.qty ? `<div style="font-size:18px;margin-top:2px">Put <b style="font-size:26px">${esc(facts.qty)}</b> piece${facts.qty === '1' ? '' : 's'} in the box</div>` : ''
+        }<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:2px">${facts.size ? `<span>Size <b>${esc(facts.size)}</b></span>` : ''}<span data-mat>${facts.material ? `Material ${esc(facts.material)}…` : ''}</span></div><div style="margin-top:4px;font-weight:600">Type the box code, then OK</div>`;
         if (input) input.focus();
-        showNow(head + '<div style="margin-top:4px;font-size:14px;color:#fde68a"><b>Type the box code in the box and press OK</b></div>');
+        if (facts.material) {
+          const okMat = await pickMaterial(dlg, facts.material);
+          const m = note.querySelector('[data-mat]');
+          if (m) m.innerHTML = okMat ? `Material set to <b>${esc(facts.material)}</b>` : `<span style="color:#b91c1c">Could not set the material to ${esc(facts.material)}: check it</span>`;
+          if (input && document.activeElement !== input && !input.value) input.focus();
+        }
+        showNow(
+          `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}</div><div><b style="font-size:15px">${esc(p.wo)}</b>${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(facts)}<div style="margin-top:4px;font-size:14px;color:#fde68a"><b>Type the box code in the box and press OK</b></div>`,
+        );
         while (dlg.isConnected && visible(dlg) && !stopNow) {
           if (input && input.value) typed = input.value;
           await sleep(200);

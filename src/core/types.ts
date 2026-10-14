@@ -435,6 +435,8 @@ export interface WindowReport {
 
 export interface UserLock {
   machine?: Id;
+  /** put on a machine that normally refuses this part, on purpose (dragged there and confirmed) */
+  forced?: boolean;
   durationMin?: number;
   startMinute?: number;
 }

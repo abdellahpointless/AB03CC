@@ -82,6 +82,12 @@ function pad(n: number) {
   return String(n).padStart(2, '0');
 }
 
+/** The plan starts now: today, at the current time (hours with minutes as a fraction). */
+export function startNow(): { startDate: string; startHour: number } {
+  const d = new Date();
+  return { startDate: todayIso(), startHour: d.getHours() + d.getMinutes() / 60 };
+}
+
 export function todayIso(): string {
   const d = new Date();
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;

@@ -1,6 +1,7 @@
-import { AlertOctagon, Siren, Gauge, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertOctagon, Clock, Siren, Gauge, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { WorkCalendar, breakWindows, formatClock, formatDuration, planStartOffset } from '../core/calendar';
+import { startNow } from '../core/defaults';
 import type { ScheduledJob, TimelineEvent } from '../core/types';
 import { swatchFor, type ColorMode } from '../lib/colors';
 import { timeBasisNote } from '../lib/timeBasis';
@@ -40,13 +41,19 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
   });
 
   const cal = useMemo(() => new WorkCalendar(settings.calendar), [settings.calendar]);
+  const startLabel = (() => {
+    const h = settings.calendar.startHour;
+    return `${settings.calendar.startDate.slice(8, 10)}.${settings.calendar.startDate.slice(5, 7)} ${String(Math.floor(h)).padStart(2, '0')}:${String(Math.round((h % 1) * 60) % 60).padStart(2, '0')}`;
+  })();
   const machines = settings.machines;
   const pxPerMin = 0.9 * zoom;
+  // the timeline begins where the plan begins (the time it was imported, or set with the Start button)
+  const origin = planStartOffset(settings.calendar);
 
   const lastEventEnd = settings.timelineEvents.reduce((m, e) => Math.max(m, e.startMinute + e.durationMinutes), 0);
   const prevMakespan = showPrevious && previousPlan ? previousPlan.kpis.makespanMinutes : 0;
   const axisMinutes = Math.max(plan?.kpis.makespanMinutes ?? 0, prevMakespan, lastEventEnd, 60) + 90;
-  const width = axisMinutes * pxPerMin;
+  const width = (axisMinutes - origin) * pxPerMin;
 
   const q = query.trim().toLowerCase();
   const matches = (it: ScheduledJob) =>
@@ -62,7 +69,6 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
     return now.getTime() >= start.getTime() ? cal.fromDate(now) : null;
   }, [cal]);
 
-  const startOffset = planStartOffset(settings.calendar);
   const breaks = useMemo(() => breakWindows(settings.calendar).filter(w => w.start < axisMinutes), [settings.calendar, axisMinutes]);
   const breakTitle = settings.calendar.breakMode === 'run' ? 'Operator break: running parts carry on, nothing starts' : 'Operator break: machines stop';
   const urgent = settings.emergencies.filter(e => e.applied);
@@ -80,11 +86,20 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
   /* ruler */
   const ticks: Array<{ x: number; label: string; major: boolean }> = [];
   const hourStep = zoom >= 1.6 ? 30 : zoom >= 0.7 ? 60 : zoom >= 0.35 ? 120 : 240;
-  for (let m = 0; m <= axisMinutes; m += hourStep) {
+  {
+    const d = cal.toDate(origin);
+    ticks.push({
+      x: 0,
+      major: true,
+      label: `${DAY_NAMES[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`,
+    });
+  }
+  for (let m = (Math.floor(origin / hourStep) + 1) * hourStep; m <= axisMinutes; m += hourStep) {
+    if ((m - origin) * pxPerMin < 115) continue; // leave room for the first label
     const d = cal.toDate(m);
     const dayStart = m % cal.dayLen === 0;
     ticks.push({
-      x: m * pxPerMin,
+      x: (m - origin) * pxPerMin,
       major: dayStart,
       label: dayStart
         ? `${DAY_NAMES[d.getDay()]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}`
@@ -93,7 +108,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
   }
 
   const snap = (v: number) => Math.max(0, Math.round(v / SNAP) * SNAP);
-  const minuteAt = (e: React.PointerEvent<HTMLElement>) => snap((e.clientX - e.currentTarget.getBoundingClientRect().left) / pxPerMin);
+  const minuteAt = (e: React.PointerEvent<HTMLElement>) => snap((e.clientX - e.currentTarget.getBoundingClientRect().left) / pxPerMin + origin);
 
   const startDrag = (lane: string, e: React.PointerEvent<HTMLElement>) => {
     if (e.button !== 0 || draft) return;
@@ -122,7 +137,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
       title: type.label,
       startMinute: start,
       durationMinutes: len,
-      anchor: { x: rect.left + (start + len / 2) * pxPerMin, top: rect.top, bottom: rect.bottom },
+      anchor: { x: rect.left + (start + len / 2 - origin) * pxPerMin, top: rect.top, bottom: rect.bottom },
     });
     setDrag(null);
   };
@@ -147,10 +162,17 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
     if (current?.machineId === machineId) return;
     const why = current ? whyNot(current.job, machineId) : null;
     if (why) {
-      notify(`Box ${current!.job.boxCode} cannot go to ${machineId}: ${why}.`, 'error');
+      const down = settings.machines.find(m => m.id === machineId)?.isDown;
+      if (down) {
+        notify(`Box ${current!.job.boxCode} cannot go to ${machineId}: the machine is down.`, 'error');
+        return;
+      }
+      if (!window.confirm(`${machineId} does not normally take box ${current!.job.boxCode}:\n${why}.\n\nForce it onto ${machineId} anyway?`)) return;
+      setLock(jobId, { machine: machineId, forced: true });
+      notify(`Box ${current!.job.boxCode} forced onto ${machineId} (against its machine rules). Reset it from the job details to undo.`, 'warn');
       return;
     }
-    setLock(jobId, { machine: machineId });
+    setLock(jobId, { machine: machineId, forced: undefined });
     notify(`Box ${current?.job.boxCode ?? jobId} pinned to ${machineId}. Reset it from the job details to unpin.`, 'ok');
   };
 
@@ -191,6 +213,17 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
             { value: 'salesOrder', label: 'SO #' },
           ]}
         />
+        <Button
+          size="sm"
+          title="Start the timeline at the current time"
+          onClick={() => {
+            const now = startNow();
+            updateSettings(st => ({ ...st, calendar: { ...st.calendar, ...now } }));
+            notify(`The timeline now starts at ${String(Math.floor(now.startHour)).padStart(2, '0')}:${String(Math.round((now.startHour % 1) * 60)).padStart(2, '0')}.`, 'ok');
+          }}
+        >
+          <Clock className="h-3.5 w-3.5" /> Start {startLabel}
+        </Button>
         <div className="flex items-center gap-1">
           <Button size="sm" onClick={() => setZoom(z => Math.max(0.1, +(z / 1.25).toFixed(2)))} aria-label="Zoom out">
             <ZoomOut className="h-3.5 w-3.5" />
@@ -204,7 +237,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
             title="Fit the whole plan on screen"
             onClick={() => {
               const w = (scroller.current?.clientWidth ?? 1200) - LABEL_W - 16;
-              setZoom(Math.min(5, Math.max(0.1, +(w / axisMinutes / 0.9).toFixed(2))));
+              setZoom(Math.min(5, Math.max(0.1, +(w / (axisMinutes - origin) / 0.9).toFixed(2))));
               scroller.current?.scrollTo({ left: 0, behavior: 'smooth' });
             }}
           >
@@ -293,19 +326,11 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                     {ticks.map((t, i) => (
                       <div key={i} style={{ left: t.x }} className={`absolute top-0 h-full border-l ${t.major ? 'border-slate-700' : 'border-slate-900'}`} />
                     ))}
-
-                    {startOffset > 0 && (
-                      <div
-                        className="hatch pointer-events-none absolute top-0 z-[4] h-full border-r border-slate-600 bg-slate-800/60"
-                        style={{ left: 0, width: startOffset * pxPerMin }}
-                        title="Before the plan starts"
-                      />
-                    )}
                     {breaks.map(b => (
                       <div
                         key={b.start}
                         className="pointer-events-none absolute top-0 z-[3] h-full border-x border-amber-500/30 bg-amber-400/10"
-                        style={{ left: b.start * pxPerMin, width: Math.max(2, (b.end - b.start) * pxPerMin) }}
+                        style={{ left: (b.start - origin) * pxPerMin, width: Math.max(2, (b.end - b.start) * pxPerMin) }}
                         title={breakTitle}
                       />
                     ))}
@@ -313,13 +338,13 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                       <div key={ev.id}>
                         {ev.type !== 'rework' && <div
                           className="hatch pointer-events-none absolute top-0 z-[5] h-full border-x"
-                          style={{ left: ev.startMinute * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), backgroundColor: `${EVENT_COLORS[ev.type]}66`, borderColor: EVENT_COLORS[ev.type] }}
+                          style={{ left: (ev.startMinute - origin) * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), backgroundColor: `${EVENT_COLORS[ev.type]}66`, borderColor: EVENT_COLORS[ev.type] }}
                         />}
                         <button
                           onClick={e => editEvent(ev, machine.id, e.currentTarget)}
                           title={`${ev.title} (${formatDuration(ev.durationMinutes)}) · click to edit`}
                           className="absolute z-[12] flex items-center gap-1 overflow-hidden whitespace-nowrap rounded-sm px-1 text-left text-[10px] font-bold text-white"
-                          style={{ left: ev.startMinute * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), bottom: 0, height: STRIP_H, background: EVENT_COLORS[ev.type] }}
+                          style={{ left: (ev.startMinute - origin) * pxPerMin, width: Math.max(4, ev.durationMinutes * pxPerMin), bottom: 0, height: STRIP_H, background: EVENT_COLORS[ev.type] }}
                         >
                           <AlertOctagon className="h-3 w-3 shrink-0" /> {ev.title}
                         </button>
@@ -343,7 +368,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                         return (
                           <div
                             className="pointer-events-none absolute top-0 z-[13] h-full border-x-2 border-blue-400 bg-blue-500/25"
-                            style={{ left: s0 * pxPerMin, width: Math.max(2, len * pxPerMin) }}
+                            style={{ left: (s0 - origin) * pxPerMin, width: Math.max(2, len * pxPerMin) }}
                           >
                             <span className="mono absolute left-1 top-1 rounded bg-blue-600 px-1 text-[10px] font-bold text-white">{formatDuration(len)}</span>
                           </div>
@@ -359,7 +384,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                           {it.setupBefore > 0 && (
                             <div
                               className="hatch absolute z-[6] rounded-l border border-slate-700 bg-slate-800/50 opacity-70"
-                              style={{ left: (it.startMinute - it.setupBefore) * pxPerMin, width: it.setupBefore * pxPerMin, top: 10, height: LANE_H - 20 }}
+                              style={{ left: (it.startMinute - it.setupBefore - origin) * pxPerMin, width: it.setupBefore * pxPerMin, top: 10, height: LANE_H - 20 }}
                               title={`Changeover ${it.setupBefore} min`}
                             />
                           )}
@@ -378,7 +403,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                                 style={{
                                   '--glow': sw.bg,
                                   animationDelay: `${Math.min(laneIdx * 90 + itemIdx * 5, 760)}ms`,
-                                  left: seg.startMinute * pxPerMin,
+                                  left: (seg.startMinute - origin) * pxPerMin,
                                   width: w,
                                   top: 8,
                                   height: LANE_H - 16,
@@ -404,7 +429,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                             <div
                               className="absolute z-[4] h-1.5 rounded-full border"
                               style={{
-                                left: prev.startMinute * pxPerMin,
+                                left: (prev.startMinute - origin) * pxPerMin,
                                 width: Math.max(3, (prev.endMinute - prev.startMinute) * pxPerMin),
                                 bottom: 3,
                                 borderColor: prev.machineId === it.machineId ? '#94a3b8' : '#fbbf24',
@@ -417,8 +442,8 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                       );
                     })}
 
-                    {nowMinute !== null && nowMinute < axisMinutes && (
-                      <div className="pointer-events-none absolute top-0 z-20 h-full w-px bg-orange-400 shadow-[0_0_8px_rgba(251,146,60,0.9)]" style={{ left: nowMinute * pxPerMin }} />
+                    {nowMinute !== null && nowMinute >= origin && nowMinute < axisMinutes && (
+                      <div className="pointer-events-none absolute top-0 z-20 h-full w-px bg-orange-400 shadow-[0_0_8px_rgba(251,146,60,0.9)]" style={{ left: (nowMinute - origin) * pxPerMin }} />
                     )}
                   </div>
                 </div>

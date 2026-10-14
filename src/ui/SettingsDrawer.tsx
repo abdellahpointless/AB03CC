@@ -216,7 +216,7 @@ function TimeTab({ s, set }: TabProps) {
             <NumberInput value={c.shiftStartHour} min={0} max={23} onChange={v => v !== undefined && setC({ shiftStartHour: Math.min(23, Math.max(0, Math.round(v))) })} />
           </Field>
           <Field label="Plan starts at hour (0–23)" hint="The hour of the start date at which the machines begin. Earlier hours of that day are left empty.">
-            <NumberInput value={c.startHour} min={0} max={23} onChange={v => v !== undefined && setC({ startHour: Math.min(23, Math.max(0, Math.round(v))) })} />
+            <NumberInput value={c.startHour} min={0} max={23} onChange={v => v !== undefined && setC({ startHour: Math.min(23.99, Math.max(0, v)) })} />
           </Field>
           <Field label="Shifts per day">
             <NumberInput value={c.shiftsPerDay} min={1} max={3} onChange={v => v && setC({ shiftsPerDay: Math.round(v) })} />

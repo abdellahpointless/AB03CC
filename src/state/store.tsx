@@ -1,6 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { demoCarpenterParts, demoJobs } from '../core/demo';
-import { defaultSettings, mergeSettings } from '../core/defaults';
+import { defaultSettings, mergeSettings, startNow } from '../core/defaults';
 import { parseCarpenter } from '../core/parse/carpenter';
 import {
   buildPartTimeIndex,
@@ -328,6 +328,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           setJobs(parsed.jobs);
           setReport(parsed.report);
           setLocks({});
+          // the timeline starts at the moment the workload is imported
+          setSettings(s => ({ ...s, calendar: { ...s.calendar, ...startNow() } }));
           return { ok: true, kind, message: `Loaded ${parsed.jobs.length} production rows from ${file.name}.` };
         }
         if (kind === 'carpenter') {

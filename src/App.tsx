@@ -1,5 +1,6 @@
 import { Activity, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { downloadPlan } from './core/export';
+import { DEMO, DEMO_BLOCKED } from './lib/demoMode';
 import { useStore } from './state/store';
 import { CarpenterView } from './ui/CarpenterView';
 import { EmergencyModal } from './ui/EmergencyModal';
@@ -87,6 +88,7 @@ export default function App() {
         onPrint={() => setDialog('print')}
         onExport={async () => {
           if (!plan) return;
+          if (DEMO) return notify(DEMO_BLOCKED, 'warn');
           if ((await downloadPlan(plan, settings)) === 'failed') notify('The plan could not be saved as an Excel file here.', 'error');
         }}
         onHelp={() => setDialog('help')}
@@ -95,6 +97,11 @@ export default function App() {
         onEmergency={() => setDialog('emergency')}
       />
 
+      {DEMO && (
+        <div className="no-print border-b border-blue-900/60 bg-blue-950/40 px-4 py-1.5 text-center text-[11px] text-blue-200">
+          Demo · a preview with sample data and premade settings. Look around and press any button; importing, exporting and clearing are turned off and nothing is saved.
+        </div>
+      )}
       <main className="flex-1 px-3 py-4 sm:px-6">
         {!hasData ? (
           <Landing />

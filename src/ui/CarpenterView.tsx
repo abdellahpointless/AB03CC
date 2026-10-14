@@ -4,6 +4,7 @@ import { formatDuration } from '../core/calendar';
 import { STEP_LABELS, buildCutLine, type CutLine, type CutStepRule, type CutStepType, type LinePart, type LineStep, type LineStrip } from '../core/carpenter/cutLine';
 import { buildCutItems } from '../core/carpenter/items';
 import { downloadCutLine } from '../core/export';
+import { DEMO, DEMO_BLOCKED } from '../lib/demoMode';
 import { partKey } from '../core/parse/partTimes';
 import type { CutItem } from '../core/types';
 import { materialBadgeStyle } from '../lib/colors';
@@ -129,6 +130,7 @@ export function CarpenterView() {
           <Button
             variant="secondary"
             onClick={async () => {
+              if (DEMO) return notify(DEMO_BLOCKED, 'warn');
               if ((await downloadCutLine(line)) === 'failed') notify('The cut list could not be saved as an Excel file here.', 'error');
             }}
           >

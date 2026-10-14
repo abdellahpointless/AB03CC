@@ -5,7 +5,7 @@ export function demoJobs(): Job[] {
   let seed = 7;
   const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
   const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
-  const customers = ['Aptiv Connection Systems', 'Lear Automotive Morocco', 'Komax Testing Marocco', 'Leoni Wiring Systems', 'SE Bordnetze Morocco'];
+  const customers = ['Atlas Harness Works', 'Nordline Cable Systems', 'Meridian Automotive', 'Orion Wiring', 'Sahara Connect'];
   const materials = ['ALU', 'ALU', 'ALU', 'POM', 'POM', 'FH', 'PCGF', 'MS', 'PEEK'];
   const machinesInErp = ['FANUC - 1', 'HAAS - 2', 'HAAS - 5', 'MASTER'];
   const base = new Date();
@@ -82,5 +82,74 @@ export function demoCarpenterParts(jobs: Job[]): CarpenterPart[] {
       });
     }
   });
+  return parts;
+}
+
+/**
+ * A carpenter list like the real export (Measure, Description De, files, quantities) for the demo build: boxes not cut
+ * yet, some of them belonging to sales orders already in the workload.
+ */
+export function demoCarpenterList(jobs: Job[]): CarpenterPart[] {
+  let seed = 11;
+  const rnd = () => ((seed = (Math.imul(seed, 1664525) + 1013904223) >>> 0) / 4294967296);
+  const pick = <T,>(a: T[]) => a[Math.floor(rnd() * a.length)];
+  const stock: Array<[string, string, string, number]> = [
+    ['FH', '103314', 'FH8221 40x1000x1000mm', 40],
+    ['FH', '103313', 'FH8221 30x1000x1000mm', 30],
+    ['POM', '108001', 'POM TECAFORM 30x610x1000 Black', 30],
+    ['POM', '114926', 'POM TECAFORM 20x610x1000 Black', 20],
+    ['ALU', '103392', 'Alu 750x1000x20mm', 20],
+    ['ALU', '103397', 'Alu 1000x500x30mm', 30],
+    ['PCGF', '115022', 'BM PCGF30 1000x500x20', 20],
+    ['MS', '120437', 'Brass 20x10', 10],
+  ];
+  const names: Record<string, string[]> = {
+    FH: ['TOP PLATE', 'GROUND PLATE', 'TEST PIN PLATE'],
+    POM: ['CONTACT PIN PLATE', 'SUB PLATE', 'COVER'],
+    ALU: ['CONTOUR INSERT', 'HOLDING PLATE', 'TEST BRACKET'],
+    PCGF: ['TEST PIN INSERT', 'CONTOUR PIECE'],
+    MS: ['ANGLE BRACKET'],
+  };
+  const sales = [...new Set(jobs.map(j => j.salesOrder))];
+  const parts: CarpenterPart[] = [];
+  let wo = 100003600000;
+  for (let b = 0; b < 26; b++) {
+    const mo = String(100003700000 + b * 13);
+    const salesOrder = b < 8 ? sales[b % sales.length] : String(14102000 + b).padStart(10, '0');
+    const schedule = pick([0, 75, 75, 85, 100]);
+    const day = new Date();
+    day.setDate(day.getDate() + 2 + Math.floor(rnd() * 10));
+    const productionDate = `${day.getFullYear()}-${String(day.getMonth() + 1).padStart(2, '0')}-${String(day.getDate()).padStart(2, '0')}`;
+    const n = 2 + Math.floor(rnd() * 6);
+    for (let p = 0; p < n; p++) {
+      const [mat, id, text, z] = pick(stock);
+      const name = pick(names[mat]);
+      const matnr = String(200150000 + Math.floor(rnd() * 400));
+      const w = [12, 15, 20, 24, 30, 50, 100][Math.floor(rnd() * 7)];
+      const l = [18, 22, 30, 35, 45, 64, 100, 150][Math.floor(rnd() * 8)];
+      const hasNc = rnd() > 0.06;
+      parts.push({
+        masterOrder: mo,
+        workOrder: String(++wo),
+        salesOrder,
+        schedule,
+        materialNr: matnr,
+        modulNo: '999' + String(100000 + b),
+        measure: `${name} ${mat === 'MS' ? 'M' : mat}/${matnr}/CUT:${w}X${l}X${z}`,
+        descriptionDe: `${id} - ${text}`,
+        partName: name.charAt(0) + name.slice(1).toLowerCase(),
+        moduleName: `Test module ${String.fromCharCode(65 + (b % 6))}-${b + 1}`,
+        text: name.charAt(0) + name.slice(1).toLowerCase(),
+        materialType: mat,
+        qty: rnd() < 0.8 ? 1 : 2 + Math.floor(rnd() * 3),
+        cuttedStatus: false,
+        carpenterStatus: false,
+        hasPdf: rnd() > 0.04,
+        hasNc,
+        productionDate,
+        customer: 'Demo customer',
+      });
+    }
+  }
   return parts;
 }

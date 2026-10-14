@@ -1,5 +1,6 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { demoCarpenterParts, demoJobs } from '../core/demo';
+import { demoCarpenterList, demoCarpenterParts, demoJobs } from '../core/demo';
+import { DEMO, DEMO_BLOCKED } from '../lib/demoMode';
 import { defaultSettings, mergeSettings, startNow } from '../core/defaults';
 import { parseCarpenter } from '../core/parse/carpenter';
 import {
@@ -59,7 +60,24 @@ export interface PartListInfo {
   builtinCount: number;
 }
 
+function demoReport(demo: Job[]): ImportReport {
+  return {
+    fileName: 'Demo data',
+    totalRows: demo.length,
+    uniqueOrders: demo.length,
+    uniqueMasterOrders: new Set(demo.map(j => j.masterOrder)).size,
+    uniqueMatnr: new Set(demo.map(j => j.matnr)).size,
+    assignedInErp: demo.filter(j => j.erpMachine).length,
+    unassigned: demo.filter(j => !j.erpMachine).length,
+    unassignedMinutes: demo.filter(j => !j.erpMachine).reduce((a, j) => a + j.ncMinutes * j.qty, 0),
+    erpLoads: {},
+    materialCounts: {},
+    warnings: [],
+  };
+}
+
 function load<T>(key: string, fallback: T): T {
+  if (DEMO) return fallback; // the demo always starts from its own sample data
   try {
     const raw = localStorage.getItem(key);
     return raw ? (JSON.parse(raw) as T) : fallback;
@@ -69,6 +87,7 @@ function load<T>(key: string, fallback: T): T {
 }
 
 function save(key: string, value: unknown) {
+  if (DEMO) return; // the demo keeps nothing
   try {
     if (value === null || value === undefined) localStorage.removeItem(key);
     else localStorage.setItem(key, JSON.stringify(value));
@@ -144,12 +163,27 @@ export function useStore(): Store {
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [jobs, setJobs] = useState<Job[]>(() => load<Job[]>(KEYS.jobs, []));
-  const [report, setReport] = useState<ImportReport | null>(() => load<ImportReport | null>(KEYS.report, null));
+  const [jobs, setJobs] = useState<Job[]>(() => (DEMO ? demoJobs() : load<Job[]>(KEYS.jobs, [])));
+  const [report, setReport] = useState<ImportReport | null>(() => (DEMO ? demoReport(demoJobs()) : load<ImportReport | null>(KEYS.report, null)));
   const [carpenter, setCarpenter] = useState<{ parts: CarpenterPart[]; file: string | null }>(() =>
-    load(KEYS.carpenter, { parts: [], file: null }),
+    DEMO ? { parts: demoCarpenterList(demoJobs()), file: 'Sample carpenter list' } : load(KEYS.carpenter, { parts: [], file: null }),
   );
-  const [settings, setSettings] = useState<PlannerSettings>(() => mergeSettings(load(KEYS.settings, null)));
+  const [settings, setSettings] = useState<PlannerSettings>(() => {
+    const s = mergeSettings(load(KEYS.settings, null));
+    if (DEMO) {
+      // premade variables for the preview: the plan starts now, with the usual operator breaks
+      s.calendar = {
+        ...s.calendar,
+        ...startNow(),
+        breaks: [
+          { id: 'b1', label: 'Coffee', start: '10:00', minutes: 15 },
+          { id: 'b2', label: 'Lunch', start: '12:30', minutes: 30 },
+          { id: 'b3', label: 'Coffee', start: '18:00', minutes: 15 },
+        ],
+      };
+    }
+    return s;
+  });
   const [locks, setLocks] = useState<Record<string, UserLock>>(() => load(KEYS.locks, {}));
   const [plan, setPlan] = useState<PlanResult | null>(null);
   const [previousPlan, setPreviousPlan] = useState<PlanResult | null>(null);
@@ -317,6 +351,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   /* ---- actions ---- */
   const importFile = useCallback(
     async (file: File): Promise<ImportOutcome> => {
+      if (DEMO) return { ok: false, kind: 'unknown', message: DEMO_BLOCKED };
       try {
         const rows = await readRows(file);
         if (rows.length === 0) return { ok: false, kind: 'unknown', message: `"${file.name}" has no data rows.` };
@@ -365,24 +400,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const loadDemo = useCallback(() => {
     const demo = demoJobs();
     setJobs(demo);
-    setReport({
-      fileName: 'Demo data',
-      totalRows: demo.length,
-      uniqueOrders: demo.length,
-      uniqueMasterOrders: new Set(demo.map(j => j.masterOrder)).size,
-      uniqueMatnr: new Set(demo.map(j => j.matnr)).size,
-      assignedInErp: demo.filter(j => j.erpMachine).length,
-      unassigned: demo.filter(j => !j.erpMachine).length,
-      unassignedMinutes: demo.filter(j => !j.erpMachine).reduce((a, j) => a + j.ncMinutes * j.qty, 0),
-      erpLoads: {},
-      materialCounts: {},
-      warnings: [],
-    });
+    setReport(demoReport(demo));
     setCarpenter({ parts: demoCarpenterParts(demo), file: 'Demo carpenter list' });
     setLocks({});
   }, []);
 
   const clearData = useCallback(() => {
+    if (DEMO) return notify(DEMO_BLOCKED, 'warn');
     setJobs([]);
     setReport(null);
     setCarpenter({ parts: [], file: null });

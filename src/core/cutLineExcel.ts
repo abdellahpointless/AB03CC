@@ -203,36 +203,42 @@ export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
     }
   }
 
-  // the same parts, one line per work order: what the shop helper scans
+  // the same parts, one line per work order, in cutting order: what the shop helper scans. Columns A to F are what the
+  // helper needs (select them and copy), the rest is for reading.
   const sc = wb.addWorksheet('Scan order', { views: [{ state: 'frozen', ySplit: 1 }] });
   sc.columns = [
-    { header: '✓', width: 5 },
-    { header: 'Seq', width: 6 },
     { header: 'Work Order', width: 15 },
     { header: 'MaterialNr', width: 12 },
-    { header: 'Cut size', width: 14 },
     { header: 'Qty', width: 6 },
-    { header: 'Part', width: 34 },
-    { header: 'Box (master order)', width: 16 },
     { header: 'Material', width: 9 },
+    { header: 'Cut size', width: 15 },
+    { header: 'Part', width: 34 },
+    { header: 'Box (master order)', width: 17 },
     { header: 'Step', width: 30 },
+    { header: '✓', width: 5 },
   ];
-  sc.getRow(1).eachCell(c => {
+  sc.getRow(1).eachCell((c, col) => {
     c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
-    c.fill = fill('FF334155');
+    c.fill = fill(col <= 6 ? 'FF1E3A8A' : 'FF334155');
   });
-  let seq = 0;
+  let n = 0;
   for (const st of line.steps)
     for (const m of st.materials)
       for (const b of m.boards)
         for (const s of b.strips)
           for (const p of s.parts) {
-            const row = sc.addRow([OFF, ++seq, p.item.part.workOrder ?? '', p.item.part.materialNr ?? '', p.item.cut?.join(' x ') ?? '', p.item.qty, p.item.part.partName ?? '', p.item.part.masterOrder, m.material, `${st.index}. ${st.title}`]);
-            checkCell(row.getCell(1));
-            row.getCell(9).fill = fill(tone(m.material, 86));
+            n++;
+            const row = sc.addRow([p.item.part.workOrder ?? '', p.item.part.materialNr ?? '', p.item.qty, m.material, p.item.cut?.join(' x ') ?? '', p.item.part.partName ?? '', p.item.part.masterOrder, `${st.index}. ${st.title}`, OFF]);
+            checkCell(row.getCell(9));
+            row.getCell(4).fill = fill(tone(m.material, 86));
+            row.getCell(3).alignment = { horizontal: 'center' };
           }
-  if (seq) doneWhen(sc, 2, seq + 1, []);
-  sc.autoFilter = { from: 'A1', to: 'J1' };
+  if (n)
+    sc.addConditionalFormatting({
+      ref: `A2:I${n + 1}`,
+      rules: [{ type: 'expression', priority: 1, formulae: [`$I2="${ON}"`], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: 'FFDCFCE7' } }, font: { strike: true, color: { argb: 'FF6B7280' } } } }],
+    });
+  sc.autoFilter = { from: 'A1', to: 'I1' };
 
   return (await wb.xlsx.writeBuffer()) as ArrayBuffer;
 }

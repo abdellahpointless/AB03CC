@@ -451,18 +451,32 @@
         /* storage blocked */
       }
     };
-    /** lines of "Work Order, MaterialNr, …" (the planner's scan order, or rows of its Cut_Line sheet) */
+    /**
+     * Lines of the planner's scan order: Work Order, MaterialNr, Qty, Material, Cut size, Part (columns A to F of its
+     * "Scan order" sheet, or the list copied from the app). Each field is recognised by its look, so the order and
+     * extra columns do not matter.
+     */
+    const MATERIALS = /^(ALU( B)?|FH|POM|PCGF|MS|INOX|PEEK|PP|RES|EPO|PETP|PA|PMMA|MDF|FR4)$/i;
     function parseScan(text) {
       const out = [];
       for (const line of text.split(/\r?\n/)) {
-        const cells = line.split(/\t|;/).map(norm).filter(Boolean);
+        const cells = line.split(/\t|;/).map(norm).filter(c => c && c !== '☐' && c !== '☑');
         const wo = cells.find(c => /^[136]\d{11}$/.test(c));
         if (!wo || out.some(x => x.wo === wo)) continue;
-        const mat = [...cells].reverse().find(c => c !== wo && /^\d{6,9}$/.test(c)) || '';
-        out.push({ wo, mat, label: cells.filter(c => c !== wo && c !== mat).join(' · ').slice(0, 90) });
+        const mat = cells.find(c => c !== wo && /^\d{6,9}$/.test(c)) || '';
+        const qtyCell = cells.find(c => /^[x×]?\d{1,3}$/i.test(c));
+        const material = cells.find(c => MATERIALS.test(c)) || '';
+        const size = cells.find(c => /\d\s*[x×*]\s*\d/i.test(c) && !/^[136]\d{11}$/.test(c)) || '';
+        const used = new Set([wo, mat, qtyCell, material, size]);
+        const part = cells.find(c => !used.has(c) && /[a-z]/i.test(c) && !/^\d+\.\s/.test(c)) || '';
+        out.push({ wo, mat, qty: qtyCell ? qtyCell.replace(/^[x×]/i, '') : '', material: material.toUpperCase(), size: size.replace(/\s*[x×*]\s*/gi, ' × '), part });
       }
       return out;
     }
+    const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
+    /** the big facts the carpenter checks: quantity, material, size */
+    const factsHtml = p =>
+      `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;margin-top:2px">${p.qty ? `<span>Qty <b style="font-size:20px">${esc(p.qty)}</b></span>` : ''}${p.material ? `<span>Material <b style="font-size:18px">${esc(p.material)}</b></span>` : ''}${p.size ? `<span>Size <b style="font-size:16px">${esc(p.size)}</b></span>` : ''}</div>`;
     const nowEl = panel.querySelector('[data-now]');
     const showNow = html => {
       nowEl.style.display = html ? '' : 'none';
@@ -519,7 +533,7 @@
       show('scanresume', false);
       while (st.i < st.list.length && !stopNow) {
         const p = st.list[st.i];
-        const head = `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}</div><div><b style="font-size:15px">${p.wo}</b>${p.mat ? ` · ${p.mat}` : ''}</div><div style="color:#cbd5e1">${p.label}</div>`;
+        const head = `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}</div><div><b style="font-size:15px">${esc(p.wo)}</b>${p.mat ? ` · ${esc(p.mat)}` : ''}${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(p)}`;
         showNow(head + '<div style="color:#93c5fd">Finding it in the list…</div>');
         await setSearch(p.mat || p.wo);
         let row = await waitFor(() => vp() && [...vp().querySelectorAll('.slick-row')].find(x => woOf(x) === p.wo), 4000, 150);
@@ -563,8 +577,8 @@
         dlg.addEventListener('keydown', onKey, true);
         const note = document.createElement('div');
         note.id = 'cnc-scan-note';
-        note.style.cssText = 'margin:6px 8px;padding:6px 8px;border-radius:6px;background:#dbeafe;color:#1e3a8a;font:12px system-ui,sans-serif';
-        note.textContent = `Part ${st.i + 1}/${st.list.length} · ${p.wo} · ${p.label} → type the box code, then OK`;
+        note.style.cssText = 'margin:6px 8px;padding:8px 10px;border-radius:6px;background:#dbeafe;color:#1e3a8a;font:13px system-ui,sans-serif;line-height:1.35';
+        note.innerHTML = `<div style="font-size:11px">Part ${st.i + 1} of ${st.list.length} · ${esc(p.wo)}${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(p)}<div style="margin-top:4px;font-weight:600">Type the box code, then OK</div>`;
         (dlg.querySelector('.ui-dialog-content') || dlg.querySelector('.ui-dialog-titlebar')?.nextElementSibling || dlg).prepend(note);
         if (input) input.focus();
         showNow(head + '<div style="margin-top:4px;font-size:14px;color:#fde68a"><b>Type the box code in the box and press OK</b></div>');

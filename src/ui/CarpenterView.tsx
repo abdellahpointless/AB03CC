@@ -87,7 +87,10 @@ export function CarpenterView() {
 
   const order = useMemo(() => (line ? inOrder(line) : []), [line]);
   const scanList = useMemo(
-    () => order.map(o => [o.part.item.part.workOrder ?? '', o.part.item.part.materialNr ?? '', o.part.item.cut?.join('x') ?? '', o.part.item.qty, o.part.item.part.partName ?? ''].join('\t')).join('\n'),
+    () =>
+      order
+        .map(o => [o.part.item.part.workOrder ?? '', o.part.item.part.materialNr ?? '', o.part.item.qty, o.material, o.part.item.cut?.join(' x ') ?? '', o.part.item.part.partName ?? ''].join('\t'))
+        .join('\n'),
     [order],
   );
 

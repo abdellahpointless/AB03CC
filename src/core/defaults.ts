@@ -124,9 +124,6 @@ export const DEFAULT_SAW_GROUPS: Record<string, string> = {
 
 export function defaultCarpenterSettings(): CarpenterSettings {
   return {
-    productionFirst: true,
-    priorityRules: [],
-    earliestDateFirst: true,
     forecast: true,
     forecastHorizonHours: 24,
     maxForecastJobs: 600,
@@ -155,13 +152,6 @@ export function mergeCarpenterSettings(saved: unknown): CarpenterSettings {
   out.sawGroups = { ...base.sawGroups };
   out.materialTokens = isMap(s.materialTokens) ? { ...s.materialTokens } : {};
   out.doneWorkOrders = Array.isArray(s.doneWorkOrders) ? s.doneWorkOrders.map(String) : [];
-  out.priorityRules = Array.isArray(s.priorityRules)
-    ? s.priorityRules
-        .filter(r => r && typeof r === 'object' && typeof r.type === 'string')
-        .map((r, i) => ({ id: String(r.id ?? `r${i}`), type: r.type, value: String(r.value ?? ''), enabled: r.enabled !== false }))
-    : [];
-  out.productionFirst = s.productionFirst !== false;
-  out.earliestDateFirst = s.earliestDateFirst !== false;
   for (const k of [
     'forecastHorizonHours',
     'maxForecastJobs',

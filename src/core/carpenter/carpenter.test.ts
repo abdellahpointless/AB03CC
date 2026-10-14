@@ -2,11 +2,9 @@ import { describe, expect, it } from 'vitest';
 import helper from '../../../tools/shop-helper/helper.js?raw';
 import { liteOf } from '../../ui/ScriptsModal';
 import { defaultSettings } from '../defaults';
-import { planStartOffset } from '../calendar';
-import type { CarpenterPart, CarpenterRule } from '../types';
+import type { CarpenterPart } from '../types';
 import { buildCutItems } from './items';
-import { planCuts } from './cutPlan';
-import { boxLevel, type BoxFacts } from './priority';
+import { buildCutLine } from './cutLine';
 
 const part = (mo: string, wo: string, measure: string, desc: string): CarpenterPart => ({
   masterOrder: mo, workOrder: wo, measure, descriptionDe: desc, qty: 1, cuttedStatus: false, carpenterStatus: false, hasNc: true,
@@ -25,33 +23,24 @@ describe('carpenter cut list', () => {
     expect(items.map(i => i.material)).toEqual(['FH', 'ALU', 'MS', 'FH']);
     expect(items[1].cut).toEqual([24, 15, 35]);
   });
-  it('cuts every part once, deterministically, grouping the same bar', () => {
-    const opts = { calendar: s.calendar, settings: s.carpenter, startMinute: planStartOffset(s.calendar), effort: 'quick' as const };
-    const a = planCuts(items, opts);
-    const b = planCuts(items, opts);
-    expect(a.steps.map(x => x.item.id)).toEqual(b.steps.map(x => x.item.id));
-    expect(new Set(a.steps.map(x => x.item.id)).size).toBe(4);
-    expect(a.stats.stockChanges).toBeLessThanOrEqual(a.naive.stockChanges);
+  it('follows the steps, then material, board Z and strip width, changing the blade at most once per step', () => {
+    const line = buildCutLine(items, [{ id: 's', type: 'sales_order', value: '0014102903', material: 'FH' }], {
+      inProduction: mo => mo === 'B',
+      minutes: s.carpenter,
+    });
+    // no part carries that sales order: the step is empty and skipped
+    expect(line.steps.map(x => x.title)).toEqual(['Everything else']);
+    const all = line.steps.flatMap(st => st.materials.flatMap(m => m.boards.flatMap(b => b.strips.flatMap(x => x.parts.map(p => p.item.id)))));
+    expect(new Set(all).size).toBe(4);
+    const fh = line.steps[0].materials.find(m => m.material === 'FH')!;
+    expect(fh.boards.map(b => b.z)).toEqual([40]);
+    expect(fh.boards[0].strips.map(x => x.width)).toEqual([100]); // 100x150 and 100x50 share the 100 mm strip
+    const prod = buildCutLine(items, [{ id: 'p', type: 'in_production', value: '', material: 'MS' }], { inProduction: mo => mo === 'B', minutes: s.carpenter });
+    expect(prod.steps[0].title).toBe('Boxes in production');
+    expect(prod.steps[0].materials.map(m => m.material)).toEqual(['MS', 'FH']);
+    expect(prod.totals.bladeChanges).toBeLessThanOrEqual(2);
   });
   it('bookmark version of the shop helper still parses', () => {
     expect(() => new Function(liteOf(helper))).not.toThrow();
-  });
-});
-
-describe('carpenter priority', () => {
-  const box = (o: Partial<BoxFacts>): BoxFacts => ({ masterOrder: 'M1', materials: ['FH'], inProduction: false, urgent: false, ...o });
-  const rules: CarpenterRule[] = [
-    { id: 'a', type: 'schedule', value: '75, 85', enabled: true },
-    { id: 'b', type: 'sales_order', value: '14102903', enabled: true },
-    { id: 'c', type: 'customer', value: 'leoni', enabled: false },
-  ];
-  const s = { productionFirst: true, priorityRules: rules };
-  it('puts boxes in production and urgent ones first, then the rules in order', () => {
-    expect(boxLevel(box({ inProduction: true, schedule: 75 }), s).level).toBe(0);
-    expect(boxLevel(box({ urgent: true }), s).level).toBe(0);
-    expect(boxLevel(box({ schedule: 85, salesOrder: '0014102903' }), s).level).toBe(1);
-    expect(boxLevel(box({ salesOrder: '0014102903' }), s).level).toBe(2);
-    expect(boxLevel(box({ customer: 'Leoni Agadir' }), s).level).toBe(3); // the customer rule is off
-    expect(boxLevel(box({ inProduction: true }), { ...s, productionFirst: false }).level).toBe(3);
   });
 });

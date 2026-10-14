@@ -1,6 +1,7 @@
 import * as XLSX from 'xlsx';
 import { formatClock } from './calendar';
-import type { CutItem, CutPlan, PlanResult, PlannerSettings } from './types';
+import type { CutLine } from './carpenter/cutLine';
+import type { PlanResult, PlannerSettings } from './types';
 
 /** Builds the Excel workbook: overview, one sheet per machine, an ERP import sheet, exceptions and a summary. */
 export function buildWorkbook(plan: PlanResult, settings: PlannerSettings): XLSX.WorkBook {
@@ -113,46 +114,48 @@ export async function downloadPlan(plan: PlanResult, settings: PlannerSettings):
   return saveWorkbook(buildWorkbook(plan, settings), `cnc-plan-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
-/** The carpenter's cut list in order, one sheet per kind of row. */
-export function buildCutListWorkbook(cut: CutPlan): XLSX.WorkBook {
+/** The carpenter's cut line in order: one row per part, with its step, material, board, strip and length. */
+export function buildCutLineWorkbook(line: CutLine): XLSX.WorkBook {
   const wb = XLSX.utils.book_new();
-  const add = (name: string, rows: object[]) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ Info: 'No rows' }]), name.slice(0, 31));
-  const dims = (c: [number, number, number] | null) => (c ? c.join(' x ') : '');
-  add(
-    'Cut_List',
-    cut.steps.map(s => ({
-      Seq: s.index,
-      Series: s.seriesId,
-      Start: s.startTime.replace('T', ' '),
-      Saw: s.item.saw,
-      Material: s.item.material ?? '',
-      Stock: s.item.stockText ? `${s.item.stockNo} - ${s.item.stockText}` : s.item.stockNo ?? '',
-      'Cut size': dims(s.item.cut),
-      Qty: s.item.qty,
-      Part: s.item.part.partName ?? s.item.part.text ?? '',
-      'Work Order': s.item.part.workOrder ?? '',
-      'Master Order': s.item.part.masterOrder,
-      'Sales Order': s.item.part.salesOrder ?? '',
-      Schedule: s.item.part.schedule ?? '',
-      MaterialNr: s.item.part.materialNr ?? '',
-      Why: s.why.join(', '),
-      Alert: s.item.alert?.text ?? '',
-    })),
+  const rows: object[] = [];
+  let seq = 0;
+  for (const st of line.steps) {
+    for (const m of st.materials)
+      for (const b of m.boards)
+        for (const s of b.strips)
+          for (const p of s.parts)
+            rows.push({
+              Seq: ++seq,
+              Step: `${st.index}. ${st.title}`,
+              'Blade change': m.bladeChange && b === m.boards[0] && s === b.strips[0] && p === s.parts[0] ? 'yes' : '',
+              Material: m.material,
+              'Board Z (mm)': b.z,
+              Boards: b.boards.join(' | '),
+              'Strip width (mm)': s.width,
+              'Length (mm)': p.length,
+              Qty: p.item.qty,
+              'Cut size': p.item.cut?.join(' x ') ?? '',
+              Part: p.item.part.partName ?? p.item.part.text ?? '',
+              'Work Order': p.item.part.workOrder ?? '',
+              'Master Order': p.item.part.masterOrder,
+              'Sales Order': p.item.part.salesOrder ?? '',
+              Schedule: p.item.part.schedule ?? '',
+              'Production date': p.item.part.productionDate?.slice(0, 10) ?? '',
+              MaterialNr: p.item.part.materialNr ?? '',
+            });
+    for (const p of st.picks)
+      rows.push({ Seq: ++seq, Step: `${st.index}. ${st.title}`, Material: p.material ?? '', Boards: 'pre-cut blank (pick)', Qty: p.qty, Part: p.part.partName ?? '', 'Work Order': p.part.workOrder ?? '', 'Master Order': p.part.masterOrder });
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{ Info: 'No rows' }]), 'Cut_Line');
+  const strips = line.steps.flatMap(st =>
+    st.materials.flatMap(m => m.boards.flatMap(b => b.strips.map(s => ({ Step: `${st.index}. ${st.title}`, Material: m.material, 'Board Z (mm)': b.z, 'Strip width (mm)': s.width, Pieces: s.qty, 'Strip length needed (mm)': Math.round(s.totalLength) })))),
   );
-  add(
-    'Boxes',
-    cut.modules.map(m => ({ 'Master Order': m.masterOrder, 'Sales Order': m.salesOrder ?? '', Schedule: m.schedule ?? '', Parts: m.parts, 'To cut': m.toCut, 'All cut at': m.doneTime?.replace('T', ' ') ?? '', 'Cannot finish because': m.blockedBy ?? '' })),
-  );
-  const other = (items: CutItem[], why: string) => items.map(i => ({ 'Work Order': i.part.workOrder ?? '', 'Master Order': i.part.masterOrder, Measure: i.part.measure ?? '', 'Description De': i.part.descriptionDe ?? '', Why: i.statusReason ?? why }));
-  add('Not_Ready', [...other(cut.notReady, 'not ready'), ...other(cut.blocked, 'blocked')]);
-  add('Other_Departments', other(cut.elsewhere, 'laser or turning part'));
-  add('Pre-cut_Blanks', other(cut.premade, 'pre-cut blank'));
-  add('Unknown_Material', cut.unknownMaterials.flatMap(u => u.examples.map(e => ({ Token: u.token, Rows: u.count, 'Work Order': e.workOrder ?? '', Measure: e.measure ?? '', 'Description De': e.descriptionDe ?? '' }))));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(strips.length ? strips : [{ Info: 'No rows' }]), 'Strips');
   return wb;
 }
 
-export function downloadCutList(cut: CutPlan): Promise<ExportOutcome> {
-  return saveWorkbook(buildCutListWorkbook(cut), `carpenter-cut-list-${new Date().toISOString().slice(0, 10)}.xlsx`);
+export function downloadCutLine(line: CutLine): Promise<ExportOutcome> {
+  return saveWorkbook(buildCutLineWorkbook(line), `carpenter-cut-line-${new Date().toISOString().slice(0, 10)}.xlsx`);
 }
 
 async function saveWorkbook(wb: XLSX.WorkBook, filename: string): Promise<ExportOutcome> {

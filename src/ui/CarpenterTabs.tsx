@@ -1,115 +1,7 @@
-import { ArrowDown, ArrowUp, Plus, Trash2 } from 'lucide-react';
-import { useMemo } from 'react';
-import { RULE_LABELS, boxLevel, type BoxFacts } from '../core/carpenter/priority';
-import type { CarpenterRule, CarpenterRuleType, CutItem } from '../core/types';
+import { useMemo, useState } from 'react';
+import type { CutItem } from '../core/types';
 import { useStore } from '../state/store';
-import { Button, CopyBox, Empty, Toggle, inputCls } from './kit';
-
-const HINT: Record<CarpenterRuleType, string> = {
-  sales_order: 'e.g. 0014102903, 0014102956',
-  schedule: 'e.g. 75, 85',
-  customer: 'part of the name, e.g. Leoni',
-  master_order: 'e.g. 100003480464',
-  material: 'e.g. FH, ALU',
-  production_before: 'YYYY-MM-DD',
-};
-
-/** The admin decides what the carpenter cuts first, after the boxes already in production. */
-export function CarpenterPriority({ facts }: { facts: Map<string, BoxFacts> }) {
-  const { settings, updateSettings } = useStore();
-  const cs = settings.carpenter;
-  const rules = cs.priorityRules;
-  const set = (patch: Partial<typeof cs>) => updateSettings(s => ({ ...s, carpenter: { ...s.carpenter, ...patch } }));
-  const setRules = (next: CarpenterRule[]) => set({ priorityRules: next });
-  const edit = (id: string, patch: Partial<CarpenterRule>) => setRules(rules.map(r => (r.id === id ? { ...r, ...patch } : r)));
-  const move = (i: number, d: number) => {
-    const next = rules.slice();
-    const [r] = next.splice(i, 1);
-    next.splice(i + d, 0, r);
-    setRules(next);
-  };
-
-  // how many boxes land on each level (to see a rule working)
-  const counts = useMemo(() => {
-    const c = new Map<number, number>();
-    for (const f of facts.values()) {
-      const l = boxLevel(f, cs).level;
-      c.set(l, (c.get(l) ?? 0) + 1);
-    }
-    return c;
-  }, [facts, cs]);
-  const active = rules.filter(r => r.enabled && r.value.trim());
-  const levelOf = (r: CarpenterRule) => active.indexOf(r) + 1;
-
-  return (
-    <div className="space-y-3">
-      <p className="text-xs text-slate-400">
-        The carpenter only follows the cut list. Here you decide what comes first. Boxes higher in this list are cut before the ones below; inside a level the app still finishes boxes quickly
-        and cuts parts of the same bar together.
-      </p>
-      <div className="rounded-xl border border-emerald-800/60 bg-emerald-950/20 px-4 py-3 text-xs">
-        <Toggle
-          checked={cs.productionFirst}
-          onChange={v => set({ productionFirst: v })}
-          label={<span className="font-semibold text-emerald-300">Top priority: boxes we are producing</span>}
-          hint="Their sales order is already in the CNC plan, but these parts are not cut yet. Urgent orders (the red button) are always first."
-        />
-        <div className="mt-1 text-slate-400">{counts.get(0) ?? 0} boxes</div>
-      </div>
-
-      <div className="space-y-2">
-        {rules.map((r, i) => (
-          <div key={r.id} className={`flex flex-wrap items-center gap-2 rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs ${r.enabled ? '' : 'opacity-50'}`}>
-            <span className="mono w-16 text-slate-400">{levelOf(r) > 0 ? `Level ${levelOf(r)}` : '—'}</span>
-            <select className={`${inputCls} w-52!`} value={r.type} onChange={e => edit(r.id, { type: e.target.value as CarpenterRuleType })}>
-              {(Object.keys(RULE_LABELS) as CarpenterRuleType[]).map(t => (
-                <option key={t} value={t}>
-                  {RULE_LABELS[t]}
-                </option>
-              ))}
-            </select>
-            <input
-              className={`${inputCls} w-72!`}
-              type={r.type === 'production_before' ? 'date' : 'text'}
-              placeholder={HINT[r.type]}
-              value={r.value}
-              onChange={e => edit(r.id, { value: e.target.value })}
-            />
-            <span className="w-20 text-slate-500">{levelOf(r) > 0 ? `${counts.get(levelOf(r)) ?? 0} boxes` : ''}</span>
-            <label className="flex items-center gap-1 text-slate-400">
-              <input type="checkbox" checked={r.enabled} onChange={e => edit(r.id, { enabled: e.target.checked })} /> on
-            </label>
-            <span className="ml-auto flex gap-1">
-              <Button size="sm" variant="ghost" disabled={i === 0} onClick={() => move(i, -1)} title="Higher">
-                <ArrowUp className="h-3.5 w-3.5" />
-              </Button>
-              <Button size="sm" variant="ghost" disabled={i === rules.length - 1} onClick={() => move(i, 1)} title="Lower">
-                <ArrowDown className="h-3.5 w-3.5" />
-              </Button>
-              <Button size="sm" variant="ghost" onClick={() => setRules(rules.filter(x => x.id !== r.id))} title="Remove">
-                <Trash2 className="h-3.5 w-3.5" />
-              </Button>
-            </span>
-          </div>
-        ))}
-        <Button
-          size="sm"
-          variant="secondary"
-          onClick={() => setRules([...rules, { id: `r${Date.now().toString(36)}`, type: 'sales_order', value: '', enabled: true }])}
-        >
-          <Plus className="h-3.5 w-3.5" /> Add a priority
-        </Button>
-      </div>
-
-      <div className="rounded-lg border border-slate-800 bg-slate-900/40 px-3 py-2 text-xs text-slate-400">
-        <div>Everything else: {counts.get(active.length + 1) ?? 0} boxes</div>
-        <div className="mt-2">
-          <Toggle checked={cs.earliestDateFirst} onChange={v => set({ earliestDateFirst: v })} label="Inside each level, earlier production dates first" />
-        </div>
-      </div>
-    </div>
-  );
-}
+import { Button, CopyBox, Empty, inputCls } from './kit';
 
 type MissingKind = 'pdf_no_nc' | 'nothing' | 'nc_no_pdf' | 'no_size';
 const MISSING: Array<{ kind: MissingKind; title: string; hint: string }> = [
@@ -194,6 +86,62 @@ export function MissingFiles({ items }: { items: CutItem[] }) {
           </section>
         );
       })}
+    </div>
+  );
+}
+
+/** Material words the app could not place: one row per word with examples, the admin types the material once. */
+export const unknownCount = (items: CutItem[]) => new Set(items.filter(i => i.status !== 'cut' && i.status !== 'elsewhere' && i.unknownToken).map(i => i.unknownToken)).size;
+
+export function CarpenterQuestions({ items }: { items: CutItem[] }) {
+  const { settings, updateSettings } = useStore();
+  const tokens = useMemo(() => {
+    const map = new Map<string, { token: string; count: number; examples: CutItem[] }>();
+    for (const it of items) {
+      if (it.status === 'cut' || it.status === 'elsewhere' || !it.unknownToken) continue;
+      let e = map.get(it.unknownToken);
+      if (!e) map.set(it.unknownToken, (e = { token: it.unknownToken, count: 0, examples: [] }));
+      e.count++;
+      if (e.examples.length < 3) e.examples.push(it);
+    }
+    return [...map.values()].sort((a, b) => b.count - a.count);
+  }, [items]);
+  if (!tokens.length) return <Empty>Every material was understood.</Empty>;
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-slate-400">These texts did not tell the material for sure. Type the material it means (ALU, FH, POM, PCGF, MS, INOX …) and press Save: every part with that word follows it.</p>
+      {tokens.map(u => (
+        <TokenRow
+          key={u.token}
+          token={u.token}
+          count={u.count}
+          examples={u.examples}
+          current={settings.carpenter.materialTokens[u.token]}
+          onSave={code => updateSettings(s => ({ ...s, carpenter: { ...s.carpenter, materialTokens: { ...s.carpenter.materialTokens, [u.token]: code } } }))}
+        />
+      ))}
+    </div>
+  );
+}
+
+function TokenRow({ token, count, examples, current, onSave }: { token: string; count: number; examples: CutItem[]; current?: string; onSave: (code: string) => void }) {
+  const [v, setV] = useState(current ?? '');
+  return (
+    <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-3 py-2 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="mono font-semibold text-white">“{token}”</span>
+        <span className="text-slate-500">{count} rows</span>
+        <input className={`${inputCls} w-28!`} placeholder="material" value={v} onChange={e => setV(e.target.value.toUpperCase())} />
+        <Button size="sm" variant="secondary" disabled={!v.trim()} onClick={() => onSave(v.trim())}>
+          Save
+        </Button>
+        {current && <span className="text-emerald-400">now: {current}</span>}
+      </div>
+      {examples.map(e => (
+        <div key={e.id} className="mono mt-0.5 text-slate-400">
+          {e.part.workOrder} · {e.part.measure || '(no measure)'} · {e.part.descriptionDe || '(no stock)'} · {e.part.partName ?? e.part.text}
+        </div>
+      ))}
     </div>
   );
 }

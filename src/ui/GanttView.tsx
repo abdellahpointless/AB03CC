@@ -322,7 +322,7 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
                     </div>
                   </div>
 
-                  <div className="relative isolate min-w-0 flex-1 overflow-hidden" style={{ background: laneIdx % 2 ? 'rgba(15,23,42,0.35)' : 'transparent' }}>
+                  <div className="relative isolate min-w-0 flex-1 overflow-hidden" style={{ background: laneIdx % 2 ? 'var(--lane-alt)' : 'transparent' }}>
                     {ticks.map((t, i) => (
                       <div key={i} style={{ left: t.x }} className={`absolute top-0 h-full border-l ${t.major ? 'border-slate-700' : 'border-slate-900'}`} />
                     ))}

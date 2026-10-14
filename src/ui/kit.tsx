@@ -227,7 +227,7 @@ export function Segmented<T extends string>({
           ref={setItem(o.value)}
           onClick={() => onChange(o.value)}
           className={`relative rounded px-2.5 py-1 text-[11px] font-semibold transition-colors duration-(--dur-2) ${
-            o.value === value ? `text-white ${pill ? '' : 'bg-blue-600'}` : 'text-slate-400 hover:text-white'
+            o.value === value ? `on-accent text-white ${pill ? '' : 'bg-blue-600'}` : 'text-slate-400 hover:text-white'
           }`}
         >
           {o.label}

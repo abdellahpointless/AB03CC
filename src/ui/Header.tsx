@@ -21,6 +21,7 @@ import { useEffect, useRef } from 'react';
 import { useProgress, useStore } from '../state/store';
 import { Button } from './kit';
 import { PillBg, usePill } from './motion';
+import { ThemeToggle } from './ThemeToggle';
 import { useImport } from './useImport';
 
 export type View = 'gantt' | 'priority' | 'orders' | 'runsheet' | 'hourly' | 'carpenter' | 'tables' | 'exceptions';
@@ -109,7 +110,7 @@ export function Header({
                 ref={setItem(t.id)}
                 onClick={() => setView(t.id)}
                 className={`relative z-10 flex items-center gap-1.5 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-bold transition-colors duration-(--dur-2) ${
-                  view === t.id ? 'text-white' : 'text-slate-300 hover:text-white'
+                  view === t.id ? 'on-accent text-white' : 'text-slate-300 hover:text-white'
                 }`}
               >
                 {t.icon}
@@ -183,6 +184,7 @@ export function Header({
               </Button>
             </>
           )}
+          <ThemeToggle />
           <Button variant="ghost" onClick={onScripts} title="Shop website scripts to copy">
             <SquareTerminal className="h-4 w-4" />
           </Button>

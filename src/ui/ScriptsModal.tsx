@@ -39,6 +39,10 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
           <li>
             On the carpenter list the same script shows <b className="text-slate-200">Refresh them all</b>: rows that already have a PDF or NC file are left alone.
           </li>
+          <li>
+            Scanning the cut parts: in this app open Carpenter → "Scan the cut parts", copy the scan order, paste it into the script's <b className="text-slate-200">Scan</b> box on the carpenter list and press{' '}
+            <b className="text-slate-200">Start scanning</b>. For each part it searches the material number, presses Finish on the right work order and waits: type the box code and press OK.
+          </li>
         </ol>
         <CopyBox label="Full script (console)" text={HELPER_CODE} rows={6} />
         <div>

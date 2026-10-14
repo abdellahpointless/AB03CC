@@ -77,18 +77,15 @@ export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions
     } else if (stockKind === 'round' || (!part.measure && TURNING_NAME.test(`${part.partName ?? ''} ${part.mText ?? ''} ${part.text ?? ''}`))) {
       status = 'elsewhere';
       statusReason = 'turning part: not made on the CNC';
-    } else if (!cut && !(stockKind === 'blank' && part.hasNc !== false)) {
+    } else if (stockKind === 'filament') {
+      status = 'elsewhere';
+      statusReason = '3D-print part: not made on the CNC';
+    } else if (!cut) {
       status = 'not_ready';
       statusReason = part.hasNc === false ? 'no NC file and no cut size yet' : 'no cut size (Measure and NC header empty)';
     } else if (alert && alertBlocks(alert) && !alert.replacementStock) {
       status = 'blocked';
       statusReason = alert.text;
-    } else if (stockKind === 'blank') {
-      status = 'premade';
-      statusReason = `pre-made blank ${eff?.id ?? ''}`.trim();
-    } else if (stockKind === 'filament') {
-      status = 'premade';
-      statusReason = '3D-print filament: not sawn';
     } else if (part.hasNc === false) {
       statusReason = 'no NC file yet';
     }

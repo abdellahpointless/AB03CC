@@ -276,7 +276,7 @@
     panel.id = 'cnc-helper';
     panel.style.cssText = 'position:fixed;right:12px;bottom:12px;width:400px;max-height:80vh;z-index:2147483647;background:#0f172a;color:#e2e8f0;border:1px solid #334155;border-radius:10px;font:12px system-ui,sans-serif;box-shadow:0 10px 40px rgba(0,0,0,.5);display:flex;flex-direction:column';
     panel.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #334155"><b>Carpenter list: refresh</b><button data-a="close" style="all:unset;cursor:pointer;padding:0 6px">✕</button></div>
+      <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 10px;border-bottom:1px solid #334155"><b>Carpenter list</b><button data-a="close" style="all:unset;cursor:pointer;padding:0 6px">✕</button></div>
       <div style="padding:10px;display:flex;flex-direction:column;gap:8px">
         <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="missing" checked> Only rows with no PDF and no NC file (refreshed again, up to 3 times, until one of them is there)</label>
         <label style="color:#94a3b8"><input type="radio" name="cnc-mode" value="all"> Every row in the list</label>
@@ -287,6 +287,15 @@
           <button data-a="describe" class="cnc-b" title="Copies the HTML of the first row, for me to fit the script">Describe row</button>
           <button data-a="resume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue</button>
         </div>
+        <div style="border-top:1px solid #334155;padding-top:8px"><b>Scan the cut parts</b> <span style="color:#94a3b8">in the planner's order (Carpenter tab → "Scan the cut parts" → copy the scan order)</span></div>
+        <textarea data-scan rows="3" placeholder="Paste the scan order here (Work Order and MaterialNr on each line)" style="width:100%;box-sizing:border-box;background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;font:11px ui-monospace,monospace"></textarea>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button data-a="scan" class="cnc-b" style="background:#15803d;border-color:#22c55e;font-weight:600">Start scanning</button>
+          <button data-a="scanresume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue scanning</button>
+          <button data-a="again" class="cnc-b" style="display:none">Open it again</button>
+          <button data-a="skip" class="cnc-b" style="display:none">Skip this part</button>
+        </div>
+        <div data-now style="display:none;background:#1e3a8a;border:1px solid #3b82f6;border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.4"></div>
         <pre data-log style="margin:0;white-space:pre-wrap;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:6px;max-height:220px;overflow:auto;font:11px ui-monospace,monospace"></pre>
       </div>`;
     const style = document.createElement('style');
@@ -425,11 +434,189 @@
       if (left.length) log(`${left.length} rows still have no PDF and no NC file after ${MAX_TRIES} tries (probably not uploaded yet): ${left.slice(0, 25).map(x => x.wo).join(', ')}${left.length > 25 ? ' …' : ''}`, 'warn');
     }
 
+    /* ---------- scanning: Finish each part in the planner's order; the carpenter types the box code ---------- */
+    const SCAN_KEY = 'cncHelper.scan.v1';
+    const loadScan = () => {
+      try {
+        return JSON.parse(localStorage.getItem(SCAN_KEY) || 'null');
+      } catch {
+        return null;
+      }
+    };
+    const saveScan = v => {
+      try {
+        if (v) localStorage.setItem(SCAN_KEY, JSON.stringify(v));
+        else localStorage.removeItem(SCAN_KEY);
+      } catch {
+        /* storage blocked */
+      }
+    };
+    /** lines of "Work Order, MaterialNr, …" (the planner's scan order, or rows of its Cut_Line sheet) */
+    function parseScan(text) {
+      const out = [];
+      for (const line of text.split(/\r?\n/)) {
+        const cells = line.split(/\t|;/).map(norm).filter(Boolean);
+        const wo = cells.find(c => /^[136]\d{11}$/.test(c));
+        if (!wo || out.some(x => x.wo === wo)) continue;
+        const mat = [...cells].reverse().find(c => c !== wo && /^\d{6,9}$/.test(c)) || '';
+        out.push({ wo, mat, label: cells.filter(c => c !== wo && c !== mat).join(' · ').slice(0, 90) });
+      }
+      return out;
+    }
+    const nowEl = panel.querySelector('[data-now]');
+    const showNow = html => {
+      nowEl.style.display = html ? '' : 'none';
+      nowEl.innerHTML = html || '';
+    };
+    const show = (a, on) => (panel.querySelector(`[data-a=${a}]`).style.display = on ? '' : 'none');
+    /** the list's own search box (not the menu search on the left) */
+    function searchBox() {
+      const ins = q('input').filter(visible).filter(i => !i.closest('#cnc-helper, .ui-dialog, aside, nav, .main-sidebar, .sidebar') && /^(text|search|)$/i.test(i.type || ''));
+      const quick = ins.find(i => /quicksearch/i.test(i.className));
+      if (quick) return quick;
+      const grid = vp();
+      const gy = grid ? grid.getBoundingClientRect().top : 0;
+      const searchy = ins.filter(i => /search/i.test(i.placeholder || '') && i.getBoundingClientRect().top <= gy);
+      return searchy.sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0] || null;
+    }
+    async function setSearch(text) {
+      const box = searchBox();
+      if (!box) throw new Error('Could not find the search box above the list.');
+      box.focus();
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(box, text);
+      for (const t of ['input', 'keydown', 'keyup', 'change']) box.dispatchEvent(t.startsWith('key') ? new KeyboardEvent(t, { bubbles: true, key: 'Enter' }) : new Event(t, { bubbles: true }));
+      await settle(20000);
+    }
+    /** the row of a work order, scrolling the (filtered) list if needed */
+    async function findRow(wo) {
+      const v = vp();
+      if (!v) return null;
+      v.scrollTop = 0;
+      await sleep(120);
+      for (let i = 0; i < 200; i++) {
+        const r = [...v.querySelectorAll('.slick-row')].find(x => woOf(x) === wo);
+        if (r) return r;
+        if (v.scrollTop + v.clientHeight >= v.scrollHeight - 2) return null;
+        v.scrollTop += Math.max(40, v.clientHeight - 40);
+        await sleep(120);
+      }
+      return null;
+    }
+    const finishOf = row => row.querySelector('span.btn-finish, .btn.btn-finish, .btn-finish:not(i)') || row.querySelector('i.btn-finish, i.fa-check');
+    const choiceBox = () => q('.ui-dialog, [role="dialog"], .modal').filter(visible).find(d => /choice\s*box|box\s*code/i.test(norm(d.textContent).slice(0, 300)));
+    let scanChoice = null;
+
+    async function scan(resume) {
+      columns();
+      let st = resume ? loadScan() : null;
+      if (!st) {
+        const list = parseScan(panel.querySelector('[data-scan]').value);
+        if (!list.length) throw new Error('Paste the scan order first (from the planner: Carpenter tab → Scan the cut parts).');
+        st = { list, i: 0, done: [], skipped: [] };
+        log(`Scanning ${list.length} parts in the planner's order. For each one: type the box code in the "Choice Box" and press OK.`, 'ok');
+      }
+      saveScan(st);
+      show('scanresume', false);
+      while (st.i < st.list.length && !stopNow) {
+        const p = st.list[st.i];
+        const head = `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}</div><div><b style="font-size:15px">${p.wo}</b>${p.mat ? ` · ${p.mat}` : ''}</div><div style="color:#cbd5e1">${p.label}</div>`;
+        showNow(head + '<div style="color:#93c5fd">Finding it in the list…</div>');
+        await setSearch(p.mat || p.wo);
+        let row = await waitFor(() => vp() && [...vp().querySelectorAll('.slick-row')].find(x => woOf(x) === p.wo), 4000, 150);
+        if (!row) row = await findRow(p.wo);
+        if (!row) {
+          log(`${p.wo}: not in the list (already scanned?), skipped.`, 'warn');
+          st.skipped.push(p.wo);
+          st.i++;
+          saveScan(st);
+          continue;
+        }
+        const fin = finishOf(row);
+        if (!fin) throw new Error(`No Finish button on the row of ${p.wo}. Press "Describe row" and send me the text.`);
+        press(row.querySelector('.slick-cell.l' + woCol) || row);
+        await sleep(150);
+        press(finishOf(row.isConnected ? row : (await findRow(p.wo)) || row));
+        const dlg = await waitFor(choiceBox, 8000, 100);
+        if (!dlg) throw new Error(`Pressed Finish for ${p.wo} but no "Choice Box" opened.`);
+        // what the carpenter does in the box: OK / Enter = scanned, Cancel / ✕ / Escape = not
+        const input = q('input', dlg).filter(visible).find(i => /^(text|)$/i.test(i.type || ''));
+        let typed = '';
+        let action = null;
+        const onClick = e => {
+          const b = e.target.closest('button, a, input[type="button"], input[type="submit"], .ui-dialog-titlebar-close');
+          if (!b) return;
+          const t = norm(b.textContent || b.value || b.title);
+          if (/^ok$/i.test(t)) {
+            action = 'ok';
+            if (input) typed = input.value;
+          }
+          else if (/cancel|close|×|✕/i.test(t) || b.classList.contains('ui-dialog-titlebar-close')) action = 'cancel';
+        };
+        const onKey = e => {
+          if (e.key === 'Enter') {
+            action = 'ok';
+            if (input) typed = input.value;
+          }
+          else if (e.key === 'Escape') action = 'cancel';
+        };
+        dlg.addEventListener('click', onClick, true);
+        dlg.addEventListener('keydown', onKey, true);
+        const note = document.createElement('div');
+        note.id = 'cnc-scan-note';
+        note.style.cssText = 'margin:6px 8px;padding:6px 8px;border-radius:6px;background:#dbeafe;color:#1e3a8a;font:12px system-ui,sans-serif';
+        note.textContent = `Part ${st.i + 1}/${st.list.length} · ${p.wo} · ${p.label} → type the box code, then OK`;
+        (dlg.querySelector('.ui-dialog-content') || dlg.querySelector('.ui-dialog-titlebar')?.nextElementSibling || dlg).prepend(note);
+        if (input) input.focus();
+        showNow(head + '<div style="margin-top:4px;font-size:14px;color:#fde68a"><b>Type the box code in the box and press OK</b></div>');
+        while (dlg.isConnected && visible(dlg) && !stopNow) {
+          if (input && input.value) typed = input.value;
+          await sleep(200);
+        }
+        if (input && input.isConnected && input.value) typed = input.value;
+        dlg.removeEventListener('click', onClick, true);
+        dlg.removeEventListener('keydown', onKey, true);
+        note.remove();
+        if (stopNow) break;
+        if (action === 'ok' || (!action && typed.trim())) {
+          st.done.push({ wo: p.wo, box: typed.trim() });
+          log(`✓ ${p.wo} → box ${typed.trim() || '?'}`, 'ok');
+          st.i++;
+          saveScan(st);
+          showNow(head + '<div style="color:#86efac">Saved. Next part…</div>');
+          await settle(20000);
+          continue;
+        }
+        // closed without OK: ask what to do
+        log(`${p.wo}: the box was closed without OK.`, 'warn');
+        showNow(head + '<div style="margin-top:4px;color:#fde68a">The box was closed without OK. Open it again, or skip this part?</div>');
+        scanChoice = null;
+        show('again', true);
+        show('skip', true);
+        while (!scanChoice && !stopNow) await sleep(150);
+        show('again', false);
+        show('skip', false);
+        if (scanChoice === 'skip') {
+          st.skipped.push(p.wo);
+          st.i++;
+          saveScan(st);
+        }
+      }
+      if (stopNow) {
+        showNow('');
+        show('scanresume', true);
+        return log(`Scanning paused at part ${st.i + 1} of ${st.list.length}. Press "Continue scanning" to go on.`, 'warn');
+      }
+      await setSearch('');
+      showNow('');
+      saveScan(null);
+      log(`Scanning done: ${st.done.length} parts scanned${st.skipped.length ? `, ${st.skipped.length} skipped (${st.skipped.slice(0, 10).join(', ')}${st.skipped.length > 10 ? ' …' : ''})` : ''}.`, 'ok');
+    }
+
     const guard = async fn => {
       if (busy) return;
       busy = true;
       stopNow = false;
-      panel.querySelectorAll('.cnc-b').forEach(b => b.getAttribute('data-a') !== 'stop' && (b.disabled = true));
+      panel.querySelectorAll('.cnc-b').forEach(b => !['stop', 'again', 'skip'].includes(b.getAttribute('data-a')) && (b.disabled = true));
       try {
         await fn();
       } catch (e) {
@@ -449,6 +636,9 @@
       else if (a === 'run') guard(() => run(false));
       else if (a === 'resume') guard(() => run(true));
       else if (a === 'stop') stopNow = true;
+      else if (a === 'scan') guard(() => scan(false));
+      else if (a === 'scanresume') guard(() => scan(true));
+      else if (a === 'again' || a === 'skip') scanChoice = a;
       else if (a === 'describe') {
         const v = vp();
         const r = v && [...v.querySelectorAll('.slick-row')].sort((x, y) => parseFloat(x.style.top) - parseFloat(y.style.top))[0];
@@ -467,7 +657,12 @@
       panel.querySelector('[data-a=resume]').style.display = '';
       log(`A refresh run was interrupted after ${Object.keys(st.tries).length} rows. Press "Continue" to go on with the rest.`, 'warn');
     }
-    log('Ready. "Count" shows how many rows need a refresh; "Refresh them all" presses Refresh on each, one after another, waiting for each to finish.');
+    const sc = loadScan();
+    if (sc && sc.list && sc.i < sc.list.length) {
+      show('scanresume', true);
+      log(`Scanning was paused at part ${sc.i + 1} of ${sc.list.length}. Press "Continue scanning" to go on.`, 'warn');
+    }
+    log('Ready. Refresh: "Count" shows how many rows need a refresh, "Refresh them all" presses Refresh on each. Scan: paste the scan order and press "Start scanning".');
   }
 
   const panel = document.createElement('div');

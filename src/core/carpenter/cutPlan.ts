@@ -30,6 +30,8 @@ export interface PlanCutsOptions {
   moDue?: (mo: string) => number | null;
   /** its sales order (+ schedule) already has boxes in the workload */
   moInGantt?: (mo: string) => boolean;
+  /** why the box has its place (shown first on its steps), e.g. 'in production', 'priority 2: schedule 75' */
+  moReason?: (mo: string) => string | undefined;
   /** shown as 'urgent order' on its steps (e.g. an applied emergency) */
   moUrgent?: (mo: string) => boolean;
   effort: PlanningEffort;
@@ -721,8 +723,10 @@ export function planCuts(itemsIn: CutItem[], opts: PlanCutsOptions): CutPlan {
     planStats.finishMinute = Math.max(planStats.finishMinute, r.end);
 
     const why: string[] = [];
-    if (opts.moUrgent?.(box.mo)) why.push('urgent order');
-    if (box.inGantt) why.push('sales order in the Gantt');
+    const reason = opts.moReason?.(box.mo);
+    if (reason) why.push(reason);
+    else if (opts.moUrgent?.(box.mo)) why.push('urgent order');
+    else if (box.inGantt) why.push('in production');
     if (box.due !== null) why.push(`due ${fmtDay(box.due)}`);
     if (r.kind === 1) why.push('pre-made blank: pick it');
     else if (r.head !== b && cur && cur.first < index) why.push(`same bar as #${cur.first}`);

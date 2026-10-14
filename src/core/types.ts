@@ -383,7 +383,23 @@ export interface CutPlan {
 }
 
 /** How the carpenter list is ordered and forecast. */
+/** What the admin wants cut first, after the boxes already in production. */
+export type CarpenterRuleType = 'sales_order' | 'schedule' | 'customer' | 'master_order' | 'material' | 'production_before';
+export interface CarpenterRule {
+  id: string;
+  type: CarpenterRuleType;
+  /** comma-separated values (sales orders, schedules, …), a customer name part, or a date YYYY-MM-DD */
+  value: string;
+  enabled: boolean;
+}
+
 export interface CarpenterSettings {
+  /** boxes whose sales order is already in the CNC plan come before every rule */
+  productionFirst: boolean;
+  /** the admin's levels, most important first */
+  priorityRules: CarpenterRule[];
+  /** inside a level, earlier production dates first */
+  earliestDateFirst: boolean;
   /** uncut boxes become expected CNC jobs */
   forecast: boolean;
   /** only boxes the carpenter finishes within this many working hours are forecast in the CNC plan */
@@ -406,7 +422,7 @@ export interface CarpenterSettings {
   sawGroups: Record<string, SawGroup>;
   /** the user's answers: token (upper case) -> material code, e.g. "ERTA" -> "PETP"; applied first */
   materialTokens: Record<string, string>;
-  /** weight factor for boxes whose sales order is already in the Gantt */
+  /** extra weight for in-production boxes inside the top level */
   inGanttBoost: number;
   /** work orders ticked as cut in the app (left out of the list and the forecast) */
   doneWorkOrders: string[];

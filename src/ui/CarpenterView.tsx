@@ -3,12 +3,14 @@ import { useMemo, useState } from 'react';
 import { WorkCalendar, formatDuration, planStartOffset } from '../core/calendar';
 import { buildCutItems } from '../core/carpenter/items';
 import { planCuts } from '../core/carpenter/cutPlan';
+import { boxLevel, type BoxFacts } from '../core/carpenter/priority';
 import { downloadCutList } from '../core/export';
 import { partKey } from '../core/parse/partTimes';
 import { useStore } from '../state/store';
 import type { CutPlan, CutStep } from '../core/types';
 import { Badge, Button, CopyBox, Empty, MaterialBadge, Segmented, inputCls } from './kit';
 import { HELPER_CODE } from './ScriptsModal';
+import { CarpenterPriority, MissingFiles, missingCount } from './CarpenterTabs';
 
 const noZeros = (s: string | undefined) => (s ?? '').replace(/^0+/, '');
 const TICKS_KEY = 'cnc-planner.v2.cutTicks';
@@ -20,7 +22,7 @@ const loadTicks = (): Set<string> => {
   }
 };
 
-type Tab = 'order' | 'questions' | 'notready';
+type Tab = 'order' | 'priority' | 'files' | 'questions' | 'notready';
 
 /** The carpenter's list: what to cut, in which order, so boxes are finished early and the saw and bar change rarely. */
 export function CarpenterView() {
@@ -30,35 +32,59 @@ export function CarpenterView() {
   const [ticks, setTicks] = useState(loadTicks);
   const [hideTicked, setHideTicked] = useState(false);
 
-  const cut: CutPlan | null = useMemo(() => {
-    if (!carpenterParts.length) return null;
+  const items = useMemo(() => {
+    if (!carpenterParts.length) return [];
     const history: Record<string, string> = {};
     for (const j of jobs) if (j.matnr && j.materialType) history[partKey(j.matnr)] = j.materialType;
-    const items = buildCutItems(carpenterParts, { settings: settings.carpenter, materialAliases: settings.materialAliases, history });
-    // a box is urgent when its sales order (and schedule) is an applied emergency; it counts more when that sales
-    // order already has boxes in the CNC workload, so the carpenter completes what the machines are producing
+    return buildCutItems(carpenterParts, { settings: settings.carpenter, materialAliases: settings.materialAliases, history });
+  }, [carpenterParts, jobs, settings.carpenter, settings.materialAliases]);
+
+  // what each box is: in production (its sales order is in the CNC plan), urgent, and what the admin's rules see
+  const facts = useMemo(() => {
     const urgent = settings.emergencies.filter(e => e.applied);
-    const inGantt = new Set(jobs.map(j => noZeros(j.salesOrder)));
-    const byMo = new Map(carpenterParts.map(p => [p.masterOrder, p]));
+    const producing = new Set(jobs.map(j => noZeros(j.salesOrder)).filter(Boolean));
+    const map = new Map<string, BoxFacts>();
+    for (const it of items) {
+      const p = it.part;
+      let f = map.get(p.masterOrder);
+      if (!f) {
+        f = {
+          masterOrder: p.masterOrder,
+          salesOrder: p.salesOrder,
+          schedule: p.schedule,
+          customer: p.customer,
+          productionDate: p.productionDate,
+          materials: [],
+          inProduction: producing.has(noZeros(p.salesOrder)),
+          urgent: urgent.some(e => noZeros(e.salesOrder) === noZeros(p.salesOrder) && (e.schedule === null || e.schedule === p.schedule)),
+        };
+        map.set(p.masterOrder, f);
+      }
+      if (it.material && !f.materials.includes(it.material)) f.materials.push(it.material);
+    }
+    return map;
+  }, [items, jobs, settings.emergencies]);
+
+  const cut: CutPlan | null = useMemo(() => {
+    if (!items.length) return null;
+    const cs = settings.carpenter;
+    const levels = new Map([...facts].map(([mo, f]) => [mo, boxLevel(f, cs)]));
     const cal = new WorkCalendar(settings.calendar);
-    const isUrgent = (mo: string) => {
-      const p = byMo.get(mo);
-      return !!p && urgent.some(e => noZeros(e.salesOrder) === noZeros(p.salesOrder) && (e.schedule === null || e.schedule === p.schedule));
-    };
     return planCuts(items, {
       calendar: settings.calendar,
-      settings: settings.carpenter,
+      settings: cs,
       startMinute: planStartOffset(settings.calendar),
       effort: 'quick',
-      moTier: mo => (isUrgent(mo) ? 0 : (byMo.get(mo)?.schedule ?? 0) > 0 ? 1 : 2),
-      moUrgent: isUrgent,
-      moInGantt: mo => inGantt.has(noZeros(byMo.get(mo)?.salesOrder)),
+      moTier: mo => levels.get(mo)?.level ?? 0,
+      moReason: mo => levels.get(mo)?.reason,
+      moUrgent: mo => facts.get(mo)?.urgent ?? false,
+      moInGantt: mo => facts.get(mo)?.inProduction ?? false,
       moDue: mo => {
-        const d = byMo.get(mo)?.productionDate;
-        return d ? cal.fromIso(d.slice(0, 10) + 'T23:59') : null;
+        const d = facts.get(mo)?.productionDate;
+        return cs.earliestDateFirst && d ? cal.fromIso(d.slice(0, 10) + 'T23:59') : null;
       },
     });
-  }, [carpenterParts, jobs, settings.carpenter, settings.materialAliases, settings.emergencies, settings.calendar]);
+  }, [items, facts, settings.carpenter, settings.calendar]);
 
   if (!cut) {
     return (
@@ -101,7 +127,7 @@ export function CarpenterView() {
               <Hammer className="h-4 w-4 text-amber-400" /> Carpenter cut list
             </h2>
             <p className="text-xs text-slate-400">
-              {carpenterFile} · cut from top to bottom: urgent boxes first, each box finished as soon as possible, parts of the same bar and size cut in one go.
+              {carpenterFile} · cut from top to bottom: boxes we are producing first, then the priority set in the Priority tab; each box is finished as soon as possible and parts of the same bar and size are cut in one go.
             </p>
           </div>
           <Button
@@ -129,6 +155,8 @@ export function CarpenterView() {
           onChange={setTab}
           options={[
             { value: 'order', label: `Cut order (${cut.steps.length})` },
+            { value: 'priority', label: 'Priority' },
+            { value: 'files', label: `Missing files (${missingCount(items)})` },
             { value: 'questions', label: `Materials to confirm (${questions})` },
             { value: 'notready', label: `Not ready / other departments (${cut.notReady.length + cut.blocked.length + cut.elsewhere.length})` },
           ]}
@@ -137,7 +165,7 @@ export function CarpenterView() {
           <>
             <div className="relative">
               <Search className="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
-              <input className={`${inputCls} w-56 pl-7`} placeholder="Work order, box, part, bar…" value={query} onChange={e => setQuery(e.target.value)} />
+              <input className={`${inputCls} w-56! pl-7`} placeholder="Work order, box, part, bar…" value={query} onChange={e => setQuery(e.target.value)} />
             </div>
             <label className="flex items-center gap-1.5 text-xs text-slate-400">
               <input type="checkbox" checked={hideTicked} onChange={e => setHideTicked(e.target.checked)} /> hide ticked
@@ -260,6 +288,9 @@ export function CarpenterView() {
         </div>
       )}
 
+      {tab === 'priority' && <CarpenterPriority facts={facts} />}
+      {tab === 'files' && <MissingFiles items={items} />}
+
       <details className="rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3 text-xs text-slate-400">
         <summary className="cursor-pointer text-slate-300">Refresh the carpenter list on the website (shop helper script)</summary>
         <p className="mt-2">Open the carpenter list on the website, press F12, paste this in the Console and press Enter. A panel offers "Refresh them all".</p>
@@ -298,7 +329,7 @@ function TokenRow({
       <div className="flex flex-wrap items-center gap-2">
         <span className="mono font-semibold text-white">“{token}”</span>
         <span className="text-slate-500">{count} rows</span>
-        <input className={`${inputCls} w-28`} placeholder="material" value={v} onChange={e => setV(e.target.value.toUpperCase())} />
+        <input className={`${inputCls} w-28!`} placeholder="material" value={v} onChange={e => setV(e.target.value.toUpperCase())} />
         <Button size="sm" variant="secondary" disabled={!v.trim()} onClick={() => onSave(v.trim())}>
           Save
         </Button>

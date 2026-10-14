@@ -12,6 +12,7 @@
     "check:data": "tsx scripts/check-data.ts"
   },
   "dependencies": {
+    "exceljs": "^4.4.0",
     "lucide-react": "^1.54.0",
     "react": "^19.3.0",
     "react-dom": "^19.3.0",

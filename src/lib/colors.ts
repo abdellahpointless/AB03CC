@@ -2,7 +2,7 @@ import type { Job } from '../core/types';
 
 export type ColorMode = 'material' | 'masterOrder' | 'salesOrder';
 
-const MATERIAL_HUE: Record<string, number> = {
+export const MATERIAL_HUE: Record<string, number> = {
   ALU: 217,
   POM: 158,
   FH: 275,

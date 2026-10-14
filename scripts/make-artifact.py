@@ -6,6 +6,8 @@ import sys
 src = sys.argv[1]
 dst = sys.argv[2]
 s = open(src, encoding='utf-8').read()
+# bundled libraries (exceljs) hold a literal U+FFFD inside their strings; the escape means the same and survives publishing
+s = s.replace('\ufffd', '\\uFFFD')
 i = s.index('<script type="module"')
 j = s.rindex('</script>') + len('</script>')
 script = re.sub(r'<script type="module"[^>]*>', '<script type="module">', s[i:j], count=1)

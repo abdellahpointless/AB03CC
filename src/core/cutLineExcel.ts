@@ -6,10 +6,11 @@ import { MATERIAL_HUE } from '../lib/colors';
 
 /**
  * The carpenter's cut list, made to be printed: steps, blade changes, one coloured block per material, boards (Z),
- * strips, and one numbered line per size with the whole size to saw and how many. He cuts from the paper, writes what
- * he cut in the empty "Cut" box, and the line numbers come back when he scans the parts on the website.
- * On screen, column A holds a ☐/☑ box (a small drop-down): ticking a line turns it green, and ticking a material,
- * board or strip line turns everything under it green too.
+ * and under each board one numbered line per size (in strip order, no strip rows) with the whole size to saw and
+ * how many. He cuts from the paper, writes what he cut in the empty "Cut" box, and the line numbers come back when
+ * he scans the parts on the website.
+ * On screen, column A holds a ☐/☑ box (a small drop-down): ticking a line turns it green, and ticking a material
+ * or board line turns everything under it green too.
  */
 
 const OFF = '☐';
@@ -156,24 +157,8 @@ function cutSheet(wb: Workbook, name: string, title: string, sub: string, steps:
         doneWhen(ws, r, r, [matRow]);
         r++;
 
+        // the size lines straight under their board: the carpenter sees the strips himself
         for (const s of b.strips) {
-          const stripRow = r;
-          const sRow = ws.getRow(r);
-          checkCell(sRow.getCell(1));
-          sRow.getCell(2).value = `Strip ${s.width} mm`;
-          merge(ws, r, 2, 3);
-          sRow.getCell(4).value = `${s.qty} pcs`;
-          sRow.getCell(5).value = `${Math.round(s.totalLength)} mm of strip (${s.width} × ${b.z} mm)`;
-          merge(ws, r, 5, 7);
-          for (let c = 1; c <= 7; c++) {
-            sRow.getCell(c).fill = fill(tone(m.material, 94));
-            sRow.getCell(c).border = box;
-          }
-          sRow.getCell(2).font = { bold: true, color: { argb: 'FF0369A1' } };
-          sRow.getCell(5).font = { size: 9, color: { argb: 'FF475569' } };
-          doneWhen(ws, r, r, [boardRow, matRow]);
-          r++;
-
           const first = r;
           for (const p of s.parts) {
             const l = lineOf.get(p.item.id);
@@ -198,10 +183,11 @@ function cutSheet(wb: Workbook, name: string, title: string, sub: string, steps:
             row.getCell(4).alignment = { horizontal: 'center', vertical: 'middle' };
             row.getCell(6).font = { size: 9, color: { argb: 'FF64748B' } };
             row.getCell(7).font = { size: 9, color: { argb: 'FF64748B' } };
+      row.getCell(7).alignment = { wrapText: true, vertical: 'top' };
             row.height = 20;
             r++;
           }
-          if (r > first) doneWhen(ws, first, r - 1, [stripRow, boardRow, matRow]);
+          if (r > first) doneWhen(ws, first, r - 1, [boardRow, matRow]);
         }
       }
     }
@@ -225,7 +211,7 @@ export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
   } else {
     // the overview, then one sheet (one paper) per round: File > Print > "Print entire workbook" prints them all
     const ov = wb.addWorksheet('Rounds', { views: [{ showGridLines: false }], pageSetup: PAGE });
-    ov.columns = [{ width: 10 }, { width: 9 }, { width: 11 }, { width: 8 }, { width: 34 }, { width: 13 }, { width: 30 }];
+    ov.columns = [{ width: 10 }, { width: 9 }, { width: 11 }, { width: 8 }, { width: 30 }, { width: 13 }, { width: 42 }];
     ov.getCell('A1').value = 'Carpenter rounds';
     ov.getCell('A1').font = { size: 20, bold: true, color: { argb: 'FF0F172A' } };
     merge(ov, 1, 1, 7);
@@ -255,6 +241,7 @@ export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
       row.eachCell({ includeEmpty: true }, c => (c.border = box));
       row.getCell(1).font = { bold: true };
       row.getCell(7).font = { size: 9, color: { argb: 'FF64748B' } };
+      row.getCell(7).alignment = { wrapText: true, vertical: 'top' };
     }
     line.steps.forEach(st => {
       const ri = st.round!;

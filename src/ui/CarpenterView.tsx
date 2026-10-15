@@ -366,8 +366,8 @@ function StepEditor({
           <input
             className={`${inputCls} mono w-16! text-center`}
             type="number"
-            min={limit.by === 'hours' ? 0.5 : 5}
-            step={limit.by === 'hours' ? 0.5 : 5}
+            min={limit.by === 'hours' ? 0.5 : 1}
+            step={limit.by === 'hours' ? 0.5 : limit.by === 'pieces' ? 5 : 1}
             value={limit.value}
             onChange={e => setLimit({ ...limit, value: Math.max(0, Number(e.target.value) || 0) })}
             aria-label="Round limit"
@@ -375,14 +375,19 @@ function StepEditor({
         )}
         <Segmented<RoundLimit['by']>
           value={limit.by}
-          onChange={by => setLimit({ by, value: by === limit.by ? limit.value : by === 'hours' ? 2 : by === 'pieces' ? 100 : 0 })}
+          onChange={by => setLimit({ by, value: by === limit.by ? limit.value : by === 'hours' ? 2 : by === 'pieces' ? 100 : by === 'modules' ? 5 : 0 })}
           options={[
             { value: 'hours', label: 'hours of cutting' },
             { value: 'pieces', label: 'pieces' },
+            { value: 'modules', label: 'modules' },
             { value: 'none', label: 'no limit' },
           ]}
         />
-        {limit.by !== 'none' && <span className="text-slate-500">· whole boxes first, a box bigger than a round is split</span>}
+        {limit.by !== 'none' && (
+          <span className="text-slate-500">
+            {limit.by === 'modules' ? '· whole modules (boxes), never split' : '· whole modules (boxes) first, a box bigger than a round is split'}
+          </span>
+        )}
       </div>
     </div>
   );

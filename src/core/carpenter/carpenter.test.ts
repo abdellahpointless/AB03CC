@@ -97,6 +97,11 @@ describe('carpenter cut list', () => {
     // hours: no round over the limit
     const h = buildRounds(its, [], o, { by: 'hours', value: 0.5 });
     expect(h.steps.every(st => st.minutes <= 30 || st.round!.boxes === 1)).toBe(true);
+    // modules: N whole boxes per round, never split
+    const mods = buildRounds(its, [], o, { by: 'modules', value: 2 });
+    expect(mods.steps.map(st => st.round!.boxes)).toEqual([2, 2, 2, 1]);
+    expect(mods.steps.every(st => st.round!.continues.length === 0)).toBe(true);
+    expect(mods.totals.qty).toBe(6 * 3 * 2 + 12 * 3);
     // no limit: the plain line
     expect(buildRounds(its, [], o, { by: 'none', value: 0 }).steps.every(st => !st.round)).toBe(true);
   });

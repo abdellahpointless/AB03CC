@@ -293,9 +293,9 @@ export function buildCutLine(items: CutItem[], rules: CutStepRule[], o: CutLineO
 
 /* ------------------------------------------------------------ rounds */
 
-/** How much the carpenter cuts before he comes back to scan: hours of sawing, or pieces; 'none' = one long line. */
+/** How much the carpenter cuts before he comes back to scan: hours of sawing, pieces, or modules (boxes); 'none' = one long line. */
 export interface RoundLimit {
-  by: 'hours' | 'pieces' | 'none';
+  by: 'hours' | 'pieces' | 'modules' | 'none';
   value: number;
 }
 
@@ -370,6 +370,9 @@ export function buildRounds(items: CutItem[], rules: CutStepRule[], o: CutLineOp
   if (limit.by === 'none' || !(limit.value > 0)) return buildCutLine(items, rules, o);
   const cap = limit.by === 'hours' ? limit.value * 60 : limit.value;
   const byPieces = limit.by === 'pieces';
+  // modules: a round is N whole boxes, never split; the sawing estimate only picks boxes that go well together
+  const byModules = limit.by === 'modules';
+  const full = (cost: RoundCost, boxes: number) => (byModules ? boxes >= cap : cost.value() >= cap);
   const { steps: assigned, leftOut } = assignSteps(items, rules, o);
 
   type Box = { mo: string; step: number; parts: CutItem[]; part: number };
@@ -397,7 +400,7 @@ export function buildRounds(items: CutItem[], rules: CutStepRule[], o: CutLineOp
       if (b.part > 0) r.continued.push(b.mo);
     };
     const head = queue[0];
-    if (cost.with(head.parts) > cap) {
+    if (!byModules && cost.with(head.parts) > cap) {
       // too big for one round: as many of its parts as fit, sawn-order, the rest goes on in the next round
       const sorted = head.parts.slice().sort(sawOrder);
       const now: CutItem[] = [];
@@ -421,13 +424,13 @@ export function buildRounds(items: CutItem[], rules: CutStepRule[], o: CutLineOp
       takeAt(0);
       // then the boxes of the same step that fit and share the most with the round (boards, strips, sizes): a
       // later step only when every box of this one is in
-      while (queue.length && cost.value() < cap) {
+      while (queue.length && !full(cost, r.boxes.size)) {
         const step = queue[0].step;
         let best = -1;
         let bestScore = Infinity;
         for (let i = 0, seen = 0; i < queue.length && seen < WINDOW && queue[i].step === step; i++, seen++) {
           const v = cost.with(queue[i].parts);
-          if (v > cap) continue;
+          if (!byModules && v > cap) continue;
           const pcs = queue[i].parts.reduce((a, p) => a + p.qty, 0);
           const score = (v - cost.value()) / Math.max(1, pcs) + seen * 0.01;
           if (score < bestScore) {
@@ -439,7 +442,7 @@ export function buildRounds(items: CutItem[], rules: CutStepRule[], o: CutLineOp
         takeAt(best);
       }
       // the estimate can be a little short: drop the last boxes while the real sawing time is over the limit
-      if (!byPieces)
+      if (limit.by === 'hours')
         while (taken.length > 1 && makeStep(0, null, '', r.parts, { mounted: state.mounted }, o.minutes).minutes > cap) {
           const b = taken.pop()!;
           r.parts = r.parts.filter(p => !b.parts.includes(p));

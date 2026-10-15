@@ -1,5 +1,5 @@
 import { Activity, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { downloadPlan } from './core/export';
+import { copyText, downloadPlan, planForHelper } from './core/export';
 import { DEMO, DEMO_BLOCKED } from './lib/demoMode';
 import { useStore } from './state/store';
 import { CarpenterView } from './ui/CarpenterView';
@@ -90,6 +90,12 @@ export default function App() {
           if (!plan) return;
           if (DEMO) return notify(DEMO_BLOCKED, 'warn');
           if ((await downloadPlan(plan, settings)) === 'failed') notify('The plan could not be saved as an Excel file here.', 'error');
+        }}
+        onCopyPlan={async () => {
+          if (!plan) return;
+          const { text, rows } = planForHelper(plan);
+          if (await copyText(text)) notify(`Copied ${rows} rows for the shop helper: paste them into its plan box.`, 'ok');
+          else notify('Could not copy here: use Export and copy columns A to D of Plan_All.', 'error');
         }}
         onHelp={() => setDialog('help')}
         onScripts={() => setDialog('scripts')}

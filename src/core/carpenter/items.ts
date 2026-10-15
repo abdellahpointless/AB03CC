@@ -3,7 +3,7 @@
  * Strip width and length are filled in later by planCuts (they depend on the other parts of the same stock).
  */
 import type { CarpenterPart, CarpenterSettings, CutItem, CutItemStatus, StockKind } from '../types';
-import { piecesPerBlank, resolveCut } from './dims';
+import { FH_ALLOWANCE_MM, piecesPerBlank, resolveCut, withAllowance, zIndexOf } from './dims';
 import { learnPartNames, materialContext, resolveMaterial, type MaterialOptions } from './material';
 import { alertBlocks, stockCatalog, type StockInfo } from './stock';
 import { MATERIAL_BY_CODE } from './vocab';
@@ -58,9 +58,13 @@ export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions
 
     const ctx = materialContext(part, catalog);
     const mat = resolveMaterial(part, matOpts, ctx);
-    const { cut, source: cutSource } = resolveCut(part.measure, part.n3);
+    const { cut: written, source: cutSource } = resolveCut(part.measure, part.n3);
     const alert = ctx.alert;
     const eff: StockInfo | null = ctx.replacement ?? ctx.desc ?? ctx.box;
+    const zi = written ? zIndexOf(written, eff?.thickness ?? null) : undefined;
+    // FH: the carpenter saws 3 mm more on the two sizes that are not Z (the CNC squares the part before milling)
+    const allowance = written && mat.material === 'FH' ? FH_ALLOWANCE_MM : 0;
+    const cut = written && allowance ? withAllowance(written, zi!, allowance) : written;
     const stockKind: StockKind = eff?.kind ?? 'unknown';
     // the saw cuts the bar: its material decides the saw, the part's material when the bar's is unknown
     const sawMaterial = mapped(eff?.materials[0], matOpts) ?? mat.material;
@@ -112,6 +116,11 @@ export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions
     if (mat.unknownToken && status !== 'elsewhere') item.unknownToken = mat.unknownToken;
     if (mat.conflict) item.conflict = mat.conflict;
     if (cutSource) item.cutSource = cutSource;
+    if (zi !== undefined) item.zi = zi;
+    if (allowance && written) {
+      item.written = written;
+      item.allowance = allowance;
+    }
     if (alert) {
       item.alert = { kind: alert.kind, text: alert.text };
       if (alert.replacementStock) item.alert.replacementStock = alert.replacementStock;

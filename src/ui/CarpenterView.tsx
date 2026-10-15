@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, Check, ChevronRight, Download, Hammer, Plus, ScanLine, X } from 'lucide-react';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { formatDuration } from '../core/calendar';
-import { STEP_LABELS, buildCutLine, type CutLine, type CutStepRule, type CutStepType, type LinePart, type LineStep, type LineStrip } from '../core/carpenter/cutLine';
+import { STEP_LABELS, buildCutLine, sameLength, scanOrder, scanText, sizeLines, sizeText, type CutLine, type CutStepRule, type CutStepType, type LineStep } from '../core/carpenter/cutLine';
 import { buildCutItems } from '../core/carpenter/items';
 import { downloadCutLine } from '../core/export';
 import { DEMO, DEMO_BLOCKED } from '../lib/demoMode';
@@ -33,13 +33,6 @@ function saveJson(key: string, v: unknown) {
   } catch {
     /* works without remembering */
   }
-}
-
-/** Every part of the line in cutting order (what the carpenter cuts, and later scans, one after another). */
-function inOrder(line: CutLine): Array<{ step: LineStep; strip: LineStrip; z: number; material: string; part: LinePart }> {
-  const out: Array<{ step: LineStep; strip: LineStrip; z: number; material: string; part: LinePart }> = [];
-  for (const step of line.steps) for (const m of step.materials) for (const b of m.boards) for (const strip of b.strips) for (const part of strip.parts) out.push({ step, strip, z: b.z, material: m.material, part });
-  return out;
 }
 
 type Tab = 'line' | 'files' | 'questions' | 'other';
@@ -86,14 +79,16 @@ export function CarpenterView() {
     );
   }, [items, rules, producing, urgent, cs]);
 
-  const order = useMemo(() => (line ? inOrder(line) : []), [line]);
-  const scanList = useMemo(
-    () =>
-      order
-        .map(o => [o.part.item.part.workOrder ?? '', o.part.item.part.materialNr ?? '', o.part.item.qty, o.material, o.part.item.cut?.join(' x ') ?? '', o.part.item.part.partName ?? ''].join('\t'))
-        .join('\n'),
-    [order],
-  );
+  // the printed sheet's numbered lines (one per size), and each line's number by its parts
+  const lines = useMemo(() => (line ? sizeLines(line) : []), [line]);
+  const lineNo = useMemo(() => {
+    const m = new Map<string, number>();
+    for (const l of lines) for (const p of l.parts) m.set(p.item.id, l.no);
+    return m;
+  }, [lines]);
+  const [onlyTicked, setOnlyTicked] = useState(false);
+  const scan = useMemo(() => (line ? scanOrder(line, onlyTicked ? it => ticks.has(it.id) : undefined) : []), [line, onlyTicked, ticks]);
+  const scanList = useMemo(() => scanText(scan), [scan]);
 
   if (!line) {
     return <Empty>No carpenter list loaded. Export the carpenter list from the website (Excel button) and import it here like the workload.</Empty>;
@@ -112,10 +107,9 @@ export function CarpenterView() {
 
   const t = line.totals;
   const lo = line.listOrder;
-  const doneQty = order.reduce((s, o) => s + (ticks.has(o.part.item.id) ? o.part.item.qty : 0), 0);
-  const next = order.find(o => !ticks.has(o.part.item.id));
-  // the same part of the same strip is one row on screen: show its whole quantity
-  const nextQty = next ? mergeSame(next.strip.parts).find(g => g.ids.includes(next.part.item.id))!.qty : 0;
+  const doneQty = lines.reduce((s, l) => s + l.parts.reduce((a, p) => a + (ticks.has(p.item.id) ? p.item.qty : 0), 0), 0);
+  const tickedParts = lines.reduce((s, l) => s + l.parts.filter(p => ticks.has(p.item.id)).length, 0);
+  const next = lines.find(l => l.parts.some(p => !ticks.has(p.item.id)));
   const others = items.filter(i => i.status === 'elsewhere' || i.status === 'blocked' || i.status === 'not_ready');
 
   return (
@@ -152,13 +146,16 @@ export function CarpenterView() {
         {next && (
           <div className="mt-4 flex flex-wrap items-center gap-x-4 gap-y-1 rounded-xl border border-blue-700/60 bg-blue-950/30 px-4 py-3">
             <span className="text-[11px] font-semibold uppercase tracking-wide text-blue-300">Next</span>
-            <span className="flex items-center gap-2 text-sm text-slate-300">
-              <MaterialBadge material={next.material} /> board <b className="mono text-white">Z {next.z}</b> · strip <b className="mono text-white">{next.strip.width} mm</b>
+            <span className="mono rounded-md bg-slate-800 px-1.5 py-0.5 text-xs font-semibold text-slate-300" title="Line number on the printed sheet">
+              #{next.no}
             </span>
+            <MaterialBadge material={next.material} />
             <span className="text-lg text-white">
-              cut <b className="mono">{next.part.length} mm</b> <span className="mono text-slate-300">×{nextQty}</span>
+              <b className="mono">{sizeText(next.length, next.width, next.z, ' × ')}</b> <span className="mono text-slate-300">×{next.qty}</span>
             </span>
-            <span className="text-xs text-slate-400">{next.part.item.part.partName}</span>
+            <span className="text-xs text-slate-400">
+              board Z {next.z} · strip {next.width} mm · cut {next.length} mm{next.material === 'FH' ? ' · +3 mm included' : ''}
+            </span>
           </div>
         )}
       </div>
@@ -181,7 +178,7 @@ export function CarpenterView() {
           <StepEditor rules={rules} setRules={setRules} />
           <div className="space-y-3">
             {line.steps.map((st, i) => (
-              <StepSection key={`${st.title}-${i}`} step={st} defaultOpen={i === 0} ticks={ticks} onTick={toggle} />
+              <StepSection key={`${st.title}-${i}`} step={st} defaultOpen={i === 0} ticks={ticks} lineNo={lineNo} onTick={toggle} />
             ))}
           </div>
           <details className="rounded-xl border border-slate-800 bg-slate-900/50 px-4 py-3 text-xs text-slate-400">
@@ -189,11 +186,23 @@ export function CarpenterView() {
               <ScanLine className="h-4 w-4" /> Scan the cut parts on the website, in this order
             </summary>
             <ol className="mt-2 list-decimal space-y-0.5 pl-5">
+              <li>The carpenter cuts from the printed Excel (one numbered line per size) and puts the cut parts together.</li>
               <li>Open the carpenter list on the website and run the shop helper (Scripts button at the top, or the box below).</li>
-              <li>Copy this list and paste it into the helper's "Scan" box, then press "Start scanning".</li>
-              <li>For each part the helper finds the row and presses Finish; you type the box code and press OK, it goes on with the next part.</li>
+              <li>Copy this list into the helper's "Scan" box and press "Start scanning". It goes material by material, the size with most pieces first.</li>
+              <li>For each part the helper says the material, the size, the sheet line and how many pieces go in the box, and picks the material. He types the box code and presses OK.</li>
+              <li>A size he does not have yet: Cancel, then "Skip this size".</li>
             </ol>
-            <CopyBox text={scanList} label={`Scan order (${order.length} parts)`} rows={3} />
+            <div className="mt-2 flex flex-wrap items-center gap-2">
+              <Segmented<'all' | 'ticked'>
+                value={onlyTicked ? 'ticked' : 'all'}
+                onChange={v => setOnlyTicked(v === 'ticked')}
+                options={[
+                  { value: 'all', label: 'Every part of the line' },
+                  { value: 'ticked', label: `Only ticked as cut (${tickedParts})` },
+                ]}
+              />
+            </div>
+            <CopyBox text={scanList} label={`Scan list (${scan.length} parts)`} rows={3} />
             <CopyBox text={HELPER_CODE} label="Shop helper script (also refreshes the carpenter list)" rows={2} />
           </details>
         </>
@@ -285,22 +294,20 @@ function IconBtn({ children, ...rest }: React.ButtonHTMLAttributes<HTMLButtonEle
   );
 }
 
-/** The same part (same length and drawing) in one strip is shown once, with its total quantity. */
-function mergeSame(parts: LinePart[]): Array<{ length: number; qty: number; ids: string[]; parts: LinePart[] }> {
-  const map = new Map<string, { length: number; qty: number; ids: string[]; parts: LinePart[] }>();
-  for (const p of parts) {
-    const k = `${p.length}|${p.item.part.materialNr || p.item.part.partName || p.item.id}`;
-    let g = map.get(k);
-    if (!g) map.set(k, (g = { length: p.length, qty: 0, ids: [], parts: [] }));
-    g.qty += p.item.qty;
-    g.ids.push(p.item.id);
-    g.parts.push(p);
-  }
-  return [...map.values()];
-}
-
 /** One step: one line when closed; open, each material is a card with its boards, strips and the lengths to cut. */
-const StepSection = memo(function StepSection({ step, defaultOpen, ticks, onTick }: { step: LineStep; defaultOpen: boolean; ticks: Set<string>; onTick: (ids: string[], on: boolean) => void }) {
+const StepSection = memo(function StepSection({
+  step,
+  defaultOpen,
+  ticks,
+  lineNo,
+  onTick,
+}: {
+  step: LineStep;
+  defaultOpen: boolean;
+  ticks: Set<string>;
+  lineNo: Map<string, number>;
+  onTick: (ids: string[], on: boolean) => void;
+}) {
   const [open, setOpen] = useState(defaultOpen);
   return (
     <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-950">
@@ -334,7 +341,9 @@ const StepSection = memo(function StepSection({ step, defaultOpen, ticks, onTick
                 <div className="rounded-xl border border-slate-800 bg-slate-900/40" style={{ borderLeft: `4px solid ${color}` }}>
                   <div className="flex items-baseline gap-2 px-4 pt-3">
                     <span className="text-lg font-semibold text-white">{m.material}</span>
-                    <span className="text-xs text-slate-400">{m.qty} pcs</span>
+                    <span className="text-xs text-slate-400">
+                      {m.qty} pcs{m.material === 'FH' && ' · sizes include +3 mm (not Z)'}
+                    </span>
                   </div>
                   <div className="space-y-2 p-3">
                     {m.boards.map(b => (
@@ -354,16 +363,18 @@ const StepSection = memo(function StepSection({ step, defaultOpen, ticks, onTick
                                 </span>
                               </div>
                               <div className="flex flex-wrap gap-1.5">
-                                {mergeSame(s.parts).map(g => {
-                                  const done = g.ids.every(id => ticks.has(id));
-                                  const first = g.parts[0].item;
+                                {sameLength(s.parts).map(g => {
+                                  const ids = g.parts.map(p => p.item.id);
+                                  const done = ids.every(id => ticks.has(id));
+                                  const names = [...new Set(g.parts.map(p => p.item.part.partName ?? p.item.part.text ?? '').filter(Boolean))];
                                   const alert = g.parts.find(p => p.item.alert)?.item.alert;
+                                  const first = g.parts[0].item;
                                   return (
                                     <button
                                       type="button"
-                                      key={g.ids[0]}
-                                      onClick={() => onTick(g.ids, !done)}
-                                      title={`${first.part.partName ?? ''}\nWork orders: ${g.parts.map(p => p.item.part.workOrder).join(', ')}\nMaterialNr: ${first.part.materialNr ?? ''}${alert ? `\n⚠ ${alert.text}` : ''}`}
+                                      key={ids[0]}
+                                      onClick={() => onTick(ids, !done)}
+                                      title={`Line #${lineNo.get(ids[0]) ?? ''} · ${sizeText(g.length, s.width, b.z, ' × ')} mm${first.allowance ? ` (drawing ${first.written!.join(' × ')}, +${first.allowance} mm)` : ''}\n${names.join('\n')}\nWork orders: ${g.parts.map(p => p.item.part.workOrder).join(', ')}${alert ? `\n⚠ ${alert.text}` : ''}`}
                                       className={`flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left transition-colors ${
                                         done ? 'border-emerald-800 bg-emerald-950/40 text-emerald-300/70' : 'border-slate-700 bg-slate-900 hover:border-slate-500'
                                       }`}
@@ -371,10 +382,12 @@ const StepSection = memo(function StepSection({ step, defaultOpen, ticks, onTick
                                       <span className={`flex h-4 w-4 items-center justify-center rounded border ${done ? 'border-emerald-500 bg-emerald-600' : 'border-slate-600'}`}>
                                         {done && <Check className="h-3 w-3 text-white" />}
                                       </span>
+                                      <span className="mono text-[10px] text-slate-500">#{lineNo.get(ids[0])}</span>
                                       <span className={`mono text-sm font-semibold ${done ? 'line-through' : 'text-white'}`}>{g.length} mm</span>
                                       <span className="mono text-sm text-slate-300">×{g.qty}</span>
                                       <span className="max-w-[11rem] truncate text-[11px] text-slate-500">
-                                        {first.part.partName ?? ''}
+                                        {names[0] ?? ''}
+                                        {names.length > 1 && ` +${names.length - 1}`}
                                         {alert && <span className="text-rose-300"> ⚠</span>}
                                       </span>
                                     </button>

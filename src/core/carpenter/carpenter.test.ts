@@ -4,7 +4,7 @@ import { liteOf } from '../../ui/ScriptsModal';
 import { defaultSettings } from '../defaults';
 import type { CarpenterPart } from '../types';
 import { buildCutItems } from './items';
-import { buildCutLine } from './cutLine';
+import { buildCutLine, scanOrder, scanText, sizeLines } from './cutLine';
 
 const part = (mo: string, wo: string, measure: string, desc: string): CarpenterPart => ({
   masterOrder: mo, workOrder: wo, measure, descriptionDe: desc, qty: 1, cuttedStatus: false, carpenterStatus: false, hasNc: true,
@@ -34,11 +34,42 @@ describe('carpenter cut list', () => {
     expect(new Set(all).size).toBe(4);
     const fh = line.steps[0].materials.find(m => m.material === 'FH')!;
     expect(fh.boards.map(b => b.z)).toEqual([40]);
-    expect(fh.boards[0].strips.map(x => x.width)).toEqual([100]); // 100x150 and 100x50 share the 100 mm strip
+    expect(fh.boards[0].strips.map(x => x.width)).toEqual([103]); // 100x150 and 100x50 (+3 mm) share the 103 mm strip
     const prod = buildCutLine(items, [{ id: 'p', type: 'in_production', value: '', material: 'MS' }], { inProduction: mo => mo === 'B', minutes: s.carpenter });
     expect(prod.steps[0].title).toBe('Boxes in production');
     expect(prod.steps[0].materials.map(m => m.material)).toEqual(['MS', 'FH']);
     expect(prod.totals.bladeChanges).toBeLessThanOrEqual(2);
+  });
+  it('saws FH 3 mm bigger on the two sizes that are not Z, other materials as written', () => {
+    expect(items[0].cut).toEqual([103, 153, 40]);
+    expect(items[0].written).toEqual([100, 150, 40]);
+    expect(items[0].allowance).toBe(3);
+    expect(items[3].cut).toEqual([103, 53, 40]);
+    expect(items[2].cut).toEqual([24, 22, 38]);
+    expect(items[2].allowance).toBeUndefined();
+    // Z is the board's thickness even when it is not the smallest size
+    const [thin] = buildCutItems([part('C', '9', 'ZUSATZPLATTE FH/2310117/20X28X10', '103434 - FH8221 20x1000x1000 B1400')], { settings: s.carpenter });
+    expect(thin.cut).toEqual([20, 31, 13]);
+  });
+  it('numbers one sheet line per size and scans material by material, the size with most pieces first', () => {
+    const more = [
+      ...parts,
+      part('C', '5', 'TOP PLATE FH/2572895/100X50X40', '103314 - FH8221 40x1000x1000mm  B1409'),
+      part('D', '6', 'TOP PLATE FH/2572896/100X50X40', '103314 - FH8221 40x1000x1000mm  B1409'),
+    ];
+    const its = buildCutItems(more, { settings: s.carpenter });
+    const line = buildCutLine(its, [], { inProduction: () => false, minutes: s.carpenter });
+    const lines = sizeLines(line);
+    expect(lines.map(l => l.no)).toEqual(lines.map((_, i) => i + 1));
+    // three drawings of 100x50 FH are one line of 3
+    const small = lines.find(l => l.material === 'FH' && l.length === 53)!;
+    expect(small.qty).toBe(3);
+    const order = scanOrder(line);
+    expect(order.map(e => e.item.part.workOrder)).toEqual(['4', '5', '6', '1', '2', '3']);
+    expect(order[0].size).toBe('103 x 53 x 40');
+    expect(order[0].lines).toEqual([small.no]);
+    expect(scanText(order).split('\n')[0].split('\t')).toEqual(['4', '', '1', 'FH', '103 x 53 x 40', `#${small.no}`, '']);
+    expect(scanOrder(line, it => it.part.workOrder === '2').map(e => e.item.part.workOrder)).toEqual(['2']);
   });
   it('bookmark version of the shop helper still parses', () => {
     expect(() => new Function(liteOf(helper))).not.toThrow();

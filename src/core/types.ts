@@ -282,9 +282,14 @@ export interface CutItem {
   stockKind: StockKind;
   /** smallest stock dimension (plate thickness) when known */
   thickness: number | null;
-  /** cut size as written (mm) */
+  /** the size the carpenter saws (mm): the written size, plus the FH allowance on the two sizes that are not Z */
   cut: [number, number, number] | null;
   cutSource?: string;
+  /** which of the three sizes is the board thickness Z */
+  zi?: number;
+  /** FH: the written size before the allowance was added, and the allowance (mm) */
+  written?: [number, number, number];
+  allowance?: number;
   /** "5 ST. aus Roht." -> 5 parts from one sawn blank; else 1 */
   piecesPerBlank: number;
   /** filled by planCuts per stock group: the non-thickness dim shared by most parts of that stock */

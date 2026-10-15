@@ -30,7 +30,7 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
       <div className="space-y-4 text-xs text-slate-300">
         <ol className="list-decimal space-y-1 pl-5 text-slate-400">
           <li>
-            On CNC Workload: export the plan from this app (Excel), open sheet <b className="text-slate-200">Plan_All</b>, copy columns A to D.
+            On CNC Workload: press <b className="text-slate-200">Copy</b> at the top of this app (next to Export): the plan is on the clipboard, no Excel needed.
           </li>
           <li>Open the website page, press F12, open Console, paste the script and press Enter (or click the bookmark below).</li>
           <li>
@@ -41,7 +41,7 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
           </li>
           <li>
             Scanning the cut parts: in this app open Carpenter → "Scan the cut parts", copy the scan order, paste it into the script's <b className="text-slate-200">Scan</b> box on the carpenter list and press{' '}
-            <b className="text-slate-200">Start scanning</b>. For each part it searches the material number, presses Finish on the right work order and waits: type the box code and press OK.
+            <b className="text-slate-200">Start scanning</b>. It goes material by material, the size with most pieces first. For each part it shows the size, the line of the printed sheet and how many pieces go in the box, presses Finish on the right work order, picks the material and waits: type the box code and press OK.
           </li>
         </ol>
         <CopyBox label="Full script (console)" text={HELPER_CODE} rows={6} />

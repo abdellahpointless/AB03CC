@@ -287,13 +287,14 @@
           <button data-a="describe" class="cnc-b" title="Copies the HTML of the first row, for me to fit the script">Describe row</button>
           <button data-a="resume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue</button>
         </div>
-        <div style="border-top:1px solid #334155;padding-top:8px"><b>Scan the cut parts</b> <span style="color:#94a3b8">in the planner's order (Carpenter tab → "Scan the cut parts" → copy the scan order)</span></div>
-        <textarea data-scan rows="3" placeholder="Paste the scan order here (Work Order and MaterialNr on each line)" style="width:100%;box-sizing:border-box;background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;font:11px ui-monospace,monospace"></textarea>
+        <div style="border-top:1px solid #334155;padding-top:8px"><b>Scan the cut parts</b> <span style="color:#94a3b8">material by material, the size with most pieces first (planner: Carpenter tab → "Scan the cut parts" → copy the scan list)</span></div>
+        <textarea data-scan rows="3" placeholder="Paste the scan list here (Work Order, MaterialNr, Qty, Material, Size, Line on each line)" style="width:100%;box-sizing:border-box;background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;font:11px ui-monospace,monospace"></textarea>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <button data-a="scan" class="cnc-b" style="background:#15803d;border-color:#22c55e;font-weight:600">Start scanning</button>
           <button data-a="scanresume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue scanning</button>
           <button data-a="again" class="cnc-b" style="display:none">Open it again</button>
           <button data-a="skip" class="cnc-b" style="display:none">Skip this part</button>
+          <button data-a="skipsize" class="cnc-b" style="display:none">Skip this size</button>
         </div>
         <div data-now style="display:none;background:#1e3a8a;border:1px solid #3b82f6;border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.4"></div>
         <pre data-log style="margin:0;white-space:pre-wrap;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:6px;max-height:220px;overflow:auto;font:11px ui-monospace,monospace"></pre>
@@ -452,7 +453,7 @@
       }
     };
     /**
-     * Lines of the planner's scan order: Work Order, MaterialNr, Qty, Material, Cut size, Part (columns A to F of its
+     * Lines of the planner's scan list: Work Order, MaterialNr, Qty, Material, Size, Line, Part (columns A to F of its
      * "Scan order" sheet, or the list copied from the app). Each field is recognised by its look, so the order and
      * extra columns do not matter.
      */
@@ -467,16 +468,41 @@
         const qtyCell = cells.find(c => /^[x×]?\d{1,3}$/i.test(c));
         const material = cells.find(c => MATERIALS.test(c)) || '';
         const size = cells.find(c => /\d\s*[x×*]\s*\d/i.test(c) && !/^[136]\d{11}$/.test(c)) || '';
-        const used = new Set([wo, mat, qtyCell, material, size]);
+        const lineCell = cells.find(c => /^#\d+([,\s]+#\d+)*$/.test(c)) || '';
+        const used = new Set([wo, mat, qtyCell, material, size, lineCell]);
         const part = cells.find(c => !used.has(c) && /[a-z]/i.test(c) && !/^\d+\.\s/.test(c)) || '';
-        out.push({ wo, mat, qty: qtyCell ? qtyCell.replace(/^[x×]/i, '') : '', material: material.toUpperCase(), size: size.replace(/\s*[x×*]\s*/gi, ' × '), part });
+        out.push({ wo, mat, qty: qtyCell ? qtyCell.replace(/^[x×]/i, '') : '', material: material.toUpperCase(), size: size.replace(/\s*[x×*]\s*/gi, ' × '), line: lineCell.replace(/[,\s]+/g, ' '), part });
       }
-      return out;
+      return sizeGroups(out);
+    }
+    /**
+     * The parts of one size (same material and size) follow each other in the list: the carpenter takes that size out
+     * of his box of cut parts once and shares it out. Each part learns its size's place, total and boxes.
+     */
+    function sizeGroups(list) {
+      const keyOf = p => (p.material && p.size ? `${p.material}|${p.size}` : `#${p.wo}`);
+      const groups = [];
+      for (const p of list) {
+        const k = keyOf(p);
+        let g = groups[groups.length - 1];
+        if (!g || g.k !== k) groups.push((g = { k, material: p.material, parts: [] }));
+        g.parts.push(p);
+      }
+      const perMat = {};
+      for (const g of groups) {
+        perMat[g.material] = (perMat[g.material] || 0) + 1;
+        g.sizeNo = perMat[g.material];
+      }
+      groups.forEach((g, gi) => {
+        const total = g.parts.reduce((a, p) => a + (Number(p.qty) || 0), 0);
+        g.parts.forEach((p, k) => Object.assign(p, { g: gi, sizeNo: g.sizeNo, sizes: perMat[g.material], total, boxes: g.parts.length, boxNo: k + 1 }));
+      });
+      return list;
     }
     const esc = t => String(t).replace(/[&<>"]/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[ch]);
     /** the big facts the carpenter checks: quantity, material, size */
     const factsHtml = p =>
-      `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;margin-top:2px">${p.qty ? `<span>Qty <b style="font-size:20px">${esc(p.qty)}</b></span>` : ''}${p.material ? `<span>Material <b style="font-size:18px">${esc(p.material)}</b></span>` : ''}${p.size ? `<span>Size <b style="font-size:16px">${esc(p.size)}</b></span>` : ''}</div>`;
+      `<div style="display:flex;gap:14px;flex-wrap:wrap;align-items:baseline;margin-top:2px">${p.qty ? `<span>Qty <b style="font-size:20px">${esc(p.qty)}</b></span>` : ''}${p.material ? `<span>Material <b style="font-size:18px">${esc(p.material)}</b></span>` : ''}${p.size ? `<span>Size <b style="font-size:16px">${esc(p.size)}</b></span>` : ''}${p.line ? `<span>Line <b>${esc(p.line)}</b></span>` : ''}</div>`;
     const nowEl = panel.querySelector('[data-now]');
     const showNow = html => {
       nowEl.style.display = html ? '' : 'none';
@@ -562,6 +588,23 @@
       return true;
     }
 
+    /** "· FH size 3 of 9 · box 2 of 4" */
+    const sizeLine = p => (p.sizes ? ` · ${esc(p.material)} size ${p.sizeNo} of ${p.sizes}${p.boxes > 1 ? ` · box ${p.boxNo} of ${p.boxes}` : ''}` : '');
+    /** what the carpenter reads in the website's box: how many pieces, which size, which line of his sheet */
+    function noteHtml(st, p, facts) {
+      const n = facts.qty;
+      const newSize = p.boxNo === 1 && p.boxes > 1;
+      return `<div style="font-size:11px">Part ${st.i + 1} of ${st.list.length} · ${esc(p.wo)}${p.part ? ` · ${esc(p.part)}` : ''}</div>${
+        newSize && p.total
+          ? `<div style="margin:4px 0;padding:4px 8px;border-radius:5px;background:#fef3c7;color:#92400e;font-weight:600">New size: take the ${p.total} pieces of ${esc(facts.size || '')} ${esc(facts.material || '')} out of your box. They go into ${p.boxes} boxes.</div>`
+          : ''
+      }${n ? `<div style="font-size:18px;margin-top:2px">Put <b style="font-size:28px">${esc(n)}</b> piece${n === '1' ? '' : 's'} in this box</div>` : ''}<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:2px;font-size:15px">${
+        facts.size ? `<span>Size <b>${esc(facts.size)}</b></span>` : ''
+      }${p.line ? `<span>Sheet line <b>${esc(p.line)}</b></span>` : ''}<span data-mat>${facts.material ? `Material ${esc(facts.material)}…` : ''}</span></div>${
+        p.sizes ? `<div style="font-size:12px;color:#334155;margin-top:2px">${esc(p.material)} size ${p.sizeNo} of ${p.sizes}${p.boxes > 1 ? ` · box ${p.boxNo} of ${p.boxes} of this size${p.total ? ` (${p.total} pieces)` : ''}` : ''}</div>` : ''
+      }<div style="margin-top:4px;font-weight:600">Type the box code, then OK · no such piece? Cancel, then "Skip this ${p.boxes > 1 ? 'size' : 'part'}"</div>`;
+    }
+
     async function scan(resume) {
       columns();
       let st = resume ? loadScan() : null;
@@ -569,13 +612,14 @@
         const list = parseScan(panel.querySelector('[data-scan]').value);
         if (!list.length) throw new Error('Paste the scan order first (from the planner: Carpenter tab → Scan the cut parts).');
         st = { list, i: 0, done: [], skipped: [] };
-        log(`Scanning ${list.length} parts in the planner's order. For each one: type the box code in the "Choice Box" and press OK.`, 'ok');
+        const sizes = list.length ? list[list.length - 1].g + 1 : 0;
+        log(`Scanning ${list.length} parts${sizes && list[0].sizes ? ` in ${sizes} sizes` : ''}. For each one: put the pieces it says in the box, type the box code in the "Choice Box" and press OK.`, 'ok');
       }
       saveScan(st);
       show('scanresume', false);
       while (st.i < st.list.length && !stopNow) {
         const p = st.list[st.i];
-        const head = `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}</div><div><b style="font-size:15px">${esc(p.wo)}</b>${p.mat ? ` · ${esc(p.mat)}` : ''}${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(p)}`;
+        const head = `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}${sizeLine(p)}</div><div><b style="font-size:15px">${esc(p.wo)}</b>${p.mat ? ` · ${esc(p.mat)}` : ''}${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(p)}`;
         showNow(head + '<div style="color:#93c5fd">Finding it in the list…</div>');
         await setSearch(p.mat || p.wo);
         let row = await waitFor(() => vp() && [...vp().querySelectorAll('.slick-row')].find(x => woOf(x) === p.wo), 4000, 150);
@@ -623,12 +667,9 @@
         const note = document.createElement('div');
         note.id = 'cnc-scan-note';
         note.style.cssText = 'margin:6px 8px;padding:8px 10px;border-radius:6px;background:#dbeafe;color:#1e3a8a;font:13px system-ui,sans-serif;line-height:1.35';
-        note.innerHTML = `<div style="font-size:11px">Part ${st.i + 1} of ${st.list.length} · ${esc(p.wo)}${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(p)}<div style="margin-top:4px;font-weight:600">Type the box code, then OK</div>`;
-        (dlg.querySelector('.ui-dialog-content') || dlg.querySelector('.ui-dialog-titlebar')?.nextElementSibling || dlg).prepend(note);
         // the quantity is what the carpenter has to put in the box; the material is chosen for him
-        note.innerHTML = `<div style="font-size:11px">Part ${st.i + 1} of ${st.list.length} · ${esc(p.wo)}${p.part ? ` · ${esc(p.part)}` : ''}</div>${
-          facts.qty ? `<div style="font-size:18px;margin-top:2px">Put <b style="font-size:26px">${esc(facts.qty)}</b> piece${facts.qty === '1' ? '' : 's'} in the box</div>` : ''
-        }<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:2px">${facts.size ? `<span>Size <b>${esc(facts.size)}</b></span>` : ''}<span data-mat>${facts.material ? `Material ${esc(facts.material)}…` : ''}</span></div><div style="margin-top:4px;font-weight:600">Type the box code, then OK</div>`;
+        note.innerHTML = noteHtml(st, p, facts);
+        (dlg.querySelector('.ui-dialog-content') || dlg.querySelector('.ui-dialog-titlebar')?.nextElementSibling || dlg).prepend(note);
         if (input) input.focus();
         if (facts.material) {
           const okMat = await pickMaterial(dlg, facts.material);
@@ -637,7 +678,7 @@
           if (input && document.activeElement !== input && !input.value) input.focus();
         }
         showNow(
-          `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}</div><div><b style="font-size:15px">${esc(p.wo)}</b>${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(facts)}<div style="margin-top:4px;font-size:14px;color:#fde68a"><b>Type the box code in the box and press OK</b></div>`,
+          `<div style="font-size:11px;color:#bfdbfe">Part ${st.i + 1} of ${st.list.length}${sizeLine(p)}</div><div><b style="font-size:15px">${esc(p.wo)}</b>${p.part ? ` · ${esc(p.part)}` : ''}</div>${factsHtml(facts)}<div style="margin-top:4px;font-size:14px;color:#fde68a"><b>Type the box code in the box and press OK</b></div>`,
         );
         while (dlg.isConnected && visible(dlg) && !stopNow) {
           if (input && input.value) typed = input.value;
@@ -659,16 +700,24 @@
         }
         // closed without OK: ask what to do
         log(`${p.wo}: the box was closed without OK.`, 'warn');
-        showNow(head + '<div style="margin-top:4px;color:#fde68a">The box was closed without OK. Open it again, or skip this part?</div>');
+        const many = p.boxes > 1 && p.boxNo < p.boxes;
+        showNow(head + `<div style="margin-top:4px;color:#fde68a">The box was closed without OK. Open it again, skip this part${many ? ', or skip the whole size (no such pieces cut yet)' : ''}?</div>`);
         scanChoice = null;
         show('again', true);
         show('skip', true);
+        show('skipsize', many);
         while (!scanChoice && !stopNow) await sleep(150);
         show('again', false);
         show('skip', false);
+        show('skipsize', false);
         if (scanChoice === 'skip') {
           st.skipped.push(p.wo);
           st.i++;
+          saveScan(st);
+        } else if (scanChoice === 'skipsize') {
+          const from = st.i;
+          while (st.i < st.list.length && st.list[st.i].g === p.g) st.skipped.push(st.list[st.i++].wo);
+          log(`Skipped size ${p.size || ''} ${p.material || ''}: ${st.i - from} parts.`, 'warn');
           saveScan(st);
         }
       }
@@ -687,7 +736,7 @@
       if (busy) return;
       busy = true;
       stopNow = false;
-      panel.querySelectorAll('.cnc-b').forEach(b => !['stop', 'again', 'skip'].includes(b.getAttribute('data-a')) && (b.disabled = true));
+      panel.querySelectorAll('.cnc-b').forEach(b => !['stop', 'again', 'skip', 'skipsize'].includes(b.getAttribute('data-a')) && (b.disabled = true));
       try {
         await fn();
       } catch (e) {
@@ -709,7 +758,7 @@
       else if (a === 'stop') stopNow = true;
       else if (a === 'scan') guard(() => scan(false));
       else if (a === 'scanresume') guard(() => scan(true));
-      else if (a === 'again' || a === 'skip') scanChoice = a;
+      else if (a === 'again' || a === 'skip' || a === 'skipsize') scanChoice = a;
       else if (a === 'describe') {
         const v = vp();
         const r = v && [...v.querySelectorAll('.slick-row')].sort((x, y) => parseFloat(x.style.top) - parseFloat(y.style.top))[0];
@@ -744,7 +793,7 @@
       <b>CNC shop helper</b><span><button data-act="min" style="all:unset;cursor:pointer;padding:0 6px">–</button><button data-act="close" style="all:unset;cursor:pointer;padding:0 6px">✕</button></span>
     </div>
     <div data-body style="padding:10px;display:flex;flex-direction:column;gap:8px;overflow:auto">
-      <div style="color:#94a3b8">1. In the planner's Excel export, open sheet <b>Plan_All</b>, select columns <b>A to D</b> (Machine, Sequence, Box Code, Order Number), copy them, and paste here:</div>
+      <div style="color:#94a3b8">1. In the planner press <b>Copy</b> (next to Export), or copy columns <b>A to D</b> of sheet <b>Plan_All</b> in its Excel, and paste here:</div>
       <textarea data-plan rows="5" placeholder="Machine  Sequence  Box Code  Order Number …" style="width:100%;box-sizing:border-box;background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:6px;font:11px ui-monospace,monospace"></textarea>
       <div style="display:flex;gap:6px;align-items:center;flex-wrap:wrap">
         <span style="color:#94a3b8">2. Machine:</span><select data-machine style="background:#020617;color:#e2e8f0;border:1px solid #334155;border-radius:6px;padding:4px"></select>
@@ -1405,7 +1454,7 @@
     if (busy) return;
     if (!resume) {
       const machines = [...new Set(readPlan().map(p => p.machine))];
-      if (!machines.length) return log('Paste the plan first (columns A to D of Plan_All).', 'warn');
+      if (!machines.length) return log('Paste the plan first (the Copy button in the planner, or columns A to D of Plan_All).', 'warn');
       const btn = $('[data-act=all]');
       if (Date.now() - armed > 10000) {
         armed = Date.now();
@@ -1424,7 +1473,7 @@
 
   async function runAll(resume) {
     const machines = [...new Set(readPlan().map(p => p.machine))];
-    if (!machines.length) throw new Error('Paste the plan first (columns A to D of Plan_All).');
+    if (!machines.length) throw new Error('Paste the plan first (the Copy button in the planner, or columns A to D of Plan_All).');
     let st = resume ? stored().auto : null;
     if (!st) st = { phase: 'send', i: 0, machines };
     auto = true;

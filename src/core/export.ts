@@ -107,6 +107,36 @@ interface ViewerWindow {
   claude?: { use?: (name: string) => Promise<unknown> };
 }
 
+/** Columns A to D of Plan_All (Machine, Sequence, Box Code, Order Number) as Excel puts them on the clipboard: what the shop helper reads. */
+export function planForHelper(plan: PlanResult): { text: string; rows: number } {
+  const lines = ['Machine\tSequence\tBox Code\tOrder Number'];
+  for (const [machine, items] of Object.entries(plan.queues)) for (const it of items) lines.push([machine, it.sequence, it.job.boxCode ?? '', it.job.orderNumber ?? ''].join('\t'));
+  return { text: lines.join('\r\n') + '\r\n', rows: lines.length - 1 };
+}
+
+/** Puts text on the clipboard; falls back to a hidden text field where the clipboard API is not allowed. */
+export async function copyText(text: string): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    ta.setAttribute('readonly', '');
+    ta.style.cssText = 'position:fixed;top:0;left:0;width:1px;height:1px;opacity:0';
+    document.body.appendChild(ta);
+    ta.select();
+    let ok = false;
+    try {
+      ok = document.execCommand('copy');
+    } catch {
+      ok = false;
+    }
+    ta.remove();
+    return ok;
+  }
+}
+
 export type ExportOutcome = 'saved' | 'declined' | 'failed';
 
 /** Saves the plan as an Excel file: through the viewer's save prompt when hosted in one, as a normal download otherwise. */

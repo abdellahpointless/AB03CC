@@ -1,4 +1,5 @@
 import {
+  ClipboardCopy,
   Activity,
   AlertTriangle,
   BarChart3,
@@ -44,6 +45,7 @@ export function Header({
   onSettings,
   onPrint,
   onExport,
+  onCopyPlan,
   onHelp,
   onScripts,
   onReport,
@@ -55,6 +57,7 @@ export function Header({
   onSettings: () => void;
   onPrint: () => void;
   onExport: () => void;
+  onCopyPlan: () => void;
   onHelp: () => void;
   onScripts: () => void;
   onReport: () => void;
@@ -149,6 +152,9 @@ export function Header({
               </Button>
               <Button onClick={onExport} disabled={improving} title={improving ? 'Available when the optimizer has finished' : 'Export the plan to Excel'}>
                 <Download className="h-3.5 w-3.5 text-sky-400" /> <span className="hidden 2xl:inline">Export</span>
+              </Button>
+              <Button onClick={onCopyPlan} disabled={improving} title={improving ? 'Available when the optimizer has finished' : 'Copy the plan for the shop helper (Machine, Sequence, Box Code, Order Number), like columns A to D of the Excel'}>
+                <ClipboardCopy className="h-3.5 w-3.5 text-sky-400" /> <span className="hidden 2xl:inline">Copy</span>
               </Button>
             </>
           )}

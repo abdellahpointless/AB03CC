@@ -204,3 +204,28 @@ export function piecesPerBlank(...texts: Array<string | undefined>): number {
   }
   return 1;
 }
+
+/** Which size is the board thickness Z: the one within 2 mm of the board, else the smallest. */
+export function zIndexOf(cut: Dims3, thickness: number | null): number {
+  if (thickness !== null) {
+    let best = Infinity;
+    let zi = -1;
+    cut.forEach((d, i) => {
+      const diff = Math.abs(d - thickness);
+      if (diff <= 2 && diff < best) {
+        best = diff;
+        zi = i;
+      }
+    });
+    if (zi >= 0) return zi;
+  }
+  return cut.indexOf(Math.min(...cut));
+}
+
+/** FH is sawn this much bigger on the two sizes that are not Z, so the CNC can square it before milling (the board's Z is right). */
+export const FH_ALLOWANCE_MM = 3;
+
+/** The size to saw: the allowance added to every size except Z. */
+export function withAllowance(cut: Dims3, zi: number, mm: number): Dims3 {
+  return cut.map((d, i) => (i === zi ? d : Math.round((d + mm) * 10) / 10)) as Dims3;
+}

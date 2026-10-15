@@ -1,4 +1,5 @@
 import type { CarpenterSettings, CutItem } from '../types';
+import { zIndexOf } from './dims';
 
 /**
  * The carpenter's cut line: the admin's steps in order (sales order, schedule, production date, boxes in production),
@@ -125,21 +126,9 @@ export function stepTitle(rule: CutStepRule): string {
 /** Z = the board thickness (else the smallest cut size); the other two sizes are the strip width and the length. */
 function zOf(it: CutItem): { z: number; rest: [number, number] } {
   const c = it.cut!;
-  const dims = [...c];
-  let zi = -1;
-  if (it.thickness !== null) {
-    let best = Infinity;
-    dims.forEach((d, i) => {
-      const diff = Math.abs(d - it.thickness!);
-      if (diff <= 2 && diff < best) {
-        best = diff;
-        zi = i;
-      }
-    });
-  }
-  if (zi < 0) zi = dims.indexOf(Math.min(...dims));
-  const rest = dims.filter((_, i) => i !== zi) as [number, number];
-  return { z: it.thickness ?? dims[zi], rest };
+  const zi = it.zi ?? zIndexOf(c, it.thickness);
+  const rest = c.filter((_, i) => i !== zi) as [number, number];
+  return { z: it.thickness ?? c[zi], rest };
 }
 
 const r1 = (v: number) => Math.round(v * 10) / 10;
@@ -286,4 +275,99 @@ function listOrderCounts(items: CutItem[], m: CutLineOptions['minutes']): LineCo
   }
   c.minutes = r1(c.minutes);
   return c;
+}
+
+/* ------------------------------------------------------------ the printed sheet and the scan order */
+
+/** One line of the printed sheet: one size of one strip, whatever drawings it is for, with the total to cut. */
+export interface SizeLine {
+  /** line number on the sheet (1, 2, 3 … top to bottom) */
+  no: number;
+  step: LineStep;
+  material: string;
+  z: number;
+  width: number;
+  length: number;
+  qty: number;
+  parts: LinePart[];
+}
+
+const fmt = (n: number) => String(Math.round(n * 10) / 10);
+/** "103 x 53 x 40": the two sawn sizes, longest first, then Z */
+export function sizeText(length: number, width: number, z: number, sep = ' x '): string {
+  const [a, b] = length >= width ? [length, width] : [width, length];
+  return [a, b, z].map(fmt).join(sep);
+}
+
+/** A strip's parts with the same length, together (first one first). */
+export function sameLength(parts: LinePart[]): Array<{ length: number; qty: number; parts: LinePart[] }> {
+  const map = new Map<number, { length: number; qty: number; parts: LinePart[] }>();
+  for (const p of parts) {
+    let g = map.get(p.length);
+    if (!g) map.set(p.length, (g = { length: p.length, qty: 0, parts: [] }));
+    g.qty += p.item.qty;
+    g.parts.push(p);
+  }
+  return [...map.values()];
+}
+
+/** The sheet's lines, numbered top to bottom in cutting order. */
+export function sizeLines(line: CutLine): SizeLine[] {
+  const out: SizeLine[] = [];
+  for (const step of line.steps)
+    for (const m of step.materials)
+      for (const b of m.boards)
+        for (const s of b.strips)
+          for (const g of sameLength(s.parts)) out.push({ no: out.length + 1, step, material: m.material, z: b.z, width: s.width, length: g.length, qty: g.qty, parts: g.parts });
+  return out;
+}
+
+/** One part to scan, with what the carpenter needs to know at the screen. */
+export interface ScanEntry {
+  item: CutItem;
+  material: string;
+  /** "103 x 53 x 40" */
+  size: string;
+  /** the sheet lines this size is on */
+  lines: number[];
+}
+
+/**
+ * The scan order: the parts as the carpenter takes them out of his box of cut parts. One material after the other
+ * (the one with most pieces first), and inside it one size after the other, the size with most pieces first; all the
+ * work orders of a size follow each other, so he picks that size once and shares it out over its boxes.
+ */
+export function scanOrder(line: CutLine, keep: (it: CutItem) => boolean = () => true): ScanEntry[] {
+  type Group = { material: string; size: string; qty: number; lines: number[]; first: number; parts: CutItem[] };
+  const groups = new Map<string, Group>();
+  for (const l of sizeLines(line))
+    for (const p of l.parts) {
+      if (!keep(p.item)) continue;
+      const size = sizeText(l.length, l.width, l.z);
+      const k = `${l.material}|${size}`;
+      let g = groups.get(k);
+      if (!g) groups.set(k, (g = { material: l.material, size, qty: 0, lines: [], first: l.no, parts: [] }));
+      g.qty += p.item.qty;
+      if (!g.lines.includes(l.no)) g.lines.push(l.no);
+      g.parts.push(p.item);
+    }
+  const matQty = new Map<string, { qty: number; first: number }>();
+  for (const g of groups.values()) {
+    const m = matQty.get(g.material);
+    if (!m) matQty.set(g.material, { qty: g.qty, first: g.first });
+    else m.qty += g.qty;
+  }
+  const list = [...groups.values()].sort((a, b) => {
+    const ma = matQty.get(a.material)!;
+    const mb = matQty.get(b.material)!;
+    return mb.qty - ma.qty || ma.first - mb.first || b.qty - a.qty || a.first - b.first;
+  });
+  return list.flatMap(g => g.parts.map(item => ({ item, material: g.material, size: g.size, lines: g.lines })));
+}
+
+/** The scan list as text for the shop helper: Work Order, MaterialNr, Qty, Material, Size, Line, Part (tab separated). */
+export function scanText(entries: ScanEntry[]): string {
+  return entries
+    .map(e => [e.item.part.workOrder ?? '', e.item.part.materialNr ?? '', e.item.qty, e.material, e.size, e.lines.map(n => `#${n}`).join(' '), e.item.part.partName ?? ''].join('\t'))
+    .join('\n');
 }

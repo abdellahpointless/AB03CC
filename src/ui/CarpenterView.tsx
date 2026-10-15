@@ -30,6 +30,7 @@ function loadJson<T>(key: string, fallback: T): T {
   }
 }
 function saveJson(key: string, v: unknown) {
+  if (DEMO) return; // the demo remembers nothing
   try {
     localStorage.setItem(key, JSON.stringify(v));
   } catch {

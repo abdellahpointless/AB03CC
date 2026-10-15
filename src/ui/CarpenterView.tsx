@@ -1,7 +1,7 @@
 import { ArrowLeft, ArrowRight, Check, ChevronRight, Download, Hammer, Plus, ScanLine, X } from 'lucide-react';
 import { memo, useEffect, useMemo, useState } from 'react';
 import { formatDuration } from '../core/calendar';
-import { STEP_LABELS, buildCutLine, sameLength, scanOrder, scanText, sizeLines, sizeText, type CutLine, type CutStepRule, type CutStepType, type LineStep } from '../core/carpenter/cutLine';
+import { STEP_LABELS, buildRounds, sameLength, scanOrder, scanText, sizeLines, sizeText, type CutLine, type CutStepRule, type CutStepType, type LineStep, type RoundLimit } from '../core/carpenter/cutLine';
 import { buildCutItems } from '../core/carpenter/items';
 import { downloadCutLine } from '../core/export';
 import { DEMO, DEMO_BLOCKED } from '../lib/demoMode';
@@ -18,6 +18,8 @@ const noZeros = (s: string | undefined) => (s ?? '').trim().replace(/^0+/, '');
 // the step line and the ticks live outside the planner settings: editing them never re-plans the CNC machines
 const STEPS_KEY = 'cnc-planner.v2.carpenterSteps';
 const TICKS_KEY = 'cnc-planner.v2.cutTicks';
+const ROUND_KEY = 'cnc-planner.v2.carpenterRound';
+const DEFAULT_ROUND: RoundLimit = { by: 'hours', value: 2 };
 const DEFAULT_STEPS: CutStepRule[] = [{ id: 'prod', type: 'in_production', value: '', material: '' }];
 function loadJson<T>(key: string, fallback: T): T {
   try {
@@ -39,13 +41,15 @@ type Tab = 'line' | 'files' | 'questions' | 'other';
 
 /** The carpenter's screen: the admin's step line, and the parts of each step grouped the way they are sawn. */
 export function CarpenterView() {
-  const { carpenterParts, carpenterFile, jobs, settings, notify } = useStore();
+  const { carpenterParts, carpenterFile, jobs, plan, settings, notify } = useStore();
   const [tab, setTab] = useState<Tab>('line');
   const [rules, setRules] = useState<CutStepRule[]>(() => loadJson(STEPS_KEY, DEFAULT_STEPS));
   const [ticks, setTicks] = useState<Set<string>>(() => new Set(loadJson<string[]>(TICKS_KEY, [])));
+  const [limit, setLimit] = useState<RoundLimit>(() => loadJson(ROUND_KEY, DEFAULT_ROUND));
   const cs = settings.carpenter;
 
   useEffect(() => saveJson(STEPS_KEY, rules), [rules]);
+  useEffect(() => saveJson(ROUND_KEY, limit), [limit]);
 
   const items = useMemo(() => {
     if (!carpenterParts.length) return [];
@@ -58,26 +62,30 @@ export function CarpenterView() {
     });
   }, [carpenterParts, jobs, cs.materialTokens, cs.doneWorkOrders, cs.sawGroups, settings.materialAliases]);
 
-  const producing = useMemo(() => new Set(jobs.map(j => noZeros(j.salesOrder)).filter(Boolean)), [jobs]);
+  // boxes in production = the sales orders the CNC plan makes (an End rule may leave some of the workload out)
+  const producing = useMemo(() => {
+    const planned = plan ? Object.values(plan.queues).flatMap(q => q.map(s => s.job)) : jobs;
+    return new Set(planned.map(j => noZeros(j.salesOrder)).filter(Boolean));
+  }, [plan, jobs]);
   const urgent = useMemo(() => settings.emergencies.filter(e => e.applied), [settings.emergencies]);
 
-  const line: CutLine | null = useMemo(() => {
-    if (!items.length) return null;
+  // the step's starting material is not used any more: each step simply keeps the blade that is on the saw
+  const stepRules = useMemo(() => rules.map(r => ({ ...r, material: '' })), [rules]);
+  const lineOpts = useMemo(() => {
     const so = new Map(items.map(i => [i.part.masterOrder, i.part]));
-    // the step's starting material is not used any more: each step simply keeps the blade that is on the saw
-    return buildCutLine(
-      items,
-      rules.map(r => ({ ...r, material: '' })),
-      {
-        inProduction: mo => producing.has(noZeros(so.get(mo)?.salesOrder)),
-        urgent: mo => {
-          const p = so.get(mo);
-          return !!p && urgent.some(e => noZeros(e.salesOrder) === noZeros(p.salesOrder) && (e.schedule === null || e.schedule === p.schedule));
-        },
-        minutes: cs,
+    return {
+      inProduction: (mo: string) => producing.has(noZeros(so.get(mo)?.salesOrder)),
+      urgent: (mo: string) => {
+        const p = so.get(mo);
+        return !!p && urgent.some(e => noZeros(e.salesOrder) === noZeros(p.salesOrder) && (e.schedule === null || e.schedule === p.schedule));
       },
-    );
-  }, [items, rules, producing, urgent, cs]);
+      minutes: cs,
+    };
+  }, [items, producing, urgent, cs]);
+  const line: CutLine | null = useMemo(() => (items.length ? buildRounds(items, stepRules, lineOpts, limit) : null), [items, stepRules, lineOpts, limit]);
+  const rounds = line ? line.steps.some(st => st.round) : false;
+  // what the same parts take in one long line, to show what the rounds cost
+  const longLine = useMemo(() => (rounds ? buildRounds(items, stepRules, lineOpts, { by: 'none', value: 0 }).totals.minutes : 0), [rounds, items, stepRules, lineOpts]);
 
   // the printed sheet's numbered lines (one per size), and each line's number by its parts
   const lines = useMemo(() => (line ? sizeLines(line) : []), [line]);
@@ -87,7 +95,11 @@ export function CarpenterView() {
     return m;
   }, [lines]);
   const [onlyTicked, setOnlyTicked] = useState(false);
-  const scan = useMemo(() => (line ? scanOrder(line, onlyTicked ? it => ticks.has(it.id) : undefined) : []), [line, onlyTicked, ticks]);
+  const [scanStep, setScanStep] = useState(0);
+  const scan = useMemo(
+    () => (line ? scanOrder(line, onlyTicked ? it => ticks.has(it.id) : undefined, scanStep ? st => st.index === scanStep : undefined) : []),
+    [line, onlyTicked, ticks, scanStep],
+  );
   const scanList = useMemo(() => scanText(scan), [scan]);
 
   if (!line) {
@@ -133,7 +145,11 @@ export function CarpenterView() {
         </div>
         <div className="mt-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
           <Big label="Pieces to cut" value={`${t.qty}`} hint={`${t.parts} parts`} />
-          <Big label="Cutting time" value={formatDuration(Math.round(t.minutes))} hint={`list order would take ${formatDuration(Math.round(lo.minutes))}`} />
+          <Big
+            label="Cutting time"
+            value={formatDuration(Math.round(t.minutes))}
+            hint={rounds ? `${line.steps.length} rounds · in one long line ${formatDuration(Math.round(longLine))}` : `list order would take ${formatDuration(Math.round(lo.minutes))}`}
+          />
           <Big label="Blade changes" value={`${t.bladeChanges}`} hint={`list order: ${lo.bladeChanges}`} />
           <div className="rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3">
             <div className="text-[11px] uppercase tracking-wide text-slate-500">Done</div>
@@ -175,7 +191,7 @@ export function CarpenterView() {
 
       {tab === 'line' && (
         <>
-          <StepEditor rules={rules} setRules={setRules} />
+          <StepEditor rules={rules} setRules={setRules} leftOut={line.leftOut} limit={limit} setLimit={setLimit} />
           <div className="space-y-3">
             {line.steps.map((st, i) => (
               <StepSection key={`${st.title}-${i}`} step={st} defaultOpen={i === 0} ticks={ticks} lineNo={lineNo} onTick={toggle} />
@@ -193,11 +209,21 @@ export function CarpenterView() {
               <li>A size he does not have yet: Cancel, then "Skip this size".</li>
             </ol>
             <div className="mt-2 flex flex-wrap items-center gap-2">
+              {line.steps.length > 1 && (
+                <select className={`${inputCls} w-44!`} value={scanStep} onChange={e => setScanStep(Number(e.target.value))} aria-label="Which round or step to scan">
+                  <option value={0}>{rounds ? 'Every round' : 'Every step'}</option>
+                  {line.steps.map(st => (
+                    <option key={st.index} value={st.index}>
+                      {st.title}
+                    </option>
+                  ))}
+                </select>
+              )}
               <Segmented<'all' | 'ticked'>
                 value={onlyTicked ? 'ticked' : 'all'}
                 onChange={v => setOnlyTicked(v === 'ticked')}
                 options={[
-                  { value: 'all', label: 'Every part of the line' },
+                  { value: 'all', label: 'Every part' },
                   { value: 'ticked', label: `Only ticked as cut (${tickedParts})` },
                 ]}
               />
@@ -224,8 +250,20 @@ function Big({ label, value, hint }: { label: string; value: string; hint: strin
   );
 }
 
-/** The admin's line of steps: each takes the parts it matches, in order; the rest comes last. */
-function StepEditor({ rules, setRules }: { rules: CutStepRule[]; setRules: (r: CutStepRule[]) => void }) {
+/** The admin's line of steps: each takes the parts it matches, in order; the rest comes last, unless an End stops it. */
+function StepEditor({
+  rules,
+  setRules,
+  leftOut,
+  limit,
+  setLimit,
+}: {
+  rules: CutStepRule[];
+  setRules: (r: CutStepRule[]) => void;
+  leftOut: number;
+  limit: RoundLimit;
+  setLimit: (l: RoundLimit) => void;
+}) {
   const edit = (id: string, patch: Partial<CutStepRule>) => setRules(rules.map(r => (r.id === id ? { ...r, ...patch } : r)));
   const move = (i: number, d: number) => {
     const next = rules.slice();
@@ -233,54 +271,117 @@ function StepEditor({ rules, setRules }: { rules: CutStepRule[]; setRules: (r: C
     next.splice(i + d, 0, r);
     setRules(next);
   };
+  const end = rules.findIndex(r => r.type === 'end');
+  const add = (r: CutStepRule) => {
+    const next = rules.slice();
+    // a new step goes before the End, where it is used
+    next.splice(end >= 0 && r.type !== 'end' ? end : next.length, 0, r);
+    setRules(next);
+  };
+  const arrows = (r: CutStepRule, i: number) => (
+    <span className="flex opacity-60 transition-opacity group-hover:opacity-100">
+      <IconBtn title="Earlier" disabled={i === 0} onClick={() => move(i, -1)}>
+        <ArrowLeft className="h-3.5 w-3.5" />
+      </IconBtn>
+      <IconBtn title="Later" disabled={i === rules.length - 1} onClick={() => move(i, 1)}>
+        <ArrowRight className="h-3.5 w-3.5" />
+      </IconBtn>
+      <IconBtn title="Remove" onClick={() => setRules(rules.filter(x => x.id !== r.id))}>
+        <X className="h-3.5 w-3.5" />
+      </IconBtn>
+    </span>
+  );
   return (
-    <div className="rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2.5">
+    <div className="space-y-2.5 rounded-xl border border-slate-800 bg-slate-900/40 px-3 py-2.5">
       <div className="flex flex-wrap items-center gap-2">
         <span className="mr-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Order</span>
-        {rules.map((r, i) => (
-          <div key={r.id} className="flex items-center gap-2">
-            <div className="group flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950 py-1 pl-2 pr-1 text-xs">
-              <span className="mono flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">{i + 1}</span>
-              <select className={`${inputCls} w-40! border-transparent! bg-transparent! px-1!`} value={r.type} onChange={e => edit(r.id, { type: e.target.value as CutStepType, value: '' })}>
-                {(Object.keys(STEP_LABELS) as CutStepType[]).map(k => (
-                  <option key={k} value={k}>
-                    {STEP_LABELS[k]}
-                  </option>
-                ))}
-              </select>
-              {r.type !== 'in_production' && (
-                <input
-                  className={`${inputCls} w-36!`}
-                  type={r.type === 'production_date' ? 'date' : 'text'}
-                  placeholder={r.type === 'sales_order' ? '0014102903, …' : '75, 85'}
-                  value={r.value}
-                  onChange={e => edit(r.id, { value: e.target.value })}
-                />
-              )}
-              <span className="flex opacity-60 transition-opacity group-hover:opacity-100">
-                <IconBtn title="Earlier" disabled={i === 0} onClick={() => move(i, -1)}>
-                  <ArrowLeft className="h-3.5 w-3.5" />
-                </IconBtn>
-                <IconBtn title="Later" disabled={i === rules.length - 1} onClick={() => move(i, 1)}>
-                  <ArrowRight className="h-3.5 w-3.5" />
-                </IconBtn>
-                <IconBtn title="Remove" onClick={() => setRules(rules.filter(x => x.id !== r.id))}>
-                  <X className="h-3.5 w-3.5" />
-                </IconBtn>
-              </span>
+        {rules.map((r, i) =>
+          r.type === 'end' ? (
+            <div key={r.id} className="flex items-center gap-2">
+              <div
+                className="group flex items-center gap-1.5 rounded-lg border border-rose-700/70 bg-rose-950/40 py-1 pl-2.5 pr-1 text-xs font-semibold text-rose-200"
+                title="Nothing after this is cut: only the parts of the steps before it"
+              >
+                End · nothing else
+                {arrows(r, i)}
+              </div>
             </div>
-            <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
-          </div>
-        ))}
+          ) : (
+            <div key={r.id} className={`flex items-center gap-2 transition-opacity ${end >= 0 && i > end ? 'opacity-40' : ''}`} title={end >= 0 && i > end ? 'Not used: it comes after End' : undefined}>
+              <div className="group flex items-center gap-1.5 rounded-lg border border-slate-700 bg-slate-950 py-1 pl-2 pr-1 text-xs">
+                <span className="mono flex h-5 w-5 items-center justify-center rounded-full bg-blue-600 text-[10px] font-bold text-white">{i + 1}</span>
+                <select className={`${inputCls} w-40! border-transparent! bg-transparent! px-1!`} value={r.type} onChange={e => edit(r.id, { type: e.target.value as CutStepType, value: '' })}>
+                  {(Object.keys(STEP_LABELS) as CutStepType[])
+                    .filter(k => k !== 'end')
+                    .map(k => (
+                      <option key={k} value={k}>
+                        {STEP_LABELS[k]}
+                      </option>
+                    ))}
+                </select>
+                {r.type !== 'in_production' && (
+                  <input
+                    className={`${inputCls} w-36!`}
+                    type={r.type === 'production_date' ? 'date' : 'text'}
+                    placeholder={r.type === 'sales_order' ? '0014102903, …' : '75, 85'}
+                    value={r.value}
+                    onChange={e => edit(r.id, { value: e.target.value })}
+                  />
+                )}
+                {arrows(r, i)}
+              </div>
+              <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
+            </div>
+          ),
+        )}
         <button
           type="button"
-          onClick={() => setRules([...rules, { id: `s${Date.now().toString(36)}`, type: 'sales_order', value: '', material: '' }])}
+          onClick={() => add({ id: `s${Date.now().toString(36)}`, type: 'sales_order', value: '', material: '' })}
           className="flex items-center gap-1 rounded-lg border border-dashed border-slate-700 px-2.5 py-1.5 text-xs text-slate-400 transition-colors hover:border-blue-500 hover:text-blue-300"
         >
           <Plus className="h-3.5 w-3.5" /> Step
         </button>
-        <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
-        <span className="rounded-lg border border-slate-800 px-2.5 py-1.5 text-xs text-slate-500">Everything else</span>
+        {end < 0 ? (
+          <>
+            <button
+              type="button"
+              onClick={() => add({ id: `e${Date.now().toString(36)}`, type: 'end', value: '', material: '' })}
+              title="Cut only what the steps before it take, nothing else"
+              className="flex items-center gap-1 rounded-lg border border-dashed border-slate-700 px-2.5 py-1.5 text-xs text-slate-400 transition-colors hover:border-rose-500 hover:text-rose-300"
+            >
+              <Plus className="h-3.5 w-3.5" /> End
+            </button>
+            <ChevronRight className="h-3.5 w-3.5 text-slate-600" />
+            <span className="rounded-lg border border-slate-800 px-2.5 py-1.5 text-xs text-slate-500">Everything else</span>
+          </>
+        ) : (
+          <span className="text-xs text-rose-300/80">{leftOut ? `${leftOut} parts left out` : 'nothing left out'}</span>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-2 border-t border-slate-800/80 pt-2.5 text-xs text-slate-400">
+        <span className="mr-1 text-[11px] font-semibold uppercase tracking-wide text-slate-500">Rounds</span>
+        <span>The carpenter comes back to scan after</span>
+        {limit.by !== 'none' && (
+          <input
+            className={`${inputCls} mono w-16! text-center`}
+            type="number"
+            min={limit.by === 'hours' ? 0.5 : 5}
+            step={limit.by === 'hours' ? 0.5 : 5}
+            value={limit.value}
+            onChange={e => setLimit({ ...limit, value: Math.max(0, Number(e.target.value) || 0) })}
+            aria-label="Round limit"
+          />
+        )}
+        <Segmented<RoundLimit['by']>
+          value={limit.by}
+          onChange={by => setLimit({ by, value: by === limit.by ? limit.value : by === 'hours' ? 2 : by === 'pieces' ? 100 : 0 })}
+          options={[
+            { value: 'hours', label: 'hours of cutting' },
+            { value: 'pieces', label: 'pieces' },
+            { value: 'none', label: 'no limit' },
+          ]}
+        />
+        {limit.by !== 'none' && <span className="text-slate-500">· whole boxes first, a box bigger than a round is split</span>}
       </div>
     </div>
   );
@@ -317,7 +418,10 @@ const StepSection = memo(function StepSection({
           <span className="block truncate font-semibold text-white">{step.title}</span>
           <span className="text-xs text-slate-400">
             {step.qty} pcs · {formatDuration(Math.round(step.minutes))}
+            {step.round && ` · ${step.round.boxes} box${step.round.boxes === 1 ? '' : 'es'} · ${step.round.from.join(' + ')}`}
             {step.bladeChanges > 0 && <span className="text-amber-400"> · {step.bladeChanges} blade change</span>}
+            {step.round && step.round.continued.length > 0 && <span className="text-sky-300"> · rest of box {step.round.continued.join(', ')}</span>}
+            {step.round && step.round.continues.length > 0 && <span className="text-sky-300"> · box {step.round.continues.join(', ')} goes on in the next round</span>}
           </span>
         </span>
         <span className="hidden gap-1 sm:flex">

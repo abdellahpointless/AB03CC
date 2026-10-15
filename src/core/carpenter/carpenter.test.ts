@@ -4,7 +4,7 @@ import { liteOf } from '../../ui/ScriptsModal';
 import { defaultSettings } from '../defaults';
 import type { CarpenterPart } from '../types';
 import { buildCutItems } from './items';
-import { buildCutLine, scanOrder, scanText, sizeLines } from './cutLine';
+import { buildCutLine, buildRounds, scanOrder, scanText, sizeLines } from './cutLine';
 
 const part = (mo: string, wo: string, measure: string, desc: string): CarpenterPart => ({
   masterOrder: mo, workOrder: wo, measure, descriptionDe: desc, qty: 1, cuttedStatus: false, carpenterStatus: false, hasNc: true,
@@ -70,6 +70,35 @@ describe('carpenter cut list', () => {
     expect(order[0].lines).toEqual([small.no]);
     expect(scanText(order).split('\n')[0].split('\t')).toEqual(['4', '', '1', 'FH', '103 x 53 x 40', `#${small.no}`, '']);
     expect(scanOrder(line, it => it.part.workOrder === '2').map(e => e.item.part.workOrder)).toEqual(['2']);
+  });
+  it('stops at End: only the steps before it are cut', () => {
+    const line = buildCutLine(items, [{ id: 'p', type: 'in_production', value: '', material: '' }, { id: 'e', type: 'end', value: '', material: '' }], { inProduction: mo => mo === 'B', minutes: s.carpenter });
+    expect(line.steps.map(x => x.title)).toEqual(['Boxes in production']);
+    expect(line.steps[0].parts).toBe(2);
+    expect(line.leftOut).toBe(2);
+  });
+  it('cuts in rounds of whole boxes, in the steps order, splitting only a box bigger than a round', () => {
+    const many: CarpenterPart[] = [];
+    for (let b = 0; b < 6; b++) for (let k = 0; k < 3; k++) many.push({ ...part(`MO${b}`, `${b}${k}`, `TOP PLATE FH/25${b}${k}/100X${50 + k * 10}X40`, '103314 - FH8221 40x1000x1000mm  B1409'), qty: 2 });
+    many.push(...Array.from({ length: 12 }, (_, k) => ({ ...part('BIG', `9${k}`, `TOP PLATE FH/26${k}/100X${40 + k * 5}X40`, '103314 - FH8221 40x1000x1000mm  B1409'), qty: 3 })));
+    const its = buildCutItems(many, { settings: s.carpenter });
+    const o = { inProduction: (mo: string) => mo === 'MO5', minutes: s.carpenter };
+    const r = buildRounds(its, [{ id: 'p', type: 'in_production', value: '', material: '' }], o, { by: 'pieces', value: 12 });
+    expect(r.steps.every(st => st.round && st.qty <= 12)).toBe(true);
+    expect(r.totals.qty).toBe(6 * 3 * 2 + 12 * 3);
+    // the box in production comes first
+    expect(r.steps[0].materials.flatMap(m => m.boards.flatMap(b => b.strips.flatMap(x => x.parts.map(p => p.item.part.masterOrder))))).toContain('MO5');
+    // whole boxes: a 6-piece box is never split; only BIG (36 pieces) is
+    const roundsOf = new Map<string, Set<number>>();
+    for (const st of r.steps) for (const g of st.materials) for (const b of g.boards) for (const x of b.strips) for (const p of x.parts) (roundsOf.get(p.item.part.masterOrder) ?? roundsOf.set(p.item.part.masterOrder, new Set()).get(p.item.part.masterOrder)!).add(st.index);
+    for (const [mo, set] of roundsOf) expect(set.size === 1 || mo === 'BIG').toBe(true);
+    expect(roundsOf.get('BIG')!.size).toBeGreaterThan(1);
+    expect(r.steps.some(st => st.round!.continues.includes('BIG'))).toBe(true);
+    // hours: no round over the limit
+    const h = buildRounds(its, [], o, { by: 'hours', value: 0.5 });
+    expect(h.steps.every(st => st.minutes <= 30 || st.round!.boxes === 1)).toBe(true);
+    // no limit: the plain line
+    expect(buildRounds(its, [], o, { by: 'none', value: 0 }).steps.every(st => !st.round)).toBe(true);
   });
   it('bookmark version of the shop helper still parses', () => {
     expect(() => new Function(liteOf(helper))).not.toThrow();

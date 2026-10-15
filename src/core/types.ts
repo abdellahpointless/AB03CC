@@ -138,7 +138,9 @@ export type PriorityRuleType =
   | 'material_type'
   | 'waiting'
   | 'finish_master_order'
-  | 'production_date';
+  | 'production_date'
+  /** End: only the parts the filter rules above it (and on its level) pick are planned, nothing else */
+  | 'end';
 
 export interface PriorityRule {
   id: Id;
@@ -576,6 +578,8 @@ export interface PlanResult {
     unpickedWarehouse: Job[];
     /** the ERP put the part on a machine whose rules refuse it: planned on a machine that takes it instead */
     erpRefused: Job[];
+    /** not picked by the rules above an End rule: not planned */
+    leftOut?: Job[];
   };
   /** why a machine refused a part (ERP machine refused, or no machine takes it), by job id */
   refusals: Record<string, string>;

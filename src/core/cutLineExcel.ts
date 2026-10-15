@@ -1,5 +1,6 @@
 import type { Borders, Cell, Fill, Worksheet } from 'exceljs';
-import { scanOrder, sizeLines, sizeText, type CutLine, type SizeLine } from './carpenter/cutLine';
+import { scanOrder, sizeLines, sizeText, type CutLine, type LineStep, type SizeLine } from './carpenter/cutLine';
+import type { Workbook } from 'exceljs';
 import { formatDuration } from './calendar';
 import { MATERIAL_HUE } from '../lib/colors';
 
@@ -55,23 +56,27 @@ function doneWhen(ws: Worksheet, first: number, last: number, parents: number[])
   });
 }
 
-export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
-  const ExcelJS = (await import('exceljs')).default;
-  const wb = new ExcelJS.Workbook();
-  wb.creator = 'CNC Smart Planner';
-  const ws = wb.addWorksheet('Cut list', {
+const PAGE = { orientation: 'portrait' as const, fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } };
+const plural = (n: number, w: string) => `${n} ${w}${n === 1 ? '' : w.endsWith('x') ? 'es' : 's'}`;
+
+/**
+ * One printable cut sheet: a title, how to use it, then its steps (or its round) line by line.
+ * `lineOf` gives the numbered sheet line of each line's first part.
+ */
+function cutSheet(wb: Workbook, name: string, title: string, sub: string, steps: LineStep[], lineOf: Map<string, SizeLine>, showStepBars: boolean) {
+  const ws = wb.addWorksheet(name, {
     views: [{ state: 'frozen', ySplit: 4, showGridLines: false }],
-    pageSetup: { orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 0, margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 } },
+    pageSetup: PAGE,
   });
   ws.columns = [{ width: 5 }, { width: 6 }, { width: 22 }, { width: 8 }, { width: 9 }, { width: 34 }, { width: 11 }];
   ws.pageSetup.printTitlesRow = '4:4';
+  ws.headerFooter.oddFooter = `&L${title}&RPage &P of &N`;
 
   // title, summary, how to tick, column names
-  const t = line.totals;
-  ws.getCell('A1').value = 'Carpenter cut list';
+  ws.getCell('A1').value = title;
   ws.getCell('A1').font = { size: 20, bold: true, color: { argb: 'FF0F172A' } };
   merge(ws, 1, 1, 7);
-  ws.getCell('A2').value = `${t.qty} pieces · ${formatDuration(Math.round(t.minutes))} of cutting · ${t.bladeChanges} blade change${t.bladeChanges === 1 ? '' : 's'} · ${new Date().toLocaleString()}`;
+  ws.getCell('A2').value = sub;
   ws.getCell('A2').font = { size: 11, color: { argb: 'FF475569' } };
   merge(ws, 2, 1, 7);
   ws.getCell('A3').value = `Cut from top to bottom. Sizes are in mm, the longest first, Z last; FH sizes already have the +3 mm (not on Z). Write how many you cut in the "Cut" box. On the computer: set column A to ${ON} and the line turns green.`;
@@ -88,25 +93,23 @@ export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
   });
   head.height = 20;
 
-  // the numbered lines, looked up by their first part
-  const lineOf = new Map<string, SizeLine>();
-  for (const l of sizeLines(line)) lineOf.set(l.parts[0].item.id, l);
-
   let r = 5;
-  for (const st of line.steps) {
-    r++; // breathing room
-    const sr = ws.getRow(r);
-    sr.getCell(1).value = `STEP ${st.index}  ·  ${st.title}`;
-    sr.getCell(6).value = `${st.qty} pcs · ${formatDuration(Math.round(st.minutes))}`;
-    merge(ws, r, 1, 5);
-    merge(ws, r, 6, 7);
-    for (let c = 1; c <= 7; c++) {
-      sr.getCell(c).fill = fill('FF1E3A8A');
-      sr.getCell(c).font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
-      sr.getCell(c).alignment = { vertical: 'middle', horizontal: c >= 6 ? 'right' : 'left', indent: 1 };
+  for (const st of steps) {
+    if (showStepBars) {
+      r++; // breathing room
+      const sr = ws.getRow(r);
+      sr.getCell(1).value = `STEP ${st.index}  ·  ${st.title}`;
+      sr.getCell(6).value = `${st.qty} pcs · ${formatDuration(Math.round(st.minutes))}`;
+      merge(ws, r, 1, 5);
+      merge(ws, r, 6, 7);
+      for (let c = 1; c <= 7; c++) {
+        sr.getCell(c).fill = fill('FF1E3A8A');
+        sr.getCell(c).font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
+        sr.getCell(c).alignment = { vertical: 'middle', horizontal: c >= 6 ? 'right' : 'left', indent: 1 };
+      }
+      sr.height = 26;
+      r++;
     }
-    sr.height = 26;
-    r++;
 
     for (const m of st.materials) {
       if (m.bladeChange) {
@@ -204,6 +207,62 @@ export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
     }
   }
 
+}
+
+export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
+  const ExcelJS = (await import('exceljs')).default;
+  const wb = new ExcelJS.Workbook();
+  wb.creator = 'CNC Smart Planner';
+  const t = line.totals;
+  const when = new Date().toLocaleString();
+  // the numbered lines, looked up by their first part
+  const lineOf = new Map<string, SizeLine>();
+  for (const l of sizeLines(line)) lineOf.set(l.parts[0].item.id, l);
+
+  const rounds = line.steps.some(st => st.round);
+  if (!rounds) {
+    cutSheet(wb, 'Cut list', 'Carpenter cut list', `${t.qty} pieces · ${formatDuration(Math.round(t.minutes))} of cutting · ${plural(t.bladeChanges, 'blade change')} · ${when}`, line.steps, lineOf, true);
+  } else {
+    // the overview, then one sheet (one paper) per round: File > Print > "Print entire workbook" prints them all
+    const ov = wb.addWorksheet('Rounds', { views: [{ showGridLines: false }], pageSetup: PAGE });
+    ov.columns = [{ width: 10 }, { width: 9 }, { width: 11 }, { width: 8 }, { width: 34 }, { width: 13 }, { width: 30 }];
+    ov.getCell('A1').value = 'Carpenter rounds';
+    ov.getCell('A1').font = { size: 20, bold: true, color: { argb: 'FF0F172A' } };
+    merge(ov, 1, 1, 7);
+    ov.getCell('A2').value = `${plural(line.steps.length, 'round')} · ${t.qty} pieces · ${formatDuration(Math.round(t.minutes))} of cutting · ${when}`;
+    ov.getCell('A2').font = { size: 11, color: { argb: 'FF475569' } };
+    merge(ov, 2, 1, 7);
+    ov.getCell('A3').value = 'Each round has its own sheet: cut it, come back, scan it, then take the next. Print every sheet at once with File > Print > "Print entire workbook".';
+    ov.getCell('A3').font = { size: 10, italic: true, color: { argb: 'FF64748B' } };
+    ov.getCell('A3').alignment = { wrapText: true, vertical: 'middle' };
+    ov.getRow(3).height = 30;
+    merge(ov, 3, 1, 7);
+    const oh = ov.getRow(5);
+    oh.values = ['Round', 'Pieces', 'Cutting', 'Boxes', 'From', 'Sheet lines', 'Notes'];
+    oh.eachCell(c => {
+      c.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+      c.fill = fill('FF334155');
+    });
+    let orow = 6;
+    for (const st of line.steps) {
+      const nos = [...lineOf.values()].filter(l => l.step === st).map(l => l.no);
+      const ri = st.round!;
+      const notes = [ri.continued.length ? `rest of box ${ri.continued.join(', ')}` : '', ri.continues.length ? `box ${ri.continues.join(', ')} goes on in the next round` : '', st.bladeChanges ? plural(st.bladeChanges, 'blade change') : '']
+        .filter(Boolean)
+        .join(' · ');
+      const row = ov.getRow(orow++);
+      row.values = [st.title, st.qty, formatDuration(Math.round(st.minutes)), ri.boxes, ri.from.join(' + '), nos.length ? `#${Math.min(...nos)} – #${Math.max(...nos)}` : '', notes];
+      row.eachCell({ includeEmpty: true }, c => (c.border = box));
+      row.getCell(1).font = { bold: true };
+      row.getCell(7).font = { size: 9, color: { argb: 'FF64748B' } };
+    }
+    line.steps.forEach(st => {
+      const ri = st.round!;
+      const sub = `${st.qty} pieces · ${formatDuration(Math.round(st.minutes))} of cutting · ${plural(ri.boxes, 'box')} · ${ri.from.join(' + ')}${ri.continues.length ? ` · box ${ri.continues.join(', ')} goes on in the next round` : ''}`;
+      cutSheet(wb, st.title, `${st.title} of ${line.steps.length}`, sub, [st], lineOf, false);
+    });
+  }
+
   // the same parts, one line per work order, in the order he scans them: material by material, the size with most
   // pieces first. Columns A to F are what the shop helper needs (select them and copy), the rest is for reading.
   const sc = wb.addWorksheet('Scan order', { views: [{ state: 'frozen', ySplit: 1 }] });
@@ -224,6 +283,14 @@ export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
   });
   const order = scanOrder(line);
   order.forEach((e, k) => {
+    if (line.steps.length > 1 && (k === 0 || order[k - 1].step !== e.step)) {
+      // one block per round (or step): select that block's rows to scan it
+      const hr = sc.addRow([`${e.step.title.toUpperCase()}  ·  ${e.step.qty} pcs`]);
+      sc.mergeCells(hr.number, 1, hr.number, 9);
+      hr.getCell(1).fill = fill('FF1E3A8A');
+      hr.getCell(1).font = { bold: true, size: 12, color: { argb: 'FFFFFFFF' } };
+      hr.height = 20;
+    }
     const row = sc.addRow([e.item.part.workOrder ?? '', e.item.part.materialNr ?? '', e.item.qty, e.material, e.size, e.lines.map(n => `#${n}`).join(' '), e.item.part.partName ?? '', e.item.part.masterOrder, OFF]);
     checkCell(row.getCell(9));
     row.getCell(4).fill = fill(tone(e.material, 86));
@@ -232,10 +299,10 @@ export async function buildCutLineXlsx(line: CutLine): Promise<ArrayBuffer> {
     const prev = order[k - 1];
     if (prev && (prev.material !== e.material || prev.size !== e.size)) row.eachCell({ includeEmpty: true }, c => (c.border = { top: { style: prev.material !== e.material ? 'medium' : 'thin', color: { argb: 'FF94A3B8' } } }));
   });
-  const n = order.length;
-  if (n)
+  const n = sc.rowCount;
+  if (n > 1)
     sc.addConditionalFormatting({
-      ref: `A2:I${n + 1}`,
+      ref: `A2:I${n}`,
       rules: [{ type: 'expression', priority: 1, formulae: [`$I2="${ON}"`], style: { fill: { type: 'pattern', pattern: 'solid', bgColor: { argb: 'FFDCFCE7' } }, font: { strike: true, color: { argb: 'FF6B7280' } } } }],
     });
   sc.autoFilter = { from: 'A1', to: 'I1' };

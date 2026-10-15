@@ -1,7 +1,7 @@
-import { CalendarClock, Hourglass, Layers, Plus, Tag, Trash2, Users, Hash, Boxes, X } from 'lucide-react';
+import { CalendarClock, Hourglass, Layers, Plus, Tag, Trash2, Users, Hash, Boxes, X, OctagonX } from 'lucide-react';
 import { useMemo, useState, type DragEvent } from 'react';
 import { RULE_PRESETS } from '../core/defaults';
-import { FILTER_TYPES, jobMatchesRule, ruleTypeLabel } from '../core/priority';
+import { FILTER_TYPES, endSelector, jobMatchesRule, ruleTypeLabel } from '../core/priority';
 import type { Job, PriorityRule, PriorityRuleType } from '../core/types';
 import { useStore } from '../state/store';
 import { Badge, Button, NumberInput, Segmented, inputCls } from './kit';
@@ -14,6 +14,7 @@ const TRAY: Array<{ type: PriorityRuleType; icon: React.ReactNode; desc: string;
   { type: 'finish_master_order', icon: <Boxes className="h-4 w-4" />, desc: 'Group and complete whole master orders first', make: () => ({ name: 'Finish Full Module First', direction: 'lowest_first' }) },
   { type: 'waiting', icon: <Hourglass className="h-4 w-4" />, desc: 'Modules with the fewest remaining parts first', make: () => ({ name: 'Waiting: Modules with Fewest Remaining Parts', direction: 'lowest_first' }) },
   { type: 'production_date', icon: <Tag className="h-4 w-4" />, desc: 'Order by planned production / due date', make: () => ({ name: 'Production Date: Closest First', dateDirection: 'closest_first' }) },
+  { type: 'end', icon: <OctagonX className="h-4 w-4 text-rose-400" />, desc: 'Plan only what the rules above it (and on its level) pick: the rest of the workload is left out', make: () => ({ name: 'End: plan nothing else' }) },
 ];
 
 const LEVEL_TITLES = ['Highest dispatch tier', 'Secondary dispatch tier', 'Tertiary dispatch tier', 'Fourth dispatch tier'];
@@ -71,7 +72,21 @@ function ValueEditor({ rule, suggestions, onChange }: { rule: PriorityRule; sugg
   );
 }
 
-function RuleCard({ rule, jobs, levelCount, onChange, onRemove }: { rule: PriorityRule; jobs: Job[]; levelCount: number; onChange: (p: Partial<PriorityRule>) => void; onRemove: () => void }) {
+function RuleCard({
+  rule,
+  rules,
+  jobs,
+  levelCount,
+  onChange,
+  onRemove,
+}: {
+  rule: PriorityRule;
+  rules: PriorityRule[];
+  jobs: Job[];
+  levelCount: number;
+  onChange: (p: Partial<PriorityRule>) => void;
+  onRemove: () => void;
+}) {
   const suggestions = useMemo(() => {
     const pick = (f: (j: Job) => string) => [...new Set(jobs.map(f).filter(Boolean))].sort();
     if (rule.type === 'sales_order') return pick(j => j.salesOrder);
@@ -84,7 +99,7 @@ function RuleCard({ rule, jobs, levelCount, onChange, onRemove }: { rule: Priori
     <div
       draggable
       onDragStart={(e: DragEvent) => e.dataTransfer.setData('application/x-rule-id', rule.id)}
-      className={`anim-fade-up rounded-lg border bg-slate-950/70 p-3 ${rule.enabled ? 'border-slate-700' : 'border-slate-800 opacity-60'}`}
+      className={`anim-fade-up rounded-lg border p-3 ${rule.type === 'end' ? 'bg-rose-950/30' : 'bg-slate-950/70'} ${rule.enabled ? (rule.type === 'end' ? 'border-rose-700/70' : 'border-slate-700') : 'border-slate-800 opacity-60'}`}
     >
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -114,6 +129,7 @@ function RuleCard({ rule, jobs, levelCount, onChange, onRemove }: { rule: Priori
       </div>
 
       <div className="mt-3 rounded-md border border-slate-800 bg-slate-900/60 p-3">
+        {rule.type === 'end' && <EndInfo rule={rule} rules={rules} jobs={jobs} />}
         {(rule.type === 'sales_order' || rule.type === 'customer' || rule.type === 'material_type') && (
           <ValueEditor rule={rule} suggestions={suggestions} onChange={values => onChange({ values })} />
         )}
@@ -165,8 +181,27 @@ function RuleCard({ rule, jobs, levelCount, onChange, onRemove }: { rule: Priori
           </div>
         )}
       </div>
-      <p className="mono mt-2 text-[10px] text-slate-500">● {impact(rule, jobs)}</p>
+      {rule.type !== 'end' && <p className="mono mt-2 text-[10px] text-slate-500">● {impact(rule, jobs)}</p>}
     </div>
+  );
+}
+
+/** What an End does with the rules as they are: how much is planned and how much is left out. */
+function EndInfo({ rule, rules, jobs }: { rule: PriorityRule; rules: PriorityRule[]; jobs: Job[] }) {
+  const pick = useMemo(() => endSelector(rules), [rules]);
+  const n = useMemo(() => (pick ? jobs.filter(pick).length : 0), [pick, jobs]);
+  if (!rule.enabled) return <p className="text-xs text-slate-400">Switched off: everything is planned.</p>;
+  if (!pick)
+    return (
+      <p className="text-xs text-amber-300">
+        Nothing above it picks parts yet: add a sales order, schedule, customer or material rule on level {rule.level} or above. Until then the End does nothing.
+      </p>
+    );
+  return (
+    <p className="text-xs text-slate-300">
+      Only what the sales order, schedule, customer and material rules on level {rule.level} and above pick is planned: <b className="text-white">{n}</b> of {jobs.length} parts.{' '}
+      <span className="text-rose-300">{jobs.length - n} left out</span> (Exceptions → Left out by End). Emergencies and parts you placed by hand stay.
+    </p>
   );
 }
 
@@ -175,6 +210,7 @@ export function PriorityView() {
   const rules = settings.priorityRules;
   const levelCount = Math.max(4, ...rules.map(r => r.level));
   const [overLevel, setOverLevel] = useState<number | null>(null);
+  const endLevel = Math.min(Infinity, ...rules.filter(r => r.enabled && r.type === 'end').map(r => r.level));
 
   const setRules = (next: PriorityRule[]) => updateSettings({ priorityRules: next });
   const patchRule = (id: string, p: Partial<PriorityRule>) => setRules(rules.map(r => (r.id === id ? { ...r, ...p } : r)));
@@ -271,6 +307,7 @@ export function PriorityView() {
                       Level {String(level).padStart(2, '0')} · {LEVEL_TITLES[level - 1] ?? `Tier ${level}`}
                     </div>
                   </div>
+                  {level > endLevel && <span className="text-[11px] text-rose-300/80">after End: only orders the parts picked above</span>}
                   <span className="ml-auto text-[11px] text-slate-500">
                     {inLevel.length} rule{inLevel.length === 1 ? '' : 's'}
                   </span>
@@ -280,7 +317,7 @@ export function PriorityView() {
                 ) : (
                   <div className="space-y-2">
                     {inLevel.map(r => (
-                      <RuleCard key={r.id} rule={r} jobs={jobs} levelCount={levelCount} onChange={p => patchRule(r.id, p)} onRemove={() => setRules(rules.filter(x => x.id !== r.id))} />
+                      <RuleCard key={r.id} rule={r} rules={rules} jobs={jobs} levelCount={levelCount} onChange={p => patchRule(r.id, p)} onRemove={() => setRules(rules.filter(x => x.id !== r.id))} />
                     ))}
                   </div>
                 )}

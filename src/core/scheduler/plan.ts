@@ -2,7 +2,7 @@ import { WorkCalendar, formatClock } from '../calendar';
 import { buildCarpenterMap, normalizeMo } from '../parse/carpenter';
 import { partKey } from '../parse/partTimes';
 import { MAX_OPTIMIZED_JOBS } from '../optimizer/budget';
-import { compareByRules, decidingRule, type RankContext } from '../priority';
+import { compareByRules, decidingRule, endSelector, type RankContext } from '../priority';
 import type {
   Bottleneck,
   CarpenterMoInfo,
@@ -193,7 +193,10 @@ export function planProduction(
     manual30000: [],
     unpickedWarehouse: [],
     erpRefused: [],
+    leftOut: [],
   };
+  // an End rule: only what the rules above it pick is planned (emergencies and parts placed by hand stay)
+  const picked = endSelector(settings.priorityRules);
   const refusals: Record<string, string> = {};
   // why no active machine takes a part (the first machine's reason, or the closest one's)
   const whyNoMachine = (job: Job) => active.map(m => refusal(job, m, settings, ctx)).find(Boolean) ?? 'no active machine';
@@ -217,14 +220,19 @@ export function planProduction(
       exceptions.outOfScope.push(job);
       continue;
     }
+    const lock = locks[job.id];
+    if (picked && !picked(job) && !emergencyIds.has(job.id) && !(lock?.machine && activeIds.has(lock.machine))) {
+      exceptions.leftOut!.push(job);
+      continue;
+    }
     if (!job.warehousePickDate) exceptions.unpickedWarehouse.push(job);
 
-    const lock = locks[job.id];
     if (lock?.machine && activeIds.has(lock.machine)) {
       lockedBy.set(job.id, 'user');
       lockedQueues[lock.machine].push(job);
       continue;
     }
+
     const kind = kinds.get(job.id);
     if ((kind === 'table' || kind === 'spare') && !emergencyIds.has(job.id)) {
       // tables and spares wait for a start and a finish chosen by the user; the ERP machine does not decide them

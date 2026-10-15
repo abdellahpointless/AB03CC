@@ -78,6 +78,7 @@ export function buildWorkbook(plan: PlanResult, settings: PlannerSettings): XLSX
     ...exRows('OUT_OF_SCOPE', ex.outOfScope, j => `ERP machine ${j.erpMachine}`),
     ...exRows('MANUAL_30000', ex.manual30000, () => 'Master order 30000* planned manually'),
     ...exRows('NO_WAREHOUSE_PICK', ex.unpickedWarehouse, () => 'Planned, but warehouse pick date missing'),
+    ...exRows('LEFT_OUT_BY_END', ex.leftOut ?? [], () => 'Not picked by the priority rules above End: not planned'),
   ]);
 
   const k = plan.kpis;

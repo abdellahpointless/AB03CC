@@ -12,9 +12,13 @@ import { zIndexOf } from './dims';
  *
  * Steps are never mixed (that is the planning); inside a step the order changes the saw blade at most once, starting
  * with the step's preferred material, else with the blade already on the saw. Pure and fast: no search.
+ *
+ * An "end" step stops the line: nothing after it is cut, not even "everything else".
+ * With a round limit (buildRounds) the parts go out in rounds instead: whole boxes in the steps' order until the
+ * round is full, each round sawn in the fastest order, so the carpenter comes back and scans after each one.
  */
 
-export type CutStepType = 'in_production' | 'sales_order' | 'schedule' | 'production_date';
+export type CutStepType = 'in_production' | 'sales_order' | 'schedule' | 'production_date' | 'end';
 export interface CutStepRule {
   id: string;
   type: CutStepType;
@@ -29,6 +33,7 @@ export const STEP_LABELS: Record<CutStepType, string> = {
   sales_order: 'Sales order',
   schedule: 'Schedule',
   production_date: 'Production date on or before',
+  end: 'End: nothing else',
 };
 
 export type Blade = 'FH' | 'OTHER';
@@ -65,6 +70,8 @@ export interface LineMaterial {
 }
 export interface LineStep {
   index: number;
+  /** set when the line is cut in rounds: the boxes in this round and the steps they come from */
+  round?: RoundInfo;
   rule: CutStepRule | null;
   title: string;
   materials: LineMaterial[];
@@ -81,8 +88,21 @@ export interface LineCounts {
   stripChanges: number;
   minutes: number;
 }
+export interface RoundInfo {
+  boxes: number;
+  /** the steps the boxes come from */
+  from: string[];
+  /** boxes too big for one round: their parts go on in the next round */
+  continues: string[];
+  /** boxes that started in an earlier round */
+  continued: string[];
+}
 export interface CutLine {
   steps: LineStep[];
+  /** parts left out by an "end" step */
+  leftOut: number;
+  /** the blade on the saw after the last step */
+  endBlade: Blade | null;
   totals: LineCounts & { parts: number; qty: number };
   /** the same parts in the website's order */
   listOrder: LineCounts;
@@ -95,6 +115,8 @@ export interface CutLineOptions {
   urgent?: (masterOrder: string) => boolean;
   /** minutes: settings.carpenter */
   minutes: Pick<CarpenterSettings, 'minutesPerPiece' | 'sawChangeMin' | 'stockChangeMin' | 'stripChangeMin' | 'lengthChangeMin' | 'premadeMinutes'>;
+  /** the blade already on the saw */
+  mounted?: Blade | null;
 }
 
 const noZeros = (s: string | undefined) => (s ?? '').trim().replace(/^0+/, '');
@@ -115,11 +137,13 @@ export function stepMatches(rule: CutStepRule, it: CutItem, o: Pick<CutLineOptio
       return p.schedule !== undefined && list(rule.value).some(x => Number(x) === p.schedule);
     case 'production_date':
       return Boolean(rule.value && p.productionDate) && p.productionDate!.slice(0, 10) <= rule.value.slice(0, 10);
+    case 'end':
+      return false;
   }
 }
 
 export function stepTitle(rule: CutStepRule): string {
-  if (rule.type === 'in_production') return STEP_LABELS.in_production;
+  if (rule.type === 'in_production' || rule.type === 'end') return STEP_LABELS[rule.type];
   return `${STEP_LABELS[rule.type]} ${rule.value.trim() || '(empty)'}`;
 }
 
@@ -189,56 +213,251 @@ function orderMaterials(mats: Array<Omit<LineMaterial, 'bladeChange'>>, preferre
   });
 }
 
-/** Builds the carpenter's line. `items` are all cut items; only those still to saw or to pick are placed. */
-export function buildCutLine(items: CutItem[], rules: CutStepRule[], o: CutLineOptions): CutLine {
-  const m = o.minutes;
-  const todo = items.filter(i => (i.status === 'to_cut' && i.cut) || i.status === 'premade');
+/** The parts still to saw or pick. */
+const todoOf = (items: CutItem[]) => items.filter(i => (i.status === 'to_cut' && i.cut) || i.status === 'premade');
+
+export interface AssignedStep {
+  rule: CutStepRule | null;
+  title: string;
+  items: CutItem[];
+}
+/** Gives each part to the first step that takes it: urgent orders, the admin's steps up to an "end", then the rest. */
+export function assignSteps(items: CutItem[], rules: CutStepRule[], o: Pick<CutLineOptions, 'inProduction' | 'urgent'>): { steps: AssignedStep[]; leftOut: CutItem[] } {
+  const todo = todoOf(items);
   const used = new Set<string>();
+  const end = rules.findIndex(r => r.type === 'end');
+  const active = end >= 0 ? rules.slice(0, end) : rules;
   const stepRules: Array<{ rule: CutStepRule | null; title: string; test: (it: CutItem) => boolean }> = [];
   if (o.urgent) stepRules.push({ rule: null, title: 'Urgent orders', test: it => o.urgent!(it.part.masterOrder) });
-  for (const r of rules) stepRules.push({ rule: r, title: stepTitle(r), test: it => stepMatches(r, it, o) });
-  stepRules.push({ rule: null, title: 'Everything else', test: () => true });
-
-  let mounted: Blade | null = null;
-  const steps: LineStep[] = [];
-  const totals = { parts: 0, qty: 0, bladeChanges: 0, boardChanges: 0, stripChanges: 0, minutes: 0 };
+  for (const r of active) stepRules.push({ rule: r, title: stepTitle(r), test: it => stepMatches(r, it, o) });
+  if (end < 0) stepRules.push({ rule: null, title: 'Everything else', test: () => true });
+  const steps: AssignedStep[] = [];
   for (const sr of stepRules) {
     const mine = todo.filter(it => !used.has(it.id) && sr.test(it));
     if (!mine.length) continue;
     mine.forEach(it => used.add(it.id));
-    const sawn = mine.filter(it => it.status === 'to_cut');
-    const picks = mine.filter(it => it.status === 'premade');
-    const ordered = orderMaterials(groupStep(sawn), sr.rule?.material ?? '', mounted);
-    let minutes = 0;
-    let bladeChanges = 0;
-    const materials: LineMaterial[] = ordered.map(g => {
-      const bladeChange = mounted !== null && mounted !== g.blade;
-      if (bladeChange) {
-        bladeChanges++;
-        minutes += m.sawChangeMin;
-      }
-      mounted = g.blade;
-      for (const b of g.boards) {
-        totals.boardChanges++;
-        minutes += m.stockChangeMin;
-        for (const s of b.strips) {
-          totals.stripChanges++;
-          minutes += m.stripChangeMin + new Set(s.parts.map(p => p.length)).size * m.lengthChangeMin + s.qty * m.minutesPerPiece;
-        }
-      }
-      return { ...g, bladeChange };
-    });
-    const pickQty = picks.reduce((s, p) => s + p.qty, 0);
-    minutes += pickQty * m.premadeMinutes;
-    const qty = materials.reduce((s, g) => s + g.qty, 0) + pickQty;
-    steps.push({ index: steps.length + 1, rule: sr.rule, title: sr.title, materials, picks, parts: mine.length, qty, minutes: r1(minutes), bladeChanges });
-    totals.parts += mine.length;
-    totals.qty += qty;
-    totals.bladeChanges += bladeChanges;
-    totals.minutes += minutes;
+    steps.push({ rule: sr.rule, title: sr.title, items: mine });
   }
-  totals.minutes = r1(totals.minutes);
-  return { steps, totals, listOrder: listOrderCounts(todo, m) };
+  return { steps, leftOut: todo.filter(it => !used.has(it.id)) };
+}
+
+/** One step of the line: its parts grouped and ordered for the saw, with its minutes. Moves `state.mounted` on. */
+function makeStep(index: number, rule: CutStepRule | null, title: string, mine: CutItem[], state: { mounted: Blade | null }, m: CutLineOptions['minutes']): LineStep {
+  const sawn = mine.filter(it => it.status === 'to_cut');
+  const picks = mine.filter(it => it.status === 'premade');
+  const ordered = orderMaterials(groupStep(sawn), rule?.material ?? '', state.mounted);
+  let minutes = 0;
+  let bladeChanges = 0;
+  const materials: LineMaterial[] = ordered.map(g => {
+    const bladeChange = state.mounted !== null && state.mounted !== g.blade;
+    if (bladeChange) {
+      bladeChanges++;
+      minutes += m.sawChangeMin;
+    }
+    state.mounted = g.blade;
+    for (const b of g.boards) {
+      minutes += m.stockChangeMin;
+      for (const s of b.strips) minutes += m.stripChangeMin + new Set(s.parts.map(p => p.length)).size * m.lengthChangeMin + s.qty * m.minutesPerPiece;
+    }
+    return { ...g, bladeChange };
+  });
+  const pickQty = picks.reduce((s, p) => s + p.qty, 0);
+  minutes += pickQty * m.premadeMinutes;
+  const qty = materials.reduce((s, g) => s + g.qty, 0) + pickQty;
+  return { index, rule, title, materials, picks, parts: mine.length, qty, minutes: r1(minutes), bladeChanges };
+}
+
+function totalsOf(steps: LineStep[]): CutLine['totals'] {
+  const t = { parts: 0, qty: 0, bladeChanges: 0, boardChanges: 0, stripChanges: 0, minutes: 0 };
+  for (const st of steps) {
+    t.parts += st.parts;
+    t.qty += st.qty;
+    t.bladeChanges += st.bladeChanges;
+    t.minutes += st.minutes;
+    for (const g of st.materials) {
+      t.boardChanges += g.boards.length;
+      for (const b of g.boards) t.stripChanges += b.strips.length;
+    }
+  }
+  t.minutes = r1(t.minutes);
+  return t;
+}
+
+/** Builds the carpenter's line. `items` are all cut items; only those still to saw or to pick are placed. */
+export function buildCutLine(items: CutItem[], rules: CutStepRule[], o: CutLineOptions): CutLine {
+  const { steps: assigned, leftOut } = assignSteps(items, rules, o);
+  const state = { mounted: o.mounted ?? null };
+  const steps = assigned.map((a, i) => makeStep(i + 1, a.rule, a.title, a.items, state, o.minutes));
+  return { steps, leftOut: leftOut.length, endBlade: state.mounted, totals: totalsOf(steps), listOrder: listOrderCounts(assigned.flatMap(a => a.items), o.minutes) };
+}
+
+/* ------------------------------------------------------------ rounds */
+
+/** How much the carpenter cuts before he comes back to scan: hours of sawing, or pieces; 'none' = one long line. */
+export interface RoundLimit {
+  by: 'hours' | 'pieces' | 'none';
+  value: number;
+}
+
+/** A quick, additive estimate of a round's sawing minutes (or pieces), so boxes can be tried one by one. */
+class RoundCost {
+  pieces = 0;
+  private blades = new Set<Blade>();
+  private boards = new Set<string>();
+  private strips = new Set<string>();
+  private lengths = new Set<string>();
+  constructor(
+    private m: CutLineOptions['minutes'],
+    private byPieces: boolean,
+  ) {}
+  private keys(it: CutItem) {
+    const { z, rest } = zOf(it);
+    const board = `${it.material}|${r1(z)}`;
+    const strip = `${board}|${Math.min(...rest)}`;
+    return { blade: bladeOf(it.material), board, strip, length: `${strip}|${Math.max(...rest)}` };
+  }
+  value(): number {
+    if (this.byPieces) return this.pieces;
+    const m = this.m;
+    return Math.max(0, this.blades.size - 1) * m.sawChangeMin + this.boards.size * m.stockChangeMin + this.strips.size * m.stripChangeMin + this.lengths.size * m.lengthChangeMin + this.pieces * m.minutesPerPiece;
+  }
+  /** the value with these parts added (nothing is kept) */
+  with(parts: CutItem[]): number {
+    if (this.byPieces) return this.pieces + parts.reduce((s, p) => s + p.qty, 0);
+    const save = { pieces: this.pieces, blades: new Set(this.blades), boards: new Set(this.boards), strips: new Set(this.strips), lengths: new Set(this.lengths) };
+    this.add(parts);
+    const v = this.value();
+    Object.assign(this, save);
+    return v;
+  }
+  add(parts: CutItem[]) {
+    for (const it of parts) {
+      this.pieces += it.qty;
+      if (this.byPieces || it.status !== 'to_cut') continue;
+      const k = this.keys(it);
+      this.blades.add(k.blade);
+      this.boards.add(k.board);
+      this.strips.add(k.strip);
+      this.lengths.add(k.length);
+    }
+  }
+}
+
+/** how many waiting boxes of a step are looked at to fill a round (the earlier ones keep their head start) */
+const WINDOW = 12;
+
+/** sorts parts the way they are sawn, so a split box goes out in tidy pieces */
+const sawOrder = (a: CutItem, b: CutItem) => {
+  if (!a.cut || !b.cut) return (a.cut ? 0 : 1) - (b.cut ? 0 : 1);
+  const za = zOf(a);
+  const zb = zOf(b);
+  return (
+    bladeOf(a.material).localeCompare(bladeOf(b.material)) ||
+    (a.material ?? '').localeCompare(b.material ?? '') ||
+    za.z - zb.z ||
+    Math.min(...za.rest) - Math.min(...zb.rest) ||
+    Math.max(...zb.rest) - Math.max(...za.rest)
+  );
+};
+
+/**
+ * The line in rounds. Boxes (master orders) go in whole, in the steps' order (inside a step: earliest production date
+ * first, then the list's order) until the round is full; when the next box does not fit, smaller boxes of the same step
+ * may still fill the round, but never boxes of a later step. A box bigger than a whole round is split over rounds.
+ * Each round is one step of the returned line, sawn in the fastest order.
+ */
+export function buildRounds(items: CutItem[], rules: CutStepRule[], o: CutLineOptions, limit: RoundLimit): CutLine {
+  if (limit.by === 'none' || !(limit.value > 0)) return buildCutLine(items, rules, o);
+  const cap = limit.by === 'hours' ? limit.value * 60 : limit.value;
+  const byPieces = limit.by === 'pieces';
+  const { steps: assigned, leftOut } = assignSteps(items, rules, o);
+
+  type Box = { mo: string; step: number; parts: CutItem[]; part: number };
+  const queue: Box[] = [];
+  assigned.forEach((a, si) => {
+    const byMo = new Map<string, CutItem[]>();
+    for (const it of a.items) (byMo.get(it.part.masterOrder) ?? byMo.set(it.part.masterOrder, []).get(it.part.masterOrder)!).push(it);
+    const date = (mo: string) => byMo.get(mo)!.reduce((d, it) => (it.part.productionDate && (!d || it.part.productionDate < d) ? it.part.productionDate : d), '' as string) || '9999';
+    const boxes = [...byMo.keys()];
+    const first = new Map(boxes.map((mo, i) => [mo, i]));
+    boxes.sort((x, y) => date(x).localeCompare(date(y)) || first.get(x)! - first.get(y)!);
+    for (const mo of boxes) queue.push({ mo, step: si, parts: byMo.get(mo)!, part: 0 });
+  });
+
+  const rounds: Array<{ parts: CutItem[]; boxes: Set<string>; steps: Set<number>; continues: string[]; continued: string[] }> = [];
+  const state = { mounted: o.mounted ?? null };
+  while (queue.length) {
+    const cost = new RoundCost(o.minutes, byPieces);
+    const r = { parts: [] as CutItem[], boxes: new Set<string>(), steps: new Set<number>(), continues: [] as string[], continued: [] as string[] };
+    const take = (b: Box) => {
+      cost.add(b.parts);
+      r.parts.push(...b.parts);
+      r.boxes.add(b.mo);
+      r.steps.add(b.step);
+      if (b.part > 0) r.continued.push(b.mo);
+    };
+    const head = queue[0];
+    if (cost.with(head.parts) > cap) {
+      // too big for one round: as many of its parts as fit, sawn-order, the rest goes on in the next round
+      const sorted = head.parts.slice().sort(sawOrder);
+      const now: CutItem[] = [];
+      for (const it of sorted) {
+        if (now.length && cost.with([...now, it]) > cap) break;
+        now.push(it);
+      }
+      const rest = sorted.slice(now.length);
+      take({ ...head, parts: now });
+      if (rest.length) {
+        r.continues.push(head.mo);
+        queue[0] = { ...head, parts: rest, part: head.part + 1 };
+      } else queue.shift();
+    } else {
+      const taken: Box[] = [];
+      const takeAt = (i: number) => {
+        const [b] = queue.splice(i, 1);
+        take(b);
+        taken.push(b);
+      };
+      takeAt(0);
+      // then the boxes of the same step that fit and share the most with the round (boards, strips, sizes): a
+      // later step only when every box of this one is in
+      while (queue.length && cost.value() < cap) {
+        const step = queue[0].step;
+        let best = -1;
+        let bestScore = Infinity;
+        for (let i = 0, seen = 0; i < queue.length && seen < WINDOW && queue[i].step === step; i++, seen++) {
+          const v = cost.with(queue[i].parts);
+          if (v > cap) continue;
+          const pcs = queue[i].parts.reduce((a, p) => a + p.qty, 0);
+          const score = (v - cost.value()) / Math.max(1, pcs) + seen * 0.01;
+          if (score < bestScore) {
+            bestScore = score;
+            best = i;
+          }
+        }
+        if (best < 0) break;
+        takeAt(best);
+      }
+      // the estimate can be a little short: drop the last boxes while the real sawing time is over the limit
+      if (!byPieces)
+        while (taken.length > 1 && makeStep(0, null, '', r.parts, { mounted: state.mounted }, o.minutes).minutes > cap) {
+          const b = taken.pop()!;
+          r.parts = r.parts.filter(p => !b.parts.includes(p));
+          r.boxes.delete(b.mo);
+          queue.unshift(b);
+        }
+    }
+    rounds.push(r);
+    state.mounted = makeStep(0, null, '', r.parts, { mounted: state.mounted }, o.minutes).materials.at(-1)?.blade ?? state.mounted;
+  }
+
+  state.mounted = o.mounted ?? null;
+  const steps = rounds.map((r, i) => {
+    const st = makeStep(i + 1, null, `Round ${i + 1}`, r.parts, state, o.minutes);
+    st.round = { boxes: r.boxes.size, from: [...r.steps].sort((a, b) => a - b).map(si => assigned[si].title), continues: r.continues, continued: r.continued };
+    return st;
+  });
+  return { steps, leftOut: leftOut.length, endBlade: state.mounted, totals: totalsOf(steps), listOrder: listOrderCounts(assigned.flatMap(a => a.items), o.minutes) };
 }
 
 /** The same parts sawn in the order of the website's list. */
@@ -325,6 +544,8 @@ export function sizeLines(line: CutLine): SizeLine[] {
 /** One part to scan, with what the carpenter needs to know at the screen. */
 export interface ScanEntry {
   item: CutItem;
+  /** the step (or round) it was cut in */
+  step: LineStep;
   material: string;
   /** "103 x 53 x 40" */
   size: string;
@@ -333,36 +554,45 @@ export interface ScanEntry {
 }
 
 /**
- * The scan order: the parts as the carpenter takes them out of his box of cut parts. One material after the other
- * (the one with most pieces first), and inside it one size after the other, the size with most pieces first; all the
- * work orders of a size follow each other, so he picks that size once and shares it out over its boxes.
+ * The scan order: step by step (round by round), and inside a step the parts as the carpenter takes them out of his
+ * box of cut parts. One material after the other (the one with most pieces first), and inside it one size after the
+ * other, the size with most pieces first; all the work orders of a size follow each other, so he picks that size once
+ * and shares it out over its boxes.
  */
-export function scanOrder(line: CutLine, keep: (it: CutItem) => boolean = () => true): ScanEntry[] {
-  type Group = { material: string; size: string; qty: number; lines: number[]; first: number; parts: CutItem[] };
-  const groups = new Map<string, Group>();
-  for (const l of sizeLines(line))
-    for (const p of l.parts) {
-      if (!keep(p.item)) continue;
-      const size = sizeText(l.length, l.width, l.z);
-      const k = `${l.material}|${size}`;
-      let g = groups.get(k);
-      if (!g) groups.set(k, (g = { material: l.material, size, qty: 0, lines: [], first: l.no, parts: [] }));
-      g.qty += p.item.qty;
-      if (!g.lines.includes(l.no)) g.lines.push(l.no);
-      g.parts.push(p.item);
+export function scanOrder(line: CutLine, keep: (it: CutItem) => boolean = () => true, only?: (step: LineStep) => boolean): ScanEntry[] {
+  type Group = { step: LineStep; material: string; size: string; qty: number; lines: number[]; first: number; parts: CutItem[] };
+  const out: ScanEntry[] = [];
+  const all = sizeLines(line);
+  for (const step of line.steps) {
+    if (only && !only(step)) continue;
+    const groups = new Map<string, Group>();
+    for (const l of all) {
+      if (l.step !== step) continue;
+      for (const p of l.parts) {
+        if (!keep(p.item)) continue;
+        const size = sizeText(l.length, l.width, l.z);
+        const k = `${l.material}|${size}`;
+        let g = groups.get(k);
+        if (!g) groups.set(k, (g = { step, material: l.material, size, qty: 0, lines: [], first: l.no, parts: [] }));
+        g.qty += p.item.qty;
+        if (!g.lines.includes(l.no)) g.lines.push(l.no);
+        g.parts.push(p.item);
+      }
     }
-  const matQty = new Map<string, { qty: number; first: number }>();
-  for (const g of groups.values()) {
-    const m = matQty.get(g.material);
-    if (!m) matQty.set(g.material, { qty: g.qty, first: g.first });
-    else m.qty += g.qty;
+    const matQty = new Map<string, { qty: number; first: number }>();
+    for (const g of groups.values()) {
+      const m = matQty.get(g.material);
+      if (!m) matQty.set(g.material, { qty: g.qty, first: g.first });
+      else m.qty += g.qty;
+    }
+    const list = [...groups.values()].sort((a, b) => {
+      const ma = matQty.get(a.material)!;
+      const mb = matQty.get(b.material)!;
+      return mb.qty - ma.qty || ma.first - mb.first || b.qty - a.qty || a.first - b.first;
+    });
+    for (const g of list) for (const item of g.parts) out.push({ item, step, material: g.material, size: g.size, lines: g.lines });
   }
-  const list = [...groups.values()].sort((a, b) => {
-    const ma = matQty.get(a.material)!;
-    const mb = matQty.get(b.material)!;
-    return mb.qty - ma.qty || ma.first - mb.first || b.qty - a.qty || a.first - b.first;
-  });
-  return list.flatMap(g => g.parts.map(item => ({ item, material: g.material, size: g.size, lines: g.lines })));
+  return out;
 }
 
 /** The scan list as text for the shop helper: Work Order, MaterialNr, Qty, Material, Size, Line, Part (tab separated). */

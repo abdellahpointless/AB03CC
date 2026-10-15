@@ -356,3 +356,23 @@ describe('emergency orders', () => {
     expect(a.finishMinute).toBeLessThanOrEqual(finish);
   });
 });
+
+describe('End rule', () => {
+  it('plans only what the rules above it pick, and lists the rest as left out', () => {
+    const so = jobs.find(j => j.salesOrder)!.salesOrder;
+    const rules: PriorityRule[] = [
+      { id: 's', type: 'sales_order', level: 1, enabled: true, name: 's', values: [so] },
+      { id: 'e', type: 'end', level: 1, enabled: true, name: 'End' },
+      ...finishOnly.map(r => ({ ...r, level: 2 })),
+    ];
+    const p = planProduction(jobs, base({ planningMode: 'classic', priorityRules: rules }));
+    const planned = Object.values(p.queues).flat().map(s => s.job);
+    expect(planned.length).toBeGreaterThan(0);
+    expect(planned.every(j => j.salesOrder === so)).toBe(true);
+    expect(p.exceptions.leftOut!.length).toBeGreaterThan(0);
+    expect(p.exceptions.leftOut!.every(j => j.salesOrder !== so)).toBe(true);
+    // an End with nothing above it to pick does nothing
+    const alone = planProduction(jobs, base({ planningMode: 'classic', priorityRules: [{ id: 'e', type: 'end', level: 1, enabled: true, name: 'End' }, ...finishOnly.map(r => ({ ...r, level: 2 }))] }));
+    expect(alone.exceptions.leftOut!.length).toBe(0);
+  });
+});

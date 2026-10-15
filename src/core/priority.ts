@@ -46,6 +46,20 @@ export function jobMatchesRule(job: Job, rule: PriorityRule): boolean {
   }
 }
 
+/**
+ * The End rule: when one is active, only parts that a filter rule (sales order, schedule, customer, material) on its
+ * level or above picks are planned. Returns null when there is no active End, or nothing above it picks anything
+ * (an End alone would leave the whole plan empty, so it does nothing).
+ */
+export function endSelector(rules: PriorityRule[]): ((job: Job) => boolean) | null {
+  const ends = rules.filter(r => r.enabled && r.type === 'end');
+  if (!ends.length) return null;
+  const level = Math.min(...ends.map(r => r.level));
+  const pickers = rules.filter(r => r.enabled && FILTER_TYPES.includes(r.type) && r.level <= level);
+  if (!pickers.length) return null;
+  return job => pickers.some(r => jobMatchesRule(job, r));
+}
+
 function levelsOf(rules: PriorityRule[]): Array<[number, PriorityRule[]]> {
   const map = new Map<number, PriorityRule[]>();
   rules
@@ -132,5 +146,6 @@ export function ruleTypeLabel(type: PriorityRuleType): string {
     waiting: 'Waiting (fewest parts left)',
     finish_master_order: 'Finish Full Module',
     production_date: 'Production Date',
+    end: 'End',
   }[type];
 }

@@ -943,12 +943,45 @@
     return { ...r, ticked };
   }
 
-  /** "Send to machine" -> dialog -> pick the machine -> OK */
-  async function sendTicked(machine) {
+  /* the site's "Confirm: Perform action on N selected orders?" box (Yes / No) */
+  const yesNo = d => {
+    const bs = q('button, a, input[type="button"], input[type="submit"]', d).filter(visible);
+    const yes = bs.find(b => /^(yes|ja|oui|s[ií])$/i.test(norm(b.textContent || b.value)));
+    const no = bs.find(b => /^(no|nein|non)$/i.test(norm(b.textContent || b.value)));
+    return yes && no ? { yes, no } : null;
+  };
+  const siteConfirm = () =>
+    q('.ui-dialog, [role="dialog"], [role="alertdialog"], .modal, .bootbox, .jconfirm-box, .swal2-popup, .e-dialog, .k-window')
+      .filter(visible)
+      .find(d => !d.closest('#cnc-helper') && /perform action|selected (orders|rows|items|boxes)/i.test(norm(d.textContent).slice(0, 400)) && yesNo(d));
+  let saidYes = false;
+  /** presses Yes when the box asks about exactly the number of rows we ticked; any other number gets No and stops */
+  async function answerConfirm(d, ticked) {
+    const m = norm(d.textContent).match(/(\d+)\s+selected/i);
+    const n = m ? +m[1] : null;
+    const { yes, no } = yesNo(d);
+    if (ticked && n !== null && n !== ticked) {
+      press(no);
+      throw new Error(`The site asked to send ${n} orders but ${ticked} were ticked: answered No, nothing was sent. Press "Untick all", then try again.`);
+    }
+    press(yes);
+    if (!saidYes) log('The site\'s "Perform action on … selected orders?" box is answered Yes for you.');
+    saidYes = true;
+    await waitFor(() => !visible(d), 5000);
+  }
+
+  /** "Send to machine" -> dialog -> pick the machine -> OK (-> Confirm: Yes) */
+  async function sendTicked(machine, ticked) {
     const btn = [...q('a, button, span, div, li')].filter(visible).find(e => /^send to machine$/i.test(norm(e.textContent)) && e.children.length <= 2);
     if (!btn) throw new Error('Could not find the "Send to machine" button.');
     press(btn);
-    const dialog = await waitFor(() => q('.ui-dialog, [role="dialog"], .modal, .e-dialog, .k-window, .dialog').filter(visible).find(d => /choice machine|choose machine/i.test(norm(d.textContent))) || q('div').filter(visible).find(d => /choice machine/i.test(norm(d.textContent)) && d.textContent.length < 300 && d.querySelector('select, input, .select2-container')), 8000);
+    const choice = () => q('.ui-dialog, [role="dialog"], .modal, .e-dialog, .k-window, .dialog').filter(visible).find(d => /choice machine|choose machine/i.test(norm(d.textContent))) || q('div').filter(visible).find(d => /choice machine/i.test(norm(d.textContent)) && d.textContent.length < 300 && d.querySelector('select, input, .select2-container'));
+    let dialog = await waitFor(() => choice() || siteConfirm(), 8000);
+    // the site may ask "Perform action on N selected orders?" before it shows the machine list
+    if (dialog && !choice()) {
+      await answerConfirm(dialog, ticked);
+      dialog = await waitFor(choice, 8000);
+    }
     if (!dialog) throw new Error('The "Choice Machine" box did not open.');
     const native = dialog.querySelector('select');
     if (native) {
@@ -986,7 +1019,17 @@
     const before = DOC;
     const reloaded = () => !!work && popDoc() !== before;
     press(ok);
-    await waitFor(() => !visible(dialog) || reloaded(), 10000);
+    // after OK the site asks "Perform action on N selected orders?": answered here, so nobody has to press Yes
+    let closedAt = 0;
+    const asked = await waitFor(() => {
+      if (reloaded()) return 'reloaded';
+      const c = siteConfirm();
+      if (c) return c;
+      if (visible(dialog)) return null;
+      closedAt = closedAt || Date.now();
+      return Date.now() - closedAt > 2500 ? 'closed' : null;
+    }, 12000);
+    if (asked && typeof asked !== 'string') await answerConfirm(asked, ticked);
     // the page reloads itself a moment after OK: in the work window we wait for it and carry on
     if (work) {
       if (await waitFor(reloaded, 8000, 100)) await workReady();
@@ -1016,7 +1059,7 @@
       if (t.ticked !== list.length) throw new Error(`Only ${t.ticked} of ${list.length} could be ticked: nothing was sent.`);
       // the page may reload as soon as OK is pressed: leave a note for the next run
       keep({ last: { msg: `sent ${list.length} boxes to ${machine}`, at: nowText() }, queue: null });
-      await sendTicked(machine);
+      await sendTicked(machine, t.ticked);
       log(`Sent ${list.length} boxes to ${machine}. Check the machine's workload.`, 'ok');
       $('[data-act=resume]').style.display = 'none';
       return;
@@ -1034,7 +1077,7 @@
       }
       // if the page reloads after this send, the next run offers to continue with the boxes that are left
       keep({ queue: { machine, total, remaining: [...left] }, last: { msg: `sending ${machine} one by one, ${n} of ${total} done`, at: nowText() } });
-      await sendTicked(machine);
+      await sendTicked(machine, t.ticked);
       left.shift();
       n++;
       keep({ queue: { machine, total, remaining: [...left] }, last: { msg: `sent ${n} of ${total} boxes to ${machine}`, at: nowText() } });
@@ -1416,7 +1459,13 @@
         // written before OK: if this tab reloads, the next run goes on with the next machine
         keep({ auto: st, last: { msg: `full run: sent ${t.ticked} boxes to ${m}`, at: nowText() } });
         log(`${m}: sending ${t.ticked} boxes…`);
-        await sendTicked(m);
+        try {
+          await sendTicked(m, t.ticked);
+        } catch (e) {
+          // "Continue the full run" looks at this machine again (boxes that did go out are no longer in the list)
+          keep({ auto: { ...st, i: st.i - 1 } });
+          throw e;
+        }
         log(`${m}: sent ${t.ticked} boxes.`, 'ok');
       }
       if (st.phase === 'send') {

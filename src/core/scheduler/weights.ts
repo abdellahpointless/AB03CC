@@ -18,8 +18,6 @@ export interface ModuleFacts {
 export const TIER = 1000;
 /** The earliest production date counts this much more than the latest one (a gentle nudge, not a rule). */
 export const DATE_SPREAD = 0.2;
-/** A master order that cannot be completed yet because the carpenter is not done counts for less. */
-export const CARPENTER_WEIGHT: Record<CarpenterDelayMode, number> = { off: 1, soft: 0.85, hard: 0.04 };
 
 const dateKey = (j: Job) => {
   const d = j.plannedDate ?? j.dueDate;
@@ -36,7 +34,8 @@ const dateKey = (j: Job) => {
  *    as early as possible.
  *  - production date: closer dates count slightly more (or slightly less when the rule says furthest first).
  *  - "waiting" / "finish full module" with highest first: orders with more parts count more.
- *  - carpenter: orders still waiting for the carpenter count for less.
+ *  - carpenter: inside each class, the orders the carpenter is done with come first, then the ones still waiting for
+ *    cut parts (they cannot be finished anyway), unless the carpenter is switched off.
  *
  * "Fewest parts left first" needs no extra weight: finishing the cheapest orders first is what minimising the sum of
  * completion times does anyway.
@@ -44,7 +43,7 @@ const dateKey = (j: Job) => {
 export interface ModuleWeights {
   /** within its class: how much one minute of this order's completion is worth (date nudge, carpenter, size) */
   weights: number[];
-  /** priority class of every order from the filter rules: 0 is planned first */
+  /** priority class of every order from the filter rules (and the carpenter): 0 is planned first */
   tiers: number[];
 }
 
@@ -79,8 +78,9 @@ export function moduleWeights(mods: ModuleFacts[], rules: PriorityRule[], carpen
   const weights = mods.map((m, i) => {
     let w = dateFactor[i];
     if (bigFirst) w *= Math.min(3, Math.max(0.3, m.parts / Math.max(1, median))) ** 2;
-    if (m.carpenterBlocked) w *= CARPENTER_WEIGHT[carpenterMode];
     return w;
   });
-  return { weights, tiers: classOf.map(c => tierRank.get(c) ?? 0) };
+  // each rule class splits in two: ready modules, then modules still waiting for the carpenter
+  const waits = carpenterMode !== 'off';
+  return { weights, tiers: classOf.map((c, i) => (tierRank.get(c) ?? 0) * 2 + (waits && mods[i].carpenterBlocked ? 1 : 0)) };
 }

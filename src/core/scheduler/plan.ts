@@ -2,7 +2,7 @@ import { WorkCalendar, formatClock } from '../calendar';
 import { buildCarpenterMap, normalizeMo } from '../parse/carpenter';
 import { partKey } from '../parse/partTimes';
 import { MAX_OPTIMIZED_JOBS } from '../optimizer/budget';
-import { compareByRules, decidingRule, endSelector, type RankContext } from '../priority';
+import { compareByRules, compareFilters, decidingRule, endSelector, type RankContext } from '../priority';
 import type {
   Bottleneck,
   CarpenterMoInfo,
@@ -266,9 +266,21 @@ export function planProduction(
   }
 
   /* ---- priority ranking ---------------------------------------------- */
+  // parts left of a module: its parts in the workload (rework parts are not the module's) plus the parts the carpenter
+  // has not cut yet; a module the carpenter is done with has all its remaining parts here
+  const watchCarpenter = settings.carpenterDelayMode !== 'off';
   const partsLeft: Record<string, number> = {};
-  for (const j of free) partsLeft[j.masterOrder] = (partsLeft[j.masterOrder] ?? 0) + 1;
-  const rankCtx: RankContext = { partsLeft };
+  const carpenterLeft: Record<string, number> = {};
+  for (const j of free) if (kinds.get(j.id) !== 'rework') partsLeft[j.masterOrder] = (partsLeft[j.masterOrder] ?? 0) + 1;
+  if (watchCarpenter)
+    for (const mo of Object.keys(partsLeft)) {
+      const open = carpenterOf(mo)?.openParts ?? 0;
+      if (open > 0) {
+        carpenterLeft[mo] = open;
+        partsLeft[mo] += open;
+      }
+    }
+  const rankCtx: RankContext = { partsLeft, carpenterLeft };
   const rules = settings.priorityRules;
   const byPriority = (a: Job, b: Job) => compareByRules(a, b, rules, rankCtx) || tieBreak(a, b);
 
@@ -297,18 +309,22 @@ export function planProduction(
   const firstSeen = new Map<string, number>();
   inputJobs.forEach((j, i) => !firstSeen.has(j.masterOrder) && firstSeen.set(j.masterOrder, i));
 
-  let moOrder = [...moParts.keys()].sort((a, b) => {
-    const c = compareByRules(moParts.get(a)![0], moParts.get(b)![0], rules, rankCtx);
-    if (c !== 0) return c;
-    if (settings.carpenterDelayMode !== 'off') {
+  // the user's classes first (sales order, schedule, customer, material); inside a class, the modules that can really
+  // be finished (nothing left at the carpenter) before the ones still waiting for cut parts; then the ranking rules
+  const moOrder = [...moParts.keys()].sort((a, b) => {
+    const ja = moParts.get(a)![0];
+    const jb = moParts.get(b)![0];
+    const f = compareFilters(ja, jb, rules);
+    if (f !== 0) return f;
+    if (watchCarpenter) {
       const ba = carpenterBlocked(a);
       const bb = carpenterBlocked(b);
       if (ba !== bb) return ba ? 1 : -1;
     }
+    const c = compareByRules(ja, jb, rules, rankCtx);
+    if (c !== 0) return c;
     return (firstSeen.get(a) ?? 0) - (firstSeen.get(b) ?? 0);
   });
-
-  if (settings.carpenterDelayMode === 'hard') moOrder = applyHardCarpenterDelay(moOrder, moParts, carpenterBlocked, settings, active.length);
 
   /* ---- assignment ------------------------------------------------------ */
   const queues: Record<string, Job[]> = {};
@@ -581,10 +597,22 @@ export function planProduction(
     }
 
     /* ---- master order sync & carpenter waiting list ------------------------ */
+    // a rework part finishing is a finished rework, not its module finishing: rework parts are kept out of the orders
     const byMo = new Map<string, ScheduledJob[]>();
+    let reworkDone = 0;
     Object.values(finalQueues)
       .flat()
-      .forEach(i => (byMo.get(i.job.masterOrder) ?? byMo.set(i.job.masterOrder, []).get(i.job.masterOrder)!).push(i));
+      .forEach(i => {
+        if (i.job.isRework || i.kind === 'rework') {
+          reworkDone++;
+          return;
+        }
+        (byMo.get(i.job.masterOrder) ?? byMo.set(i.job.masterOrder, []).get(i.job.masterOrder)!).push(i);
+      });
+    const kindOfMo = (items: ScheduledJob[]): 'module' | 'table' | 'spare' => (items.some(i => i.kind === 'table') ? 'table' : items.some(i => i.kind === 'spare') ? 'spare' : 'module');
+    let modules = 0;
+    let spares = 0;
+    let tables = 0;
 
     const moSync: Record<string, MoSync> = {};
     const waiting: WaitingOnCarpenter[] = [];
@@ -596,11 +624,19 @@ export function planProduction(
       const last = Math.max(...ends);
       const lastItem = items.find(i => i.endMinute === last)!;
       const blocked = carpenterBlocked(mo);
+      const kind = kindOfMo(items);
+      // the module numbers (finished together, completion) are about modules only
+      if (kind === 'module') {
+        modules++;
+        const sync = last - first <= settings.syncToleranceMin && !blocked;
+        if (sync) syncCount++;
+        sumMo += last;
+      } else if (kind === 'spare') spares++;
+      else tables++;
       const sync = last - first <= settings.syncToleranceMin && !blocked;
-      if (sync) syncCount++;
-      sumMo += last;
       moSync[mo] = {
         masterOrder: mo,
+        kind,
         customer: lastItem.job.customer,
         parts: items.length,
         firstFinish: first,
@@ -658,11 +694,12 @@ export function planProduction(
       overdueJobs: lateJobs,
       boxesClosedFirstShift: boxesClosed,
       synchronizedMos: syncCount,
-      totalMos: byMo.size,
+      totalMos: modules,
+      finished: { rework: reworkDone, spares, tables },
       makespanMinutes: makespan,
       cautiousMakespanMinutes: Math.max(makespan, cautiousExtraMax),
       sumMoCompletion: sumMo,
-      avgMoCompletion: byMo.size ? Math.round((sumMo / byMo.size) * 10) / 10 : 0,
+      avgMoCompletion: modules ? Math.round((sumMo / modules) * 10) / 10 : 0,
       waitingOnCarpenter: waiting.length,
       finishPerMachine: finish,
       loadPerMachine: loads,
@@ -722,7 +759,6 @@ export function planProduction(
   if (settings.planningMode === 'classic' || jobCount < 3 || jobCount > MAX_OPTIMIZED_JOBS) return fast;
 
   opts.onQuick?.(fast);
-  const startModuleEnd = new Map(Object.values(fast.moSync).map(m => [m.masterOrder, m.lastFinish]));
   // The optimizer plans tables and spares together with the modules (not squeezed in afterwards): each group joins the
   // first priority class that is still running when the group has to be finished, so it never jumps ahead of a stronger
   // class it does not need to, and its start and finish are hard limits inside that class.
@@ -752,13 +788,12 @@ export function planProduction(
     ctx,
     classes,
     carpenterBlocked,
-    startModuleEnd,
     onProgress: opts.onProgress,
   });
   const effort = settings.planningEffort ?? 'standard';
   const info = (better: PlanResult): OptimizationInfo => {
     const dayLen = new WorkCalendar(settings.calendar).dayLen;
-    const doneBy = (p: PlanResult, day: number) => Object.values(p.moSync).filter(m => !m.carpenterBlocked && m.lastFinish <= day * dayLen).length;
+    const doneBy = (p: PlanResult, day: number) => Object.values(p.moSync).filter(m => (m.kind ?? 'module') === 'module' && !m.carpenterBlocked && m.lastFinish <= day * dayLen).length;
     return {
       effort,
       classicSumMo: fast.kpis.sumMoCompletion,
@@ -805,42 +840,6 @@ function lexLess(a: number[], b: number[]) {
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
-
-function applyHardCarpenterDelay(
-  order: string[],
-  parts: Map<string, Job[]>,
-  blocked: (mo: string) => boolean,
-  s: PlannerSettings,
-  machineCount: number,
-): string[] {
-  const maxDelay = Math.max(0, s.carpenterMaxDelayHours) * 60;
-  const out: string[] = [];
-  const deferred: Array<{ mo: string; at: number }> = [];
-  let elapsed = 0; // approximate machine-time consumed so far
-  const minutesOf = (mo: string) =>
-    parts.get(mo)!.reduce((a, j) => a + j.ncMinutes * j.qty, 0) / Math.max(1, machineCount);
-
-  const release = () => {
-    for (let i = 0; i < deferred.length; ) {
-      if (elapsed - deferred[i].at >= maxDelay) {
-        const [d] = deferred.splice(i, 1);
-        out.push(d.mo);
-        elapsed += minutesOf(d.mo);
-      } else i++;
-    }
-  };
-  for (const mo of order) {
-    release();
-    if (blocked(mo)) deferred.push({ mo, at: elapsed });
-    else {
-      out.push(mo);
-      elapsed += minutesOf(mo);
-    }
-  }
-  release();
-  out.push(...deferred.map(d => d.mo));
-  return out;
-}
 
 /** Jobs with a user-pinned start minute are slotted into the queue where the clock reaches their start. */
 function slotPinnedJobs(queue: Job[], machine: MachineConfig, ctx: SimContext): Job[] {

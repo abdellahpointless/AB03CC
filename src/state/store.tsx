@@ -113,6 +113,14 @@ interface Store {
   report: ImportReport | null;
   carpenterParts: CarpenterPart[];
   carpenterFile: string | null;
+  /** when the carpenter list was imported (ISO) */
+  carpenterAt: string | null;
+  /** a workload is loaded but the carpenter list is not (or a new workload came without one): nothing is planned */
+  needsCarpenter: boolean;
+  /** plan with the carpenter list already loaded instead of importing a fresh one */
+  keepCarpenter(): void;
+  /** ask for the carpenter list again (after a workload is imported alone) */
+  askCarpenter(): void;
   settings: PlannerSettings;
   locks: Record<string, UserLock>;
   plan: PlanResult | null;
@@ -165,7 +173,7 @@ export function useStore(): Store {
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [jobs, setJobs] = useState<Job[]>(() => (DEMO ? demoJobs() : load<Job[]>(KEYS.jobs, [])));
   const [report, setReport] = useState<ImportReport | null>(() => (DEMO ? demoReport(demoJobs()) : load<ImportReport | null>(KEYS.report, null)));
-  const [carpenter, setCarpenter] = useState<{ parts: CarpenterPart[]; file: string | null }>(() =>
+  const [carpenter, setCarpenter] = useState<{ parts: CarpenterPart[]; file: string | null; at?: string }>(() =>
     DEMO ? { parts: demoCarpenterList(demoJobs()), file: 'Sample carpenter list' } : load(KEYS.carpenter, { parts: [], file: null }),
   );
   const [settings, setSettings] = useState<PlannerSettings>(() => {
@@ -227,6 +235,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   useEffect(() => save(KEYS.report, report), [report]);
   useEffect(() => save(KEYS.carpenter, carpenter.parts.length ? carpenter : null), [carpenter]);
   useEffect(() => save(KEYS.partTimes, importedList), [importedList]);
+
+  // the carpenter list is required: without it the planner cannot know which modules still wait for cut parts
+  const [awaitingCarpenter, setAwaitingCarpenter] = useState(false);
+  const needsCarpenter = !DEMO && jobs.length > 0 && (carpenter.parts.length === 0 || awaitingCarpenter);
 
   /* ---- planning (web worker with synchronous fallback) ---- */
   const workerRef = useRef<Worker | null>(null);
@@ -298,7 +310,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const lastJobs = useRef<Job[] | null>(null);
   const replan = useCallback(() => {
-    if (jobs.length === 0) {
+    if (jobs.length === 0 || needsCarpenter) {
       requestId.current++; // whatever a worker is still computing is no longer wanted
       if (workerRef.current && busy.current) {
         workerRef.current.terminate();
@@ -337,7 +349,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         setPlanning(false);
       }, 0);
     }
-  }, [jobs, settings, locks, carpenter.parts, partTimes, spawnWorker, accept]);
+  }, [jobs, needsCarpenter, settings, locks, carpenter.parts, partTimes, spawnWorker, accept]);
 
   useEffect(() => {
     if (lastJobs.current !== jobs) {
@@ -370,7 +382,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (kind === 'carpenter') {
           const parsed = parseCarpenter(rows);
           if (parsed.parts.length === 0) return { ok: false, kind, message: 'No master order numbers found in the carpenter list.' };
-          setCarpenter({ parts: parsed.parts, file: file.name });
+          setCarpenter({ parts: parsed.parts, file: file.name, at: new Date().toISOString() });
+          setAwaitingCarpenter(false);
           return {
             ok: true,
             kind,
@@ -401,7 +414,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const demo = demoJobs();
     setJobs(demo);
     setReport(demoReport(demo));
-    setCarpenter({ parts: demoCarpenterParts(demo), file: 'Demo carpenter list' });
+    setCarpenter({ parts: demoCarpenterParts(demo), file: 'Demo carpenter list', at: new Date().toISOString() });
+    setAwaitingCarpenter(false);
     setLocks({});
   }, []);
 
@@ -419,6 +433,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       report,
       carpenterParts: carpenter.parts,
       carpenterFile: carpenter.file,
+      carpenterAt: carpenter.at ?? null,
+      needsCarpenter,
+      keepCarpenter: () => setAwaitingCarpenter(false),
+      askCarpenter: () => setAwaitingCarpenter(true),
       settings,
       locks,
       plan,
@@ -469,7 +487,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       notify,
       dismissToast,
     }),
-    [jobs, report, carpenter, settings, locks, plan, previousPlan, planning, improving, planError, toasts, partList, partCoverage, partTimes, partTypes, importFile, loadDemo, clearData, replan, notify, dismissToast],
+    [jobs, report, carpenter, needsCarpenter, settings, locks, plan, previousPlan, planning, improving, planError, toasts, partList, partCoverage, partTimes, partTypes, importFile, loadDemo, clearData, replan, notify, dismissToast],
   );
 
   return (

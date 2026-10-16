@@ -5,8 +5,10 @@ export const RANKING_TYPES: PriorityRuleType[] = ['waiting', 'finish_master_orde
 
 /** Context a comparison needs besides the two jobs. */
 export interface RankContext {
-  /** Parts still to plan per master order. */
+  /** Parts still to make per master order: its parts in the workload plus its parts the carpenter has not cut yet. */
   partsLeft: Record<string, number>;
+  /** of those, the parts still at the carpenter */
+  carpenterLeft?: Record<string, number>;
 }
 
 const stripZeros = (s: string) => s.replace(/^0+/, '');
@@ -106,6 +108,27 @@ export function compareByRules(a: Job, b: Job, rules: PriorityRule[], ctx: RankC
   return 0;
 }
 
+/**
+ * Only the filter rules (sales order, schedule, customer, material), level by level: the priority classes the user
+ * chose. Ranking rules are left out. Returns <0 when `a` is in the more important class.
+ */
+export function compareFilters(a: Job, b: Job, rules: PriorityRule[]): number {
+  for (const [, levelRules] of levelsOf(rules)) {
+    const filters = levelRules.filter(r => FILTER_TYPES.includes(r.type));
+    if (!filters.length) continue;
+    const am = filters.some(r => jobMatchesRule(a, r));
+    const bm = filters.some(r => jobMatchesRule(b, r));
+    if (am !== bm) return am ? -1 : 1;
+  }
+  return 0;
+}
+
+const leftText = (job: Job, ctx: RankContext) => {
+  const left = ctx.partsLeft[job.masterOrder] ?? 1;
+  const carp = ctx.carpenterLeft?.[job.masterOrder] ?? 0;
+  return `${left} ${left === 1 ? 'part' : 'parts'} left${carp ? `, ${carp} still at the carpenter` : ''}`;
+};
+
 /** Human readable "why is this job here" label. */
 export function decidingRule(job: Job, rules: PriorityRule[], ctx: RankContext, rank: number): string {
   for (const [level, levelRules] of levelsOf(rules)) {
@@ -126,10 +149,8 @@ export function decidingRule(job: Job, rules: PriorityRule[], ctx: RankContext, 
       }
     }
     for (const rule of levelRules) {
-      const left = ctx.partsLeft[job.masterOrder] ?? 1;
-      if (rule.type === 'finish_master_order')
-        return `Level ${level}: Finish full module (${left} ${left === 1 ? 'part' : 'parts'} left)`;
-      if (rule.type === 'waiting') return `Level ${level}: Waiting (${left} ${left === 1 ? 'part' : 'parts'} left)`;
+      if (rule.type === 'finish_master_order') return `Level ${level}: Finish full module (${leftText(job, ctx)})`;
+      if (rule.type === 'waiting') return `Level ${level}: Waiting (${leftText(job, ctx)})`;
       if (rule.type === 'production_date') return `Level ${level}: Production date ${(job.plannedDate ?? job.dueDate) ?? 'n/a'}`;
     }
   }

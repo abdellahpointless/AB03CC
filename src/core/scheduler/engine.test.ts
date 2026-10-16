@@ -30,7 +30,8 @@ describe('master order weights', () => {
 
   it('puts an order matching a customer rule in a class of its own, planned first', () => {
     const rules: PriorityRule[] = [{ id: 'c', type: 'customer', level: 1, enabled: true, name: 'c', values: ['ACME'] }, ...finishOnly.map(r => ({ ...r, level: 2 }))];
-    expect(moduleWeights([facts({ customer: 'ACME' }), facts({ customer: 'Other' })], rules, 'soft').tiers).toEqual([0, 1]);
+    const [acme, other] = moduleWeights([facts({ customer: 'ACME' }), facts({ customer: 'Other' })], rules, 'soft').tiers;
+    expect(acme).toBeLessThan(other);
   });
 
   it('lets a more important level beat a less important one, like digits', () => {
@@ -56,15 +57,16 @@ describe('master order weights', () => {
     expect(furthest[2]).toBeGreaterThan(furthest[1]);
   });
 
-  it('counts orders still waiting for the carpenter for less, more so in hard mode', () => {
-    const blocked = [facts({}, { carpenterBlocked: true }), facts({})];
-    const soft = moduleWeights(blocked, finishOnly, 'soft').weights;
-    const hard = moduleWeights(blocked, finishOnly, 'hard').weights;
-    const off = moduleWeights(blocked, finishOnly, 'off').weights;
-    expect(off).toEqual([1, 1]);
-    expect(soft[0]).toBeLessThan(1);
-    expect(hard[0]).toBeLessThan(soft[0]);
-    expect(soft[1]).toBe(1);
+  it('puts the orders still waiting for the carpenter right after the ready ones of their class, unless it is off', () => {
+    const rules: PriorityRule[] = [{ id: 'c', type: 'customer', level: 1, enabled: true, name: 'c', values: ['ACME'] }, ...finishOnly.map(r => ({ ...r, level: 2 }))];
+    const mods = [facts({ customer: 'ACME' }, { carpenterBlocked: true }), facts({ customer: 'ACME' }), facts({ customer: 'Other' }), facts({ customer: 'Other' }, { carpenterBlocked: true })];
+    const [acmeWaiting, acmeReady, otherReady, otherWaiting] = moduleWeights(mods, rules, 'soft').tiers;
+    expect(acmeReady).toBeLessThan(acmeWaiting);
+    expect(acmeWaiting).toBeLessThan(otherReady); // the user's class still comes first
+    expect(otherReady).toBeLessThan(otherWaiting);
+    const off = moduleWeights(mods, rules, 'off').tiers;
+    expect(off[0]).toBe(off[1]);
+    expect(off[2]).toBe(off[3]);
   });
 });
 
@@ -232,6 +234,46 @@ describe('modules-first planner', () => {
   });
 });
 
+describe('modules still at the carpenter', () => {
+  // a module with 1 part left in the workload and 3 uncut parts at the carpenter, among modules that are complete here
+  const setup = () => {
+    const all = demoJobs().filter(j => !j.blocked && j.masterOrder.startsWith('10000'));
+    const counts = new Map<string, number>();
+    for (const j of all) counts.set(j.masterOrder, (counts.get(j.masterOrder) ?? 0) + 1);
+    const mo = [...counts].find(([, n]) => n >= 2)![0];
+    const keep = all.find(j => j.masterOrder === mo)!;
+    const jobs = all.filter(j => j.masterOrder !== mo || j.id === keep.id);
+    const carp = (n: number, cut: boolean) => ({ masterOrder: mo, workOrder: `30000099${n}`, text: `Wood part ${n}`, qty: 1, cuttedStatus: cut, carpenterStatus: false });
+    const carpenter = [carp(0, true), carp(1, false), carp(2, false), carp(3, false)];
+    return { jobs, mo, keep, carpenter };
+  };
+
+  it('counts its uncut carpenter parts as parts left and plans the modules that can be finished first', () => {
+    const { jobs, mo, keep, carpenter } = setup();
+    const p = planProduction(jobs, base({ priorityRules: finishOnly }), {}, carpenter);
+    const item = Object.values(p.queues).flat().find(i => i.job.id === keep.id)!;
+    expect(item.decidingRule).toContain('4 parts left, 3 still at the carpenter');
+    expect(p.moSync[mo].carpenterBlocked).toBe(true);
+    // on its machine, every part of a ready module runs before it
+    const q = p.queues[item.machineId];
+    const at = q.findIndex(i => i.job.id === keep.id);
+    expect(q.slice(at + 1).every(i => p.moSync[i.job.masterOrder]?.carpenterBlocked)).toBe(true);
+    // with the carpenter ignored, the 1-part module is one of the very first to finish
+    const off = planProduction(jobs, base({ priorityRules: finishOnly, carpenterDelayMode: 'off' }), {}, carpenter);
+    const ends = Object.values(off.moSync).map(m => m.lastFinish).sort((a, b) => a - b);
+    expect(off.moSync[mo].lastFinish).toBeLessThanOrEqual(ends[Math.floor(ends.length / 4)]);
+    expect(p.moSync[mo].lastFinish).toBeGreaterThan(off.moSync[mo].lastFinish);
+  });
+
+  it('treats a module the carpenter is done with as complete in the workload', () => {
+    const { jobs, mo, keep, carpenter } = setup();
+    const done = carpenter.map(c => ({ ...c, cuttedStatus: true }));
+    const p = planProduction(jobs, base({ priorityRules: finishOnly }), {}, done);
+    expect(p.moSync[mo].carpenterBlocked).toBe(false);
+    expect(Object.values(p.queues).flat().find(i => i.job.id === keep.id)!.decidingRule).toContain('1 part left');
+  });
+});
+
 describe('part kinds, tables and spares', () => {
   const tableJobs = (): Job[] => {
     const base = demoJobs();
@@ -257,6 +299,22 @@ describe('part kinds, tables and spares', () => {
     expect(kinds.get('x-300000000010')).toBe('spare');
     expect(kinds.get('x-800000000001')).toBe('rework');
     expect(buildGroups(jobs, kinds).map(g => [g.kind, g.jobIds.length])).toEqual([['spare', 2], ['table', 3]]);
+  });
+
+  it('counts rework, spares and tables on their own, never as finished modules', () => {
+    const jobs = tableJobs();
+    const s = base({ priorityRules: finishOnly });
+    s.partWindows = { 'table|SO-TABLE': { start: '2026-10-09T10:00', finish: '2026-10-09T20:00' }, 'spare|SO-SPARE': { start: '2026-10-10T06:00', finish: '2026-10-10T20:00' } };
+    const p = planProduction(jobs, s);
+    expect(p.kpis.finished).toEqual({ rework: 1, spares: 2, tables: 2 });
+    const modules = Object.values(p.moSync).filter(m => m.kind === 'module');
+    expect(p.kpis.totalMos).toBe(modules.length);
+    expect(Object.values(p.moSync).filter(m => m.kind === 'table').map(m => m.masterOrder).sort()).toEqual(['300000000003', '600000000001']);
+    // the rework part shares its module's master order, but the module finishes with its own parts
+    const mo = jobs.find(j => j.id === 'x-800000000001')!.masterOrder;
+    const own = Object.values(p.queues).flat().filter(i => i.job.masterOrder === mo && i.kind === 'module');
+    if (own.length) expect(p.moSync[mo].lastFinish).toBe(Math.max(...own.map(i => i.endMinute)));
+    expect(p.moSync[mo]?.parts ?? 0).toBe(own.length);
   });
 
   it('leaves tables and spares unplanned until the user gives them a start and a finish', () => {

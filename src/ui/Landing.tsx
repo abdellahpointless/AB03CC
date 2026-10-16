@@ -4,7 +4,7 @@ import { useStore } from '../state/store';
 import { Button } from './kit';
 import { useImport } from './useImport';
 
-function Drop({
+export function Drop({
   icon,
   title,
   optional,
@@ -75,7 +75,7 @@ export function Landing() {
       <div className="anim-fade-up text-center">
         <h2 className="text-xl font-bold text-white">Plan your CNC workload</h2>
         <p className="mt-1 text-sm text-slate-400">
-          Import the production export first. The carpenter list is optional and can be added any time. Files are recognised by their columns, so you can drop both at once.
+          Import the production workload and the carpenter list: both are needed to plan. Files are recognised by their columns, so you can drop both at once.
         </p>
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -98,9 +98,8 @@ export function Landing() {
         <Drop
           tone="amber"
           icon={<Hammer className="h-6 w-6" />}
-          title="2. Carpenter List"
-          optional
-          text="Uncut carpenter parts hold back master order completion and are flagged on the plan."
+          title="2. Carpenter List (required)"
+          text="Tells which modules still have uncut parts: those cannot be finished yet, so the modules that can are planned first."
           status={carpenterParts.length ? `${carpenterFile ?? 'Carpenter list'} · ${carpenterParts.length} parts` : null}
           onFiles={handleFiles}
           delay={160}

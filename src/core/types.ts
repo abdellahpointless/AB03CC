@@ -491,6 +491,8 @@ export interface ScheduledJob {
 
 export interface MoSync {
   masterOrder: string;
+  /** a module, or a table / spare order: only modules count as finished modules (rework parts are never in here) */
+  kind?: 'module' | 'table' | 'spare';
   customer: string;
   parts: number;
   firstFinish: number;
@@ -538,8 +540,11 @@ export interface PlanKpis {
   setupSavedMinutes: number;
   overdueJobs: number;
   boxesClosedFirstShift: number;
+  /** modules only: rework, spare and table work is counted on its own (finished) */
   synchronizedMos: number;
   totalMos: number;
+  /** what else the plan finishes: rework parts, spare orders, table orders */
+  finished?: { rework: number; spares: number; tables: number };
   makespanMinutes: number;
   cautiousMakespanMinutes: number;
   sumMoCompletion: number;

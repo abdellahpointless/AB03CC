@@ -21,13 +21,14 @@ import { ScriptsModal } from './ui/ScriptsModal';
 import { SettingsDrawer } from './ui/SettingsDrawer';
 import { TablesView } from './ui/TablesView';
 import { Toasts } from './ui/Toasts';
+import { CarpenterNeeded } from './ui/CarpenterNeeded';
 
 type Dialog = 'settings' | 'print' | 'help' | 'report' | 'scripts' | 'emergency' | null;
 
 const VIEW_ORDER: View[] = ['gantt', 'priority', 'orders', 'runsheet', 'hourly', 'carpenter', 'tables', 'exceptions'];
 
 export default function App() {
-  const { jobs, plan, planError, settings, notify } = useStore();
+  const { jobs, plan, planError, settings, notify, needsCarpenter } = useStore();
   const [view, setView] = useState<View>('gantt');
   const [dialog, setDialog] = useState<Dialog>(null);
   const [selectedJob, setSelectedJob] = useState<string | null>(null);
@@ -111,6 +112,8 @@ export default function App() {
       <main className="flex-1 px-3 py-4 sm:px-6">
         {!hasData ? (
           <Landing />
+        ) : needsCarpenter ? (
+          <CarpenterNeeded />
         ) : !plan ? (
           <div className="py-24 text-center text-sm text-slate-400">{planError ? `Planning failed: ${planError}` : 'Planning…'}</div>
         ) : (

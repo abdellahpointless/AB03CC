@@ -22,7 +22,9 @@ export function KpiBar({ plan, onCarpenter }: { plan: PlanResult; onCarpenter: (
   const k = plan.kpis;
   const busiest = Object.entries(k.finishPerMachine).sort((a, b) => b[1] - a[1])[0];
   const dayLen = new WorkCalendar(settings.calendar).dayLen;
-  const mos = Object.values(plan.moSync).filter(m => !m.carpenterBlocked);
+  // finished modules only: rework, spare and table work is counted on its own
+  const mos = Object.values(plan.moSync).filter(m => (m.kind ?? 'module') === 'module' && !m.carpenterBlocked);
+  const other = k.finished;
   const doneBy = (day: number) => mos.filter(m => m.lastFinish <= day * dayLen).length;
   const opt = plan.optimization;
   const gain = opt && opt.classicSumMo > 0 ? ((opt.classicSumMo - k.sumMoCompletion) / opt.classicSumMo) * 100 : 0;
@@ -44,7 +46,7 @@ export function KpiBar({ plan, onCarpenter }: { plan: PlanResult; onCarpenter: (
         w="w-[310px]"
       />
       <Kpi
-        label="Orders done by day 1 / 2"
+        label="Modules done by day 1 / 2"
         value={<><CountUp id="kpi-day1" value={doneBy(1)} /> / <CountUp id="kpi-day2" value={doneBy(2)} /></>}
         sub={<>of {mos.length}{day2Gain > 0 && <span className="ml-1.5 font-semibold text-emerald-400">+{day2Gain} by day 2 vs the basic plan</span>}</>}
         tone="text-emerald-300"
@@ -52,7 +54,20 @@ export function KpiBar({ plan, onCarpenter }: { plan: PlanResult; onCarpenter: (
       />
       <Kpi label="Total changeover" value={<CountUp id="kpi-changeover" value={k.changeoverMinutes} suffix="m" />} tone="text-amber-300" />
       <Kpi label="Setup saved" value={<CountUp id="kpi-setup" value={k.setupSavedMinutes} prefix="+" suffix="m" />} tone="text-emerald-400" />
-      <Kpi label="Synchronized MOs" value={<><CountUp id="kpi-sync" value={k.synchronizedMos} />/{k.totalMos}</>} tone="text-emerald-300" />
+      <Kpi label="Synchronized modules" value={<><CountUp id="kpi-sync" value={k.synchronizedMos} />/{k.totalMos}</>} tone="text-emerald-300" w="w-[150px]" />
+      {other && other.rework + other.spares + other.tables > 0 && (
+        <Kpi
+          label="Rework · spares · tables"
+          value={
+            <>
+              <CountUp id="kpi-rework" value={other.rework} /> · <CountUp id="kpi-spares" value={other.spares} /> · <CountUp id="kpi-tables" value={other.tables} />
+            </>
+          }
+          sub="counted apart from modules"
+          tone="text-violet-300"
+          w="w-[260px]"
+        />
+      )}
       <Kpi label="Past due" value={<CountUp id="kpi-overdue" value={k.overdueJobs} />} tone={`transition-colors duration-(--dur-2) ${k.overdueJobs ? 'text-rose-300' : 'text-slate-300'}`} sub="finish after production date" w="w-[210px]" />
       {k.cautiousMakespanMinutes > k.makespanMinutes && <Kpi label="Cautious finish" value={formatDuration(k.cautiousMakespanMinutes)} tone="text-slate-300" />}
       <button

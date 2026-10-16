@@ -65,20 +65,28 @@ export function HourlyView() {
     <div className="space-y-3">
       <Card className="flex flex-wrap items-center gap-x-10 gap-y-4 px-5 py-4">
         {stat(
-          'Master orders finished',
+          'Modules finished',
           <CountUp value={t.totals.mos} />,
           <>
             of {t.totals.mos + t.totals.heldMos} in the plan
             {anyHeld && <span className="text-amber-300"> · {t.totals.heldMos} on hold</span>}
           </>,
         )}
+        {t.totals.rework + t.totals.spares + t.totals.tables > 0 &&
+          stat(
+            'Rework · spares · tables',
+            <span>
+              <CountUp value={t.totals.rework} /> · <CountUp value={t.totals.spares} /> · <CountUp value={t.totals.tables} />
+            </span>,
+            'finished on their own, not as modules',
+          )}
         {stat('Parts finished', <CountUp value={t.totals.parts} />, `${t.totals.pieces.toLocaleString()} pieces`)}
-        {stat(`Average per ${unit.one}`, <span><CountUp value={avgMos} decimals={1} /> <span className="text-sm font-medium text-slate-400">MOs</span></span>, `${fmt1(avgParts)} parts per ${unit.one}`)}
+        {stat(`Average per ${unit.one}`, <span><CountUp value={avgMos} decimals={1} /> <span className="text-sm font-medium text-slate-400">modules</span></span>, `${fmt1(avgParts)} parts per ${unit.one}`)}
         {busiest &&
           stat(
             `Busiest ${unit.one}`,
             <span className="text-lg">{g === 'day' ? busiest.label : `${busiest.dayLabel} ${busiest.label}`}</span>,
-            `${busiest.parts.length} parts · ${busiest.mos.length + busiest.heldMos.length} master order${busiest.mos.length + busiest.heldMos.length === 1 ? '' : 's'}`,
+            `${busiest.parts.length} parts · ${busiest.mos.length + busiest.heldMos.length} module${busiest.mos.length + busiest.heldMos.length === 1 ? '' : 's'}`,
           )}
         <div className="ml-auto flex flex-col items-end gap-1.5">
           <Segmented
@@ -94,7 +102,7 @@ export function HourlyView() {
               { value: 'day', label: 'Per day' },
             ]}
           />
-          <span className="text-[11px] text-slate-500">A part counts in the {unit.one} it finishes in. A module counts when its last part finishes.</span>
+          <span className="text-[11px] text-slate-500">A part counts in the {unit.one} it finishes in. A module counts when its last part finishes; rework, spare and table work is counted on its own.</span>
         </div>
       </Card>
 
@@ -157,18 +165,19 @@ export function HourlyView() {
             <thead className="sticky top-0 z-10 bg-slate-900 text-left text-[11px] uppercase tracking-wide text-slate-400">
               <tr>
                 <th className="px-4 py-2">{g === 'day' ? 'Day' : 'Time'}</th>
-                <th className="px-3 text-right">Master orders</th>
+                <th className="px-3 text-right">Modules</th>
                 <th className="px-3 text-right">On hold</th>
+                <th className="px-3 text-right">Rework · spares · tables</th>
                 <th className="px-3 text-right">Parts</th>
                 <th className="px-3 text-right">Pieces</th>
                 <th className="px-3 text-right">Machines busy</th>
-                <th className="px-3 text-right">MOs so far</th>
+                <th className="px-3 text-right">Modules so far</th>
                 <th className="px-3 text-right">Parts so far</th>
               </tr>
             </thead>
             <tbody>
               {t.days.map(day => {
-                const rows = t.buckets.filter(b => b.dayIndex === day.dayIndex && (!hideEmpty || b.parts.length + b.mos.length + b.heldMos.length > 0));
+                const rows = t.buckets.filter(b => b.dayIndex === day.dayIndex && (!hideEmpty || b.parts.length + b.mos.length + b.heldMos.length + b.other.length > 0));
                 return (
                   <DayRows key={day.dayIndex} day={day} showHeader={g !== 'day'}>
                     {rows.map(b => (
@@ -182,6 +191,7 @@ export function HourlyView() {
                         <td className="mono px-4 py-1.5">{b.label}</td>
                         <td className="mono px-3 text-right font-semibold">{b.mos.length || '·'}</td>
                         <td className="mono px-3 text-right text-amber-300/90">{b.heldMos.length || '·'}</td>
+                        <td className="px-3 text-right text-violet-300/90">{countOther(b) || '·'}</td>
                         <td className="mono px-3 text-right font-semibold">{b.parts.length || '·'}</td>
                         <td className="mono px-3 text-right text-slate-400">{b.pieces || '·'}</td>
                         <td className="mono px-3 text-right text-slate-400">{b.busyPercent}%</td>
@@ -365,10 +375,16 @@ function Tip({ b, x, y, g }: { b: ThroughputBucket; x: number; y: number; g: Gra
         <span className="text-[11px] text-slate-400">{g === 'day' ? '' : b.dayLabel}</span>
       </div>
       <div className="mt-2 flex items-baseline justify-between">
-        <span className="text-slate-400">Master orders finished</span>
+        <span className="text-slate-400">Modules finished</span>
         <span className="mono text-base font-bold text-white">{b.mos.length}</span>
       </div>
       {b.mos.length > 0 && list(b.mos)}
+      {b.other.length > 0 && (
+        <div className="mt-2 flex items-baseline justify-between border-t border-slate-800 pt-2">
+          <span className="text-slate-400">Also finished</span>
+          <span className="text-violet-300">{countOther(b)}</span>
+        </div>
+      )}
       {b.heldMos.length > 0 && (
         <div className="mt-2 border-t border-slate-800 pt-2">
           <div className="flex items-baseline justify-between">
@@ -409,8 +425,9 @@ function Detail({ b, g, onClose }: { b: ThroughputBucket; g: Granularity; onClos
             {g !== 'day' && <span className="mono ml-2 text-slate-300">{b.label}</span>}
           </h3>
           <p className="text-xs text-slate-400">
-            {b.mos.length} master order{b.mos.length === 1 ? '' : 's'} finished
-            {b.heldMos.length > 0 && ` (+${b.heldMos.length} on hold)`} · {b.parts.length} part{b.parts.length === 1 ? '' : 's'} ({b.pieces} pieces) · machines busy {b.busyPercent}% · {formatDuration(b.busyMinutes)} machining
+            {b.mos.length} module{b.mos.length === 1 ? '' : 's'} finished
+            {b.heldMos.length > 0 && ` (+${b.heldMos.length} on hold)`}
+            {b.other.length > 0 && ` · ${countOther(b)}`} · {b.parts.length} part{b.parts.length === 1 ? '' : 's'} ({b.pieces} pieces) · machines busy {b.busyPercent}% · {formatDuration(b.busyMinutes)} machining
           </p>
         </div>
         <Button size="sm" variant="ghost" onClick={onClose} aria-label="Close details">
@@ -419,7 +436,7 @@ function Detail({ b, g, onClose }: { b: ThroughputBucket; g: Granularity; onClos
       </div>
       <div className="mt-3 grid gap-4 lg:grid-cols-2">
         <div>
-          <h4 className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">Master orders</h4>
+          <h4 className="mb-1 text-[11px] font-bold uppercase tracking-wider text-slate-400">Modules</h4>
           {all.length === 0 ? (
             <p className="text-xs text-slate-500">No module completes in this {g}.</p>
           ) : (
@@ -434,6 +451,21 @@ function Detail({ b, g, onClose }: { b: ThroughputBucket; g: Granularity; onClos
                 </li>
               ))}
             </ul>
+          )}
+          {b.other.length > 0 && (
+            <>
+              <h4 className="mb-1 mt-3 text-[11px] font-bold uppercase tracking-wider text-slate-400">Rework, spares and tables</h4>
+              <ul className="max-h-40 space-y-1 overflow-y-auto pr-1">
+                {b.other.map((o, i) => (
+                  <li key={`${o.kind}-${o.id}-${i}`} className="flex items-center gap-2 rounded-md bg-slate-950/60 px-2 py-1.5 text-xs">
+                    <span className="shrink-0 rounded border border-violet-800 px-1 text-[10px] text-violet-300">{o.kind}</span>
+                    <span className="mono font-semibold text-slate-100">{o.id}</span>
+                    <span className="truncate text-slate-400">{o.customer}</span>
+                    {o.parts > 1 && <span className="mono ml-auto shrink-0 text-slate-500">{o.parts} parts</span>}
+                  </li>
+                ))}
+              </ul>
+            </>
           )}
         </div>
         <div>
@@ -458,16 +490,33 @@ function Detail({ b, g, onClose }: { b: ThroughputBucket; g: Granularity; onClos
   );
 }
 
+/** "2 rework · 1 spare · 1 table" (empty when there is none) */
+function otherText(rework: number, spares: number, tables: number): string {
+  return [rework ? `${rework} rework` : '', spares ? `${spares} spare${spares === 1 ? '' : 's'}` : '', tables ? `${tables} table${tables === 1 ? '' : 's'}` : ''].filter(Boolean).join(' · ');
+}
+const countOther = (b: ThroughputBucket) => {
+  let r = 0;
+  let sp = 0;
+  let tb = 0;
+  for (const o of b.other) {
+    if (o.kind === 'rework') r++;
+    else if (o.kind === 'spare') sp++;
+    else tb++;
+  }
+  return otherText(r, sp, tb);
+};
+
 function DayRows({ day, showHeader, children }: { day: Throughput['days'][number]; showHeader: boolean; children: React.ReactNode }) {
   return (
     <>
       {showHeader && (
         <tr className="bg-slate-900/70">
-          <td colSpan={8} className="px-4 py-1.5 text-[11px] font-bold text-slate-300">
+          <td colSpan={9} className="px-4 py-1.5 text-[11px] font-bold text-slate-300">
             {day.label}
             <span className="ml-3 font-normal text-slate-500">
-              {day.mos} master order{day.mos === 1 ? '' : 's'}
-              {day.heldMos > 0 && ` (+${day.heldMos} on hold)`} · {day.parts} parts · {day.pieces} pieces
+              {day.mos} module{day.mos === 1 ? '' : 's'}
+              {day.heldMos > 0 && ` (+${day.heldMos} on hold)`}
+              {otherText(day.rework, day.spares, day.tables) && ` · ${otherText(day.rework, day.spares, day.tables)}`} · {day.parts} parts · {day.pieces} pieces
             </span>
           </td>
         </tr>

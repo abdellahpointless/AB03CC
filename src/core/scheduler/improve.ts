@@ -78,8 +78,6 @@ export interface ImproveInput {
   ctx: SimContext;
   classes: JobClasses;
   carpenterBlocked: (masterOrder: string) => boolean;
-  /** when every master order of the starting plan finishes; carpenter-blocked orders may not slip past this in "hard" mode */
-  startModuleEnd: Map<string, number>;
   onProgress?: (fraction: number) => void;
 }
 
@@ -101,7 +99,6 @@ export function improveQueues(inp: ImproveInput): Improvement | null {
   const total = active.reduce((n, m) => n + queues[m.id].length, 0);
   if (total < 3) return null;
 
-  const hard = settings.carpenterDelayMode === 'hard';
   const out: Record<string, Job[]> = Object.fromEntries(active.map(m => [m.id, [] as Job[]]));
   // where each machine stands after the classes planned so far
   const state = active.map(() => ({ t: 0, prev: null as Job | null }));
@@ -136,11 +133,9 @@ export function improveQueues(inp: ImproveInput): Improvement | null {
       moduleOf,
       weightOf: key => (windowDue.has(key) ? 0.001 * meanW : weightsOf(key)),
       minStartOf: job => windowOf.get(job.id)?.release ?? 0,
-      dueOf: (key, parts) => {
+      dueOf: key => {
         const due = windowDue.get(key);
-        if (due !== undefined) return { due, slope: 10 * Math.max(1, sumW) };
-        const end = inp.startModuleEnd.get(key);
-        return hard && end !== undefined && inp.carpenterBlocked(key) && parts.length ? { due: end, slope: 100 * meanW } : null;
+        return due !== undefined ? { due, slope: 10 * Math.max(1, sumW) } : null;
       },
     });
     const index = new Map(inst.jobs.map((j, i) => [j.id, i]));

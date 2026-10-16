@@ -461,23 +461,18 @@ function CarpenterTab({ s, set }: TabProps) {
           <option value="either">Either column</option>
         </select>
       </Section>
-      <Section title="Delay mode" hint="How master orders with uncut carpenter parts are treated.">
+      <Section
+        title="Modules waiting for the carpenter"
+        hint="A module's parts left are its parts in the workload plus its parts the carpenter has not cut yet. Inside each priority class, the modules the carpenter is done with are planned first; the ones still waiting for cut parts come after them, so the modules that can really be finished come first."
+      >
         <Segmented
-          value={s.carpenterDelayMode}
+          value={s.carpenterDelayMode === 'off' ? 'off' : 'soft'}
           onChange={(v: CarpenterDelayMode) => set({ carpenterDelayMode: v })}
           options={[
-            { value: 'off', label: 'Off: ignore for ordering' },
-            { value: 'soft', label: 'Soft: prefer ready modules' },
-            { value: 'hard', label: 'Hard: ready modules first' },
+            { value: 'soft', label: 'Ready modules first' },
+            { value: 'off', label: 'Off: ignore the carpenter' },
           ]}
         />
-        {s.carpenterDelayMode === 'hard' && (
-          <div className="mt-3 w-64">
-            <Field label="Maximum delay (hours)" hint="The classic planner releases a waiting module after being held back this long. The optimizer keeps waiting modules from finishing later than that plan does.">
-              <NumberInput value={s.carpenterMaxDelayHours} min={0} onChange={v => v !== undefined && set({ carpenterMaxDelayHours: v })} />
-            </Field>
-          </div>
-        )}
       </Section>
       <Section title="Simulate an uncut module" hint="Pretend a master order still has uncut carpenter parts to see how the plan reacts.">
         <div className="mb-2 flex flex-wrap gap-1.5">

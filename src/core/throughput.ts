@@ -11,6 +11,15 @@ export interface FinishedMo {
   hold?: 'carpenter' | 'missing-parts';
 }
 
+/** Work that is not a module, finished on its own: a rework part, or a whole spare or table order. */
+export interface FinishedOther {
+  kind: 'rework' | 'spare' | 'table';
+  /** the rework part's order number, or the spare / table master order */
+  id: string;
+  customer: string;
+  parts: number;
+}
+
 export interface FinishedPart {
   boxCode: string;
   masterOrder: string;
@@ -37,6 +46,8 @@ export interface ThroughputBucket {
   mos: FinishedMo[];
   /** CNC work finished here but the module is held (open carpenter parts or parts that cannot be planned) */
   heldMos: FinishedMo[];
+  /** rework parts, spare orders and table orders finished here: counted apart, never as modules */
+  other: FinishedOther[];
   parts: FinishedPart[];
   pieces: number;
   byMachine: Record<string, number>;
@@ -52,6 +63,9 @@ export interface ThroughputDay {
   label: string;
   mos: number;
   heldMos: number;
+  rework: number;
+  spares: number;
+  tables: number;
   parts: number;
   pieces: number;
 }
@@ -61,7 +75,7 @@ export interface Throughput {
   bucketMinutes: number;
   buckets: ThroughputBucket[];
   days: ThroughputDay[];
-  totals: { mos: number; heldMos: number; parts: number; pieces: number };
+  totals: { mos: number; heldMos: number; rework: number; spares: number; tables: number; parts: number; pieces: number };
   maxMos: number;
   maxHeld: number;
   maxParts: number;
@@ -118,6 +132,7 @@ export function computeThroughput(
       isDayStart: granularity === 'day' || startMinute % cal.dayLen === 0,
       mos: [],
       heldMos: [],
+      other: [],
       parts: [],
       pieces: 0,
       byMachine: Object.fromEntries(machineIds.map(m => [m, 0])),
@@ -152,16 +167,25 @@ export function computeThroughput(
   const capacity = Math.max(1, machineIds.length) * size;
   for (const b of buckets) b.busyPercent = Math.min(100, Math.round((b.busyMinutes / capacity) * 100));
 
-  // master orders: finished when their last planned part is done (rework parts are not modules)
+  // master orders: finished when their last planned part is done. Rework parts are finished reworks (each one on its
+  // own), spare and table orders are finished spares and tables: none of them is a finished module.
   const missing = new Map<string, number>();
   for (const j of unplaced) missing.set(j.masterOrder, (missing.get(j.masterOrder) ?? 0) + 1);
   const byMo = new Map<string, ScheduledJob[]>();
   for (const it of items) {
-    if (it.job.isRework) continue;
+    if (it.job.isRework || it.kind === 'rework') {
+      buckets[bucketIndexOf(it.endMinute, size)].other.push({ kind: 'rework', id: it.job.orderNumber || it.job.boxCode, customer: it.job.customer, parts: 1 });
+      continue;
+    }
     (byMo.get(it.job.masterOrder) ?? byMo.set(it.job.masterOrder, []).get(it.job.masterOrder)!).push(it);
   }
   byMo.forEach((parts, masterOrder) => {
     const end = parts.reduce((m, p) => Math.max(m, p.endMinute), 0);
+    const kind = parts.some(p => p.kind === 'table') ? 'table' : parts.some(p => p.kind === 'spare') ? 'spare' : 'module';
+    if (kind !== 'module') {
+      buckets[bucketIndexOf(end, size)].other.push({ kind, id: masterOrder, customer: parts[0].job.customer, parts: parts.length });
+      return;
+    }
     const carpenter = Boolean(plan.moSync[masterOrder]?.carpenterBlocked);
     const hold: FinishedMo['hold'] = carpenter ? 'carpenter' : missing.has(masterOrder) ? 'missing-parts' : undefined;
     const mo: FinishedMo = { masterOrder, customer: parts[0].job.customer, parts: parts.length, hold };
@@ -184,9 +208,14 @@ export function computeThroughput(
   const days: ThroughputDay[] = [];
   for (const b of buckets) {
     let d = days[days.length - 1];
-    if (!d || d.dayIndex !== b.dayIndex) days.push((d = { dayIndex: b.dayIndex, label: b.dayLabel, mos: 0, heldMos: 0, parts: 0, pieces: 0 }));
+    if (!d || d.dayIndex !== b.dayIndex) days.push((d = { dayIndex: b.dayIndex, label: b.dayLabel, mos: 0, heldMos: 0, rework: 0, spares: 0, tables: 0, parts: 0, pieces: 0 }));
     d.mos += b.mos.length;
     d.heldMos += b.heldMos.length;
+    for (const o of b.other) {
+      if (o.kind === 'rework') d.rework++;
+      else if (o.kind === 'spare') d.spares++;
+      else d.tables++;
+    }
     d.parts += b.parts.length;
     d.pieces += b.pieces;
   }
@@ -205,6 +234,9 @@ export function computeThroughput(
     totals: {
       mos: buckets.reduce((a, b) => a + b.mos.length, 0),
       heldMos: buckets.reduce((a, b) => a + b.heldMos.length, 0),
+      rework: days.reduce((a, d) => a + d.rework, 0),
+      spares: days.reduce((a, d) => a + d.spares, 0),
+      tables: days.reduce((a, d) => a + d.tables, 0),
       parts: items.length,
       pieces: buckets.reduce((a, b) => a + b.pieces, 0),
     },

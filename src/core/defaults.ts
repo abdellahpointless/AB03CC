@@ -73,7 +73,7 @@ export const DEFAULT_MATERIAL_OFFSETS: Record<string, number> = {
   FR4: 0,
 };
 
-export const SETTINGS_VERSION = 4;
+export const SETTINGS_VERSION = 5;
 export const DEFAULT_ESTIMATE_MULTIPLIER = 2.8;
 
 export const MATERIAL_TYPES = ['ALU', 'POM', 'FH', 'PCGF', 'MS', 'PEEK', 'PP', 'INOX', 'FR4'];
@@ -254,7 +254,7 @@ export function defaultSettings(): PlannerSettings {
     syncToleranceMin: 10,
     restartJobOnEvent: false,
     timelineEvents: [],
-    carpenterCutColumn: 'cutted_status',
+    carpenterCutColumn: 'in_list',
     carpenterDelayMode: 'soft',
     carpenterMaxDelayHours: 8,
     simulatedUncutMasterOrders: [],
@@ -306,6 +306,12 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
     merged.machines = merged.machines.map(m => migrateMachine(m, saved));
     delete merged.allowHaas5Overflow;
     delete merged.fanuc2UsesIdealMinutes;
+    merged.settingsVersion = SETTINGS_VERSION;
+  }
+  // Migration: version 5. The website's Cutted Status is set for whole orders and parts leave the carpenter list when
+  // they reach the CNC, so every part in the list is still at the carpenter (the old default trusted Cutted Status).
+  if ((saved.settingsVersion ?? 1) < 5) {
+    merged.carpenterCutColumn = 'in_list';
     merged.settingsVersion = SETTINGS_VERSION;
   }
   if (!(merged.estimateMultiplier > 0)) merged.estimateMultiplier = DEFAULT_ESTIMATE_MULTIPLIER;

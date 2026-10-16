@@ -454,11 +454,15 @@ function CarpenterTab({ s, set }: TabProps) {
           <p className="text-xs text-slate-400">No list loaded. Use Import in the top bar: the file is recognised by its columns.</p>
         )}
       </Section>
-      <Section title="What counts as cut?">
+      <Section
+        title="What counts as cut?"
+        hint="A part leaves the carpenter list when it reaches the CNC workload, so every part still in the list is still at the carpenter. The website's Cutted Status is set for whole orders at once, not per part. The workload's own counters (Sub Order Count − Cutting Count) are checked too, for parts the list does not show."
+      >
         <select className={inputCls} value={s.carpenterCutColumn} onChange={e => set({ carpenterCutColumn: e.target.value as CarpenterCutColumn })}>
-          <option value="cutted_status">Cutted Status column</option>
-          <option value="carpenter_status">Carpenter Status column</option>
-          <option value="either">Either column</option>
+          <option value="in_list">Every part in the carpenter list is still to cut (recommended)</option>
+          <option value="cutted_status">Trust the Cutted Status column</option>
+          <option value="carpenter_status">Trust the Carpenter Status column</option>
+          <option value="either">Trust either column</option>
         </select>
       </Section>
       <Section

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import helper from '../../../tools/shop-helper/helper.js?raw';
 import { liteOf } from '../../ui/ScriptsModal';
-import { defaultSettings } from '../defaults';
+import { defaultSettings, mergeSettings } from '../defaults';
 import type { CarpenterPart } from '../types';
 import { buildCutItems } from './items';
 import { buildCutLine, buildRounds, scanOrder, scanText, sizeLines } from './cutLine';
@@ -104,6 +104,13 @@ describe('carpenter cut list', () => {
     expect(mods.totals.qty).toBe(6 * 3 * 2 + 12 * 3);
     // no limit: the plain line
     expect(buildRounds(its, [], o, { by: 'none', value: 0 }).steps.every(st => !st.round)).toBe(true);
+  });
+  it('stops trusting the website\'s Cutted Status in settings saved before version 5', () => {
+    expect(mergeSettings({ settingsVersion: 4, carpenterCutColumn: 'cutted_status' }).carpenterCutColumn).toBe('in_list');
+    expect(mergeSettings({ ...defaultSettings(), carpenterCutColumn: 'cutted_status' }).carpenterCutColumn).toBe('cutted_status');
+    // a row the website marks as cut is still in the list, so still to cut
+    const [flagged] = buildCutItems([{ ...part('Z', '77', 'TOP PLATE FH/1/100X50X40', '103314 - FH8221 40x1000x1000mm  B1409'), cuttedStatus: true }], { settings: s.carpenter });
+    expect(flagged.status).toBe('to_cut');
   });
   it('bookmark version of the shop helper still parses', () => {
     expect(() => new Function(liteOf(helper))).not.toThrow();

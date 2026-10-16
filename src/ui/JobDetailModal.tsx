@@ -166,13 +166,19 @@ export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () 
           {carp && (
             <div className={`rounded-lg border p-3 text-xs ${carp.hasOpenParts ? 'border-amber-800 bg-amber-950/30' : 'border-slate-800 bg-slate-950/50'}`}>
               <div className="mb-1 flex items-center gap-1.5 font-bold text-slate-200">
-                <Hammer className="h-3.5 w-3.5 text-amber-400" /> Carpenter: {carp.cutParts}/{carp.totalParts} parts cut
+                <Hammer className="h-3.5 w-3.5 text-amber-400" />
+                {carp.hasOpenParts ? `Carpenter: ${carp.openParts} part${carp.openParts === 1 ? '' : 's'} of this module still to cut` : 'Carpenter: nothing left to cut'}
               </div>
               {carp.openPartsList.map((p, i) => (
                 <div key={i} className="text-slate-300">
                   • {p.text || p.mText || 'part'} ×{p.qty} {p.alertMessage && <span className="text-rose-300">— {p.alertMessage}</span>}
                 </div>
               ))}
+              {carp.notInList ? (
+                <div className="mt-1 text-amber-200/80">
+                  • {carp.notInList} more by the workload's counters (Sub Order Count − Cutting Count), not in the carpenter list
+                </div>
+              ) : null}
             </div>
           )}
         </section>

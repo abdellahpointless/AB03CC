@@ -181,6 +181,7 @@ export function planProduction(
     jobs.map(j => j.masterOrder),
     settings.carpenterCutColumn,
     settings.simulatedUncutMasterOrders,
+    carpenterCounters(jobs),
   );
   const carpenterOf = (mo: string): CarpenterMoInfo | undefined => carpenter.map[normalizeMo(mo)];
   const carpenterBlocked = (mo: string) => Boolean(carpenterOf(mo)?.hasOpenParts);
@@ -271,7 +272,8 @@ export function planProduction(
   const watchCarpenter = settings.carpenterDelayMode !== 'off';
   const partsLeft: Record<string, number> = {};
   const carpenterLeft: Record<string, number> = {};
-  for (const j of free) if (kinds.get(j.id) !== 'rework') partsLeft[j.masterOrder] = (partsLeft[j.masterOrder] ?? 0) + 1;
+  // every part of the module still to make here, also the ones the ERP or the user already put on a machine
+  for (const j of [...free, ...Object.values(lockedQueues).flat()]) if (kinds.get(j.id) !== 'rework' && !j.isRework) partsLeft[j.masterOrder] = (partsLeft[j.masterOrder] ?? 0) + 1;
   if (watchCarpenter)
     for (const mo of Object.keys(partsLeft)) {
       const open = carpenterOf(mo)?.openParts ?? 0;
@@ -840,6 +842,13 @@ function lexLess(a: number[], b: number[]) {
 /* ------------------------------------------------------------------ */
 /* Helpers                                                             */
 /* ------------------------------------------------------------------ */
+
+/** Per master order, the parts still at the carpenter by the workload's own counters (same on every row of the order). */
+export function carpenterCounters(jobs: Job[]): Record<string, number> {
+  const out: Record<string, number> = {};
+  for (const j of jobs) if (j.atCarpenter !== undefined && !j.isRework && !j.orderNumber.startsWith('80000')) out[j.masterOrder] = Math.max(out[j.masterOrder] ?? 0, j.atCarpenter);
+  return out;
+}
 
 /** Jobs with a user-pinned start minute are slotted into the queue where the clock reaches their start. */
 function slotPinnedJobs(queue: Job[], machine: MachineConfig, ctx: SimContext): Job[] {

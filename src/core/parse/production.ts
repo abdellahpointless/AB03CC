@@ -75,6 +75,10 @@ export function parseProduction(rows: Row[], fileName?: string): ProductionImpor
 
     const cuttingCount = Math.max(0, Math.round(num(r.get(row, 'cuttingcount'), 1))) || 1;
     const finishedCount = Math.max(0, Math.round(num(r.get(row, 'finishedcount'), 0)));
+    // the module's parts that have not come through the carpenter yet: all its sub orders minus the ones cut so far
+    const subOrders = Math.round(num(r.get(row, 'subordercount'), 0));
+    const cutSoFar = Math.round(num(r.get(row, 'cuttingcount'), 0));
+    const atCarpenter = subOrders > 0 ? Math.max(0, subOrders - cutSoFar) : undefined;
     const scheduleRaw = r.get(row, 'plannedschedulednumber', 'schedule');
     const scheduleNo = scheduleRaw === undefined || !Number.isFinite(Number(scheduleRaw)) ? null : Number(scheduleRaw);
 
@@ -99,6 +103,7 @@ export function parseProduction(rows: Row[], fileName?: string): ProductionImpor
       cuttingCount,
       finishedCount,
       boxRemaining: Math.max(0, cuttingCount - finishedCount),
+      ...(atCarpenter !== undefined ? { atCarpenter } : {}),
       erpMachine,
       productionStatus,
       discontinuedReason,

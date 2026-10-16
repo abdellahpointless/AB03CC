@@ -38,6 +38,8 @@ export interface Job {
   cuttingCount: number;
   finishedCount: number;
   boxRemaining: number;
+  /** parts of this module still at the carpenter by the workload's own counters (Sub Order Count − Cutting Count) */
+  atCarpenter?: number;
   erpMachine: string | null;
   productionStatus: string | null;
   discontinuedReason: string | null;
@@ -183,7 +185,11 @@ export interface TimelineEvent {
 export type PlanningMode = 'modules_first' | 'classic';
 export type PlanningEffort = 'quick' | 'standard' | 'thorough';
 
-export type CarpenterCutColumn = 'cutted_status' | 'carpenter_status' | 'either';
+/**
+ * What tells that a carpenter part is done. 'in_list': nothing in the list is done (a part leaves the carpenter list
+ * when it reaches the CNC workload; the website's Cutted Status is set for whole orders and is not a per-part signal).
+ */
+export type CarpenterCutColumn = 'in_list' | 'cutted_status' | 'carpenter_status' | 'either';
 export type CarpenterDelayMode = 'off' | 'soft' | 'hard';
 
 /**
@@ -352,6 +358,8 @@ export interface CarpenterMoInfo {
   openPartsList: CarpenterOpenPart[];
   customer?: string;
   simulated?: boolean;
+  /** parts the workload's counters say are still at the carpenter but the carpenter list does not show */
+  notInList?: number;
 }
 
 export interface CalibrationRow {

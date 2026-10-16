@@ -70,6 +70,8 @@ export function demoCarpenterParts(jobs: Job[]): CarpenterPart[] {
     const total = 2 + (i % 3);
     for (let p = 0; p < total; p++) {
       const open = i % 5 === 0 && p === 0;
+      // a part leaves the carpenter list when it reaches the CNC: only the open ones are listed
+      if (!open) continue;
       parts.push({
         masterOrder: mo,
         text: `Wood part ${p + 1}`,

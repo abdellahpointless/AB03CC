@@ -111,7 +111,9 @@ export function parseCarpenter(rows: Row[]): { parts: CarpenterPart[]; uniqueMas
   return { parts, uniqueMasterOrders: mos.size };
 }
 
+/** Is this row of the carpenter list done? With 'in_list' (the default) never: a part in the list is still there. */
 export function isPartCut(p: CarpenterPart, column: CarpenterCutColumn): boolean {
+  if (column === 'in_list') return false;
   if (column === 'carpenter_status') return p.carpenterStatus;
   if (column === 'either') return p.cuttedStatus || p.carpenterStatus;
   return p.cuttedStatus;
@@ -123,6 +125,8 @@ export function buildCarpenterMap(
   productionMasterOrders: Iterable<string>,
   column: CarpenterCutColumn,
   simulatedUncut: string[] = [],
+  /** per production master order: parts still at the carpenter by the workload's own counters */
+  counters: Record<string, number> = {},
 ): { map: Record<string, CarpenterMoInfo>; report: CarpenterReport } {
   const production = new Set<string>();
   for (const mo of productionMasterOrders) production.add(normalizeMo(mo));
@@ -192,6 +196,29 @@ export function buildCarpenterMap(
       simulated: true,
     };
   });
+
+  // the workload's own counters (Sub Order Count − Cutting Count): parts still at the carpenter that the list does not
+  // show, when the list is older than the workload or filtered
+  for (const [rawMo, left] of Object.entries(counters)) {
+    const mo = normalizeMo(rawMo);
+    if (!(left > 0) || !production.has(mo)) continue;
+    const info = map[mo];
+    const listed = info?.openParts ?? 0;
+    if (left <= listed) continue;
+    const extra = left - listed;
+    if (!info) {
+      open++;
+      map[mo] = { masterOrder: mo, totalParts: extra, cutParts: 0, openParts: extra, openQty: extra, hasOpenParts: true, hasMaterialAlert: false, status: 'has_open', openPartsList: [], notInList: extra };
+    } else {
+      if (!info.hasOpenParts) open++;
+      info.totalParts += extra;
+      info.openParts += extra;
+      info.openQty += extra;
+      info.hasOpenParts = true;
+      if (info.status === 'all_cut') info.status = 'has_open';
+      info.notInList = extra;
+    }
+  }
 
   return {
     map,

@@ -2,7 +2,8 @@
  * Carpenter rows -> cut items (pure): status, material, saw group, effective stock, cut size.
  * Strip width and length are filled in later by planCuts (they depend on the other parts of the same stock).
  */
-import type { CarpenterPart, CarpenterSettings, CutItem, CutItemStatus, StockKind } from '../types';
+import type { CarpenterCutColumn, CarpenterPart, CarpenterSettings, CutItem, CutItemStatus, StockKind } from '../types';
+import { isPartCut } from '../parse/carpenter';
 import { FH_ALLOWANCE_MM, piecesPerBlank, resolveCut, withAllowance, zIndexOf } from './dims';
 import { learnPartNames, materialContext, resolveMaterial, type MaterialOptions } from './material';
 import { alertBlocks, stockCatalog, type StockInfo } from './stock';
@@ -19,6 +20,8 @@ export interface BuildCutItemsOptions {
   history?: MaterialOptions['history'];
   /** complete part names; default: rules.json names + the names learned from these parts */
   knownNames?: Set<string>;
+  /** what marks a row as done (settings.carpenterCutColumn); default 'in_list': only the parts ticked in the app */
+  cutColumn?: CarpenterCutColumn;
 }
 
 /** Saw group of a material code: the user's map, else the material's family, else 'other'. */
@@ -71,10 +74,11 @@ export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions
 
     let status: CutItemStatus = 'to_cut';
     let statusReason: string | undefined;
-    const isDone = part.cuttedStatus || Boolean(part.workOrder && done.has(part.workOrder));
+    const byWebsite = isPartCut(part, opts.cutColumn ?? 'in_list');
+    const isDone = byWebsite || Boolean(part.workOrder && done.has(part.workOrder));
     if (isDone) {
       status = 'cut';
-      statusReason = part.cuttedStatus ? undefined : 'ticked as cut in the app';
+      statusReason = byWebsite ? undefined : 'ticked as cut in the app';
     } else if (mat.material && LASER_MATERIALS.has(mat.material)) {
       status = 'elsewhere';
       statusReason = `laser part (${mat.material}): not made on the CNC`;

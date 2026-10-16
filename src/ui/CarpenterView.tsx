@@ -60,8 +60,9 @@ export function CarpenterView() {
       settings: { materialTokens: cs.materialTokens, doneWorkOrders: cs.doneWorkOrders, sawGroups: cs.sawGroups },
       materialAliases: settings.materialAliases,
       history,
+      cutColumn: settings.carpenterCutColumn,
     });
-  }, [carpenterParts, jobs, cs.materialTokens, cs.doneWorkOrders, cs.sawGroups, settings.materialAliases]);
+  }, [carpenterParts, jobs, cs.materialTokens, cs.doneWorkOrders, cs.sawGroups, settings.materialAliases, settings.carpenterCutColumn]);
 
   // boxes in production = the sales orders the CNC plan makes (an End rule may leave some of the workload out)
   const producing = useMemo(() => {

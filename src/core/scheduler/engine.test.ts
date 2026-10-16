@@ -243,8 +243,9 @@ describe('modules still at the carpenter', () => {
     const mo = [...counts].find(([, n]) => n >= 2)![0];
     const keep = all.find(j => j.masterOrder === mo)!;
     const jobs = all.filter(j => j.masterOrder !== mo || j.id === keep.id);
-    const carp = (n: number, cut: boolean) => ({ masterOrder: mo, workOrder: `30000099${n}`, text: `Wood part ${n}`, qty: 1, cuttedStatus: cut, carpenterStatus: false });
-    const carpenter = [carp(0, true), carp(1, false), carp(2, false), carp(3, false)];
+    // the website marks whole orders as cut: these rows say "cut" but they are still in the list, so still at the carpenter
+    const carp = (n: number) => ({ masterOrder: mo, workOrder: `30000099${n}`, text: `Wood part ${n}`, qty: 1, cuttedStatus: true, carpenterStatus: false });
+    const carpenter = [carp(1), carp(2), carp(3)];
     return { jobs, mo, keep, carpenter };
   };
 
@@ -265,12 +266,28 @@ describe('modules still at the carpenter', () => {
     expect(p.moSync[mo].lastFinish).toBeGreaterThan(off.moSync[mo].lastFinish);
   });
 
-  it('treats a module the carpenter is done with as complete in the workload', () => {
-    const { jobs, mo, keep, carpenter } = setup();
-    const done = carpenter.map(c => ({ ...c, cuttedStatus: true }));
-    const p = planProduction(jobs, base({ priorityRules: finishOnly }), {}, done);
+  it('treats a module that is no longer in the carpenter list as complete in the workload', () => {
+    const { jobs, mo, keep } = setup();
+    const p = planProduction(jobs, base({ priorityRules: finishOnly }), {}, []);
     expect(p.moSync[mo].carpenterBlocked).toBe(false);
     expect(Object.values(p.queues).flat().find(i => i.job.id === keep.id)!.decidingRule).toContain('1 part left');
+  });
+});
+
+describe('what is still at the carpenter', () => {
+  const jobs = demoJobs().filter(j => !j.blocked && j.masterOrder.startsWith('10000'));
+  const mo = jobs[0].masterOrder;
+  it('trusts the Cutted Status column only when told to', () => {
+    const rows = [1, 2].map(n => ({ masterOrder: mo, workOrder: `9${n}`, qty: 1, cuttedStatus: true, carpenterStatus: false }));
+    expect(planProduction(jobs, base({ priorityRules: finishOnly, planningMode: 'classic' }), {}, rows).moSync[mo].carpenterBlocked).toBe(true);
+    expect(planProduction(jobs, base({ priorityRules: finishOnly, planningMode: 'classic', carpenterCutColumn: 'cutted_status' }), {}, rows).moSync[mo].carpenterBlocked).toBe(false);
+  });
+  it("uses the workload's own counters for parts the carpenter list does not show", () => {
+    const counted = jobs.map(j => (j.masterOrder === mo ? { ...j, atCarpenter: 2 } : j));
+    const p = planProduction(counted, base({ priorityRules: finishOnly, planningMode: 'classic' }), {}, []);
+    expect(p.moSync[mo].carpenterBlocked).toBe(true);
+    expect(p.carpenter[mo].notInList).toBe(2);
+    expect(Object.values(p.queues).flat().find(i => i.job.masterOrder === mo)!.decidingRule).toContain('2 still at the carpenter');
   });
 });
 

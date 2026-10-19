@@ -393,10 +393,10 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
 
   // find the job's row again, by its own data (row numbers move when the list reloads)
   function rowOf(job) {
-    const { slick, f } = gridParts();
+    const { grid, slick, f } = gridParts();
     for (let i = 0; i < slick.getDataLength(); i++) {
       const it = slick.getDataItem(i);
-      if (it && !it.__group && !it.__groupTotals && keyOf(it, f) === job.key) return { i, item: it, slick, f };
+      if (it && !it.__group && !it.__groupTotals && keyOf(it, f) === job.key) return { i, item: it, slick, f, grid };
     }
     return null;
   }
@@ -410,20 +410,54 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
     const { i, slick, f } = r;
     const wo = String(r.item[f.wo] || '');
     const ref = refOf(r.item[f.mat]);
-    slick.scrollRowIntoView(i);
-    // the Change Material button of exactly this row
-    const btn = await waitFor(() => {
+    const nr = String(r.item[f.nr] || '');
+    const gridEl = (r.grid && r.grid.element && r.grid.element[0]) || document.querySelector('.s-CarpenterProduceListGrid') || document;
+    const rowH = (() => { try { return slick.getOptions().rowHeight || 0; } catch (e) { return 0; } })();
+    // a drawn row is this job's row when it shows its work order, its part number and its component
+    // (only the columns that are drawn are compared: the grid draws the columns on screen only)
+    const colIdx = (fld) => slick.getColumns().findIndex((c) => c.field === fld);
+    const checks = [[colIdx(f.wo), wo], [colIdx(f.nr), nr], [colIdx(f.mat), ref]].filter(([c, v]) => c >= 0 && v);
+    const isMine = (rowEl) => {
+      let compared = 0;
+      for (const [c, v] of checks) {
+        const cell = rowEl.querySelector('.slick-cell.l' + c);
+        if (!cell) continue;
+        if (!(cell.textContent || '').includes(v)) return false;
+        compared++;
+      }
+      return compared > 0 || (!!wo && (rowEl.textContent || '').includes(wo));
+    };
+    const btnIn = (rowEl) => rowEl && rowEl.querySelector('span.btn-change-mat, .btn-change-mat');
+    const scrollTo = () => {
+      try { slick.scrollRowIntoView(i, false); } catch (e) { /* older grid */ }
+      const vp = gridEl.querySelector('.slick-viewport');
+      // the button is in the first column: the grid only draws it when the list is scrolled all the way left
+      if (vp && vp.scrollLeft > 0) { vp.scrollLeft = 0; vp.dispatchEvent(new Event('scroll')); }
+      if (vp && rowH) { const want = Math.max(0, i * rowH - vp.clientHeight / 3); if (Math.abs(vp.scrollTop - want) > vp.clientHeight / 2) { vp.scrollTop = want; vp.dispatchEvent(new Event('scroll')); } }
+      try { slick.render(); } catch (e) { /* draws on scroll */ }
+    };
+    let seen = '';
+    const findBtn = () => {
+      // 1. the cells SlickGrid drew for this row number
       for (let c = 0; c < slick.getColumns().length; c++) {
         let n = null;
         try { n = slick.getCellNode(i, c); } catch (e) { n = null; }
-        const rowEl = n && n.closest('.slick-row');
-        if (rowEl) { const b = rowEl.querySelector('.btn-change-mat'); if (b) return b; }
+        const rowEl = n && (n.closest('.slick-row') || n.parentElement);
+        if (rowEl && btnIn(rowEl) && isMine(rowEl)) return btnIn(rowEl);
       }
+      // 2. the drawn row at this row number's height
+      const rows = [...gridEl.querySelectorAll('.slick-row')];
+      if (rowH) { const at = rows.find((x) => parseInt(x.style.top, 10) === i * rowH); if (at && btnIn(at) && isMine(at)) return btnIn(at); }
+      // 3. the drawn row that shows this row's work order, part number and component (only if exactly one)
+      const mine = rows.filter((x) => btnIn(x) && isMine(x));
+      seen = rows.length + ' rows drawn, ' + rows.filter((x) => btnIn(x)).length + ' with a button, ' + mine.length + ' matching';
+      if (mine.length === 1) return btnIn(mine[0]);
       return null;
-    }, 4000);
-    if (!btn) return 'could not find the Change Material button of this row';
-    const rowEl = btn.closest('.slick-row');
-    if (rowEl && wo && !rowEl.textContent.includes(wo)) return 'the button found is on another row (not ' + wo + ')';
+    };
+    scrollTo();
+    let btn = await waitFor(findBtn, 2500);
+    if (!btn) { scrollTo(); await sleep(400); btn = await waitFor(findBtn, 2500); }
+    if (!btn) return 'could not find the Change Material button of this row (row ' + i + ', ' + seen + ')';
     step('row ' + wo + ' found, pressing Change Material');
     const before = new Set(document.querySelectorAll('.s-CarpenterChangeMaterialsDialog'));
     const fresh = () => [...document.querySelectorAll('.s-CarpenterChangeMaterialsDialog')]

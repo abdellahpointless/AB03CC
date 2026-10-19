@@ -279,7 +279,8 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
     const btnCol = cols.findIndex((c) => /change/i.test(String(c.name || '') + String(c.id || '') + String(c.field || '')));
     return { grid, slick, f, btnCol };
   }
-  const keyOf = (item, f) => String(item[f.wo] || '') + '|' + String(item[f.nr] || '');
+  // one row = work order + part + the component it is made from (one work order can have several rows)
+  const keyOf = (item, f) => String(item[f.wo] || '') + '|' + String(item[f.nr] || '') + '|' + refOf(item[f.mat]);
 
   async function showAllRows() {
     const sel = document.querySelector('.slick-pg-size');
@@ -368,51 +369,130 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
     return false;
   }
 
-  async function changeOne(job) {
+  // the website is quiet: no request running (Save, list reload) and no loading cover
+  async function waitIdle(ms = 30000) {
+    await sleep(150);
+    await waitFor(() => $.active === 0 && ![...document.querySelectorAll('.blockUI, .s-BlockUI, .slick-pg-loading')].some((e) => e.offsetParent !== null), ms, 100);
+    await sleep(250);
+  }
+
+  // the server's answers, to know that Save really worked
+  const answers = [];
+  $(document).off('ajaxComplete.cncmat').on('ajaxComplete.cncmat', (e, xhr, opt) => {
+    let body = null;
+    try { body = xhr.responseJSON || JSON.parse(xhr.responseText); } catch (x) { body = null; }
+    answers.push({ url: String((opt && opt.url) || ''), status: xhr.status, body, t: Date.now() });
+    if (answers.length > 50) answers.shift();
+  });
+  const errorText = (a) => {
+    if (!a) return '';
+    if (a.status >= 400) return 'server answered ' + a.status;
+    const er = a.body && (a.body.Error || a.body.error);
+    return er ? String(er.Message || er.message || er.Code || 'error') : '';
+  };
+
+  // find the job's row again, by its own data (row numbers move when the list reloads)
+  function rowOf(job) {
     const { slick, f } = gridParts();
-    slick.scrollRowIntoView(job.i);
-    const ncols = slick.getColumns().length;
-    const wo = String(job.item[f.wo] || '');
-    // the row's Change Material button: look through the drawn cells of this row (the button column has no name)
+    for (let i = 0; i < slick.getDataLength(); i++) {
+      const it = slick.getDataItem(i);
+      if (it && !it.__group && !it.__groupTotals && keyOf(it, f) === job.key) return { i, item: it, slick, f };
+    }
+    return null;
+  }
+
+  async function changeOne(job) {
+    await waitIdle();
+    // close a Change Material window left open from before, so it can never be saved for the wrong row
+    for (const d of document.querySelectorAll('.s-CarpenterChangeMaterialsDialog')) if (d.offsetParent !== null) { closeDialog(d); await sleep(300); }
+    const r = rowOf(job);
+    if (!r) return 'the row is no longer in the list';
+    const { i, slick, f } = r;
+    const wo = String(r.item[f.wo] || '');
+    const ref = refOf(r.item[f.mat]);
+    slick.scrollRowIntoView(i);
+    // the Change Material button of exactly this row
     const btn = await waitFor(() => {
-      for (let c = 0; c < ncols; c++) {
+      for (let c = 0; c < slick.getColumns().length; c++) {
         let n = null;
-        try { n = slick.getCellNode(job.i, c); } catch (e) { n = null; }
-        if (n && n.parentElement) { const b = n.parentElement.querySelector('span.btn-change-mat, .btn-change-mat'); if (b) return b; }
+        try { n = slick.getCellNode(i, c); } catch (e) { n = null; }
+        const rowEl = n && n.closest('.slick-row');
+        if (rowEl) { const b = rowEl.querySelector('.btn-change-mat'); if (b) return b; }
       }
-      // fallback: the drawn row that shows this work order
-      const row = [...document.querySelectorAll('.slick-row')].find((r) => wo && r.textContent.includes(wo));
-      return row && row.querySelector('span.btn-change-mat, .btn-change-mat');
+      return null;
     }, 4000);
     if (!btn) return 'could not find the Change Material button of this row';
-    step('pressing Change Material');
-    press(btn);
-    let dlg = await waitFor(visibleDialog, 6000);
-    if (!dlg) { const icon = btn.querySelector('i'); if (icon) press(icon); else btn.click(); dlg = await waitFor(visibleDialog, 8000); }
+    const rowEl = btn.closest('.slick-row');
+    if (rowEl && wo && !rowEl.textContent.includes(wo)) return 'the button found is on another row (not ' + wo + ')';
+    step('row ' + wo + ' found, pressing Change Material');
+    const before = new Set(document.querySelectorAll('.s-CarpenterChangeMaterialsDialog'));
+    const fresh = () => [...document.querySelectorAll('.s-CarpenterChangeMaterialsDialog')]
+      .filter((d) => d.offsetParent !== null && d.querySelector('input[name="Type"]') && (!before.has(d) || d === visibleDialog())).pop();
+    btn.scrollIntoView({ block: 'center' });
+    btn.click(); // one click, like a person
+    let dlg = await waitFor(fresh, 6000);
+    if (!dlg) { press(btn); dlg = await waitFor(fresh, 8000); }
     if (!dlg) return 'the window did not open';
-    step('window open');
     const inp = (n) => dlg.querySelector('input[name="' + n + '"]');
+    // wait for the "Changed Component" panel (Component, Description, Item, Quantity) to load:
+    // saving before it is filled in saves a blank record
+    const panelInputs = () => {
+      const cat = [...dlg.querySelectorAll('.category')].find((c) => /changed\s*component/i.test(txt(c.querySelector('.category-title, legend, .caption')) || ''));
+      let list = cat ? [...cat.querySelectorAll('input, textarea')] : [];
+      if (!list.length) list = ['Component', 'Item', 'Quantity'].map((n) => inp(n)).filter(Boolean);
+      return list.filter((e) => e.type !== 'hidden' && e.type !== 'checkbox' && !/^s2id|select2/.test(e.id + ' ' + e.className));
+    };
+    const panelValues = () => panelInputs().map((e) => (e.value || '').trim());
+    const panelFull = () => { const v = panelValues(); return v.length && v.every(Boolean) ? v.join(' | ') : null; };
+    let filled = null;
+    {
+      const tEnd = Date.now() + 20000;
+      let last = null;
+      let since = 0;
+      while (Date.now() < tEnd) {
+        const v = panelFull();
+        if (v && v === last) { if (Date.now() - since >= 400) { filled = v; break; } } else { last = v; since = Date.now(); }
+        await sleep(100);
+      }
+    }
+    if (!filled) { const v = panelValues().join(' | '); closeDialog(dlg); return 'the Changed Component panel did not load (' + (v || 'empty') + '): not saved'; }
+    step('Changed Component loaded: ' + filled);
+    // the window must be for this row: its Component is the row's material
+    const comp = inp('Component');
+    const c = comp ? (comp.value || '').trim() : '';
+    if (c && ref && refOf(c) !== ref && c !== ref) { closeDialog(dlg); return 'the window opened for component ' + c + ', not ' + ref + ': not saved'; }
     if (!(await choose(inp('ChangeType'), CHANGE_TYPE))) { closeDialog(dlg); return 'could not set ChangeType ' + CHANGE_TYPE; }
     step('ChangeType ' + CHANGE_TYPE);
     if (!(await choose(inp('Type'), job.rule.type))) { closeDialog(dlg); return 'could not choose Type ' + job.rule.type; }
     step('Type ' + job.rule.type);
-    await waitFor(() => !txt(chosenOf(inp('Size'))) || txt(chosenOf(inp('Size'))) === '--select--', 1000);
+    await sleep(200); // the Size list is reloaded for the new Type
     if (!(await choose(inp('Size'), job.rule.size))) { closeDialog(dlg); return 'could not choose Size ' + job.rule.size; }
     step('Size ' + job.rule.size);
     const mat = inp('MaterialId');
-    const got = await waitFor(() => { const t = txt(chosenOf(mat)); return refOf(t) === job.rule.newRef ? t : null; }, 6000);
+    const got = await waitFor(() => { const t = txt(chosenOf(mat)); return refOf(t) === job.rule.newRef && mat.value ? t : null; }, 8000);
     if (!got) { const t = txt(chosenOf(mat)); closeDialog(dlg); return 'the window filled in "' + t + '", not ' + job.rule.material + ': not saved'; }
-    // Save
-    const save = (dlg.closest('.ui-dialog') || dlg).querySelector('.save-and-close-button');
+    step('Material ' + got);
+    await waitIdle(10000);
+    // last look before Save: all four fields as they must be
+    const want = [['ChangeType', CHANGE_TYPE], ['Type', job.rule.type], ['Size', job.rule.size]];
+    for (const [n, v] of want) if (txt(chosenOf(inp(n))).toLowerCase() !== v.toLowerCase()) { closeDialog(dlg); return n + ' changed to "' + txt(chosenOf(inp(n))) + '" before Save: not saved'; }
+    if (refOf(txt(chosenOf(mat))) !== job.rule.newRef) { closeDialog(dlg); return 'Material changed before Save: not saved'; }
+    if (panelFull() !== filled) { const v = panelValues().join(' | '); closeDialog(dlg); return 'the Changed Component panel changed or emptied before Save (' + (v || 'empty') + '): not saved'; }
+    const save = (dlg.closest('.ui-dialog') || dlg).querySelector('.save-and-close-button, .apply-changes-button');
     if (!save) { closeDialog(dlg); return 'no Save button'; }
-    step('Save: ' + txt(chosenOf(mat)));
+    step('Save');
+    const t0 = Date.now();
     save.click();
-    const closed = await waitFor(() => { answerConfirm(); return !visibleDialog() || visibleDialog() !== dlg || dlg.offsetParent === null; }, 15000, 100);
-    if (!closed) {
-      const err = txt((dlg.closest('.ui-dialog') || dlg).querySelector('.error, .validation-summary, label.error'));
-      closeDialog(dlg);
-      return 'the window did not close after Save' + (err ? ' (' + err + ')' : '');
+    const closed = await waitFor(() => { answerConfirm(); return dlg.offsetParent === null || !document.body.contains(dlg); }, 20000, 100);
+    const ans = answers.filter((a) => a.t >= t0 && !/\/List\b|\/Retrieve\b/i.test(a.url));
+    const bad = ans.map(errorText).find(Boolean);
+    if (!closed || bad) {
+      const err = bad || txt((dlg.closest('.ui-dialog') || dlg).querySelector('.error, .validation-summary, label.error'));
+      if (document.body.contains(dlg) && dlg.offsetParent !== null) closeDialog(dlg);
+      return 'not saved' + (err ? ': ' + err : ' (the window did not close)');
     }
+    step('saved' + (ans.length ? ' (server: ' + ans.map((a) => a.url.replace(/^.*\/Services\//, '')).join(', ') + ')' : ''));
+    await waitIdle(); // the list reloads after Save: wait for it before the next row
     return null;
   }
 

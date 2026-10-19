@@ -438,13 +438,23 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
     };
     let seen = '';
     const findBtn = () => {
+      let b = null;
+      try { b = findBtn1(); } catch (e) { b = null; }
+      if (b) return b;
+      try { return findBtn2(); } catch (e) { seen = 'error: ' + e.message; return null; }
+    };
+    const findBtn1 = () => {
       // 1. the cells SlickGrid drew for this row number
       for (let c = 0; c < slick.getColumns().length; c++) {
         let n = null;
         try { n = slick.getCellNode(i, c); } catch (e) { n = null; }
-        const rowEl = n && (n.closest('.slick-row') || n.parentElement);
+        if (n && n.jquery) n = n[0]; // this website's grid gives back a jQuery object, not the cell
+        const rowEl = n && n.nodeType === 1 ? (n.closest('.slick-row') || n.parentElement) : null;
         if (rowEl && btnIn(rowEl) && isMine(rowEl)) return btnIn(rowEl);
       }
+      return null;
+    };
+    const findBtn2 = () => {
       // 2. the drawn row at this row number's height
       const rows = [...gridEl.querySelectorAll('.slick-row')];
       if (rowH) { const at = rows.find((x) => parseInt(x.style.top, 10) === i * rowH); if (at && btnIn(at) && isMine(at)) return btnIn(at); }

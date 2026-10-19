@@ -1,3 +1,5 @@
+import { DEFAULT_PART_KIND_CODES, kindCodes } from './partKinds';
+import { DEFAULT_CUT_ALLOWANCES } from './carpenter/dims';
 import type {
   CalendarSettings,
   CarpenterSettings,
@@ -255,6 +257,8 @@ export function defaultSettings(): PlannerSettings {
     restartJobOnEvent: false,
     timelineEvents: [],
     carpenterCutColumn: 'in_list',
+    cutAllowances: { ...DEFAULT_CUT_ALLOWANCES },
+    partKindCodes: structuredClone(DEFAULT_PART_KIND_CODES),
     carpenterDelayMode: 'soft',
     carpenterMaxDelayHours: 8,
     simulatedUncutMasterOrders: [],
@@ -315,6 +319,8 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
     merged.settingsVersion = SETTINGS_VERSION;
   }
   if (!(merged.estimateMultiplier > 0)) merged.estimateMultiplier = DEFAULT_ESTIMATE_MULTIPLIER;
+  if (!merged.cutAllowances || typeof merged.cutAllowances !== 'object') merged.cutAllowances = { ...base.cutAllowances };
+  merged.partKindCodes = kindCodes(merged.partKindCodes);
   return merged;
 }
 

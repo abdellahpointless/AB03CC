@@ -1,31 +1,60 @@
 import type { Job } from './types';
 
 /**
- * What kind of work an order is, from how its numbers start:
- *  - module: order and master order start with 10000
- *  - rework: order starts with 80000 (its master order with 10000); top priority, ahead of every rule
- *  - table:  order and master order start with 60000, or 30000 with the same sales order as a 60000 order
- *  - spare:  order starts with 30000 (anything that is not a table)
+ * What kind of work an order is, from how its numbers start (the prefixes are settings; defaults in brackets):
+ *  - rework: order starts with a rework prefix (80000); top priority, ahead of every rule
+ *  - table:  order and master order start with a table prefix (60000), or a spare prefix with the sales order of a table
+ *  - spare:  order starts with a spare prefix (30000) and is not a table
+ *  - module: everything else (order and master order 10000)
  */
 export type PartKind = 'module' | 'rework' | 'table' | 'spare';
 
+/** Order-number prefixes per kind; several prefixes per kind are allowed. */
+export interface PartKindCodes {
+  rework: string[];
+  table: string[];
+  spare: string[];
+}
+export const DEFAULT_PART_KIND_CODES: PartKindCodes = { rework: ['80000'], table: ['60000'], spare: ['30000'] };
+
 const noZeros = (s: string) => s.trim().replace(/^0+/, '');
 
-export function classifyKinds(jobs: Job[]): Map<string, PartKind> {
+/** "80000, 81000" -> ['80000', '81000'] (digits only, empty entries dropped) */
+export function parsePrefixes(text: string): string[] {
+  return [...new Set(text.split(/[\s,;]+/).map(s => s.replace(/\D/g, '')).filter(Boolean))];
+}
+
+/** The codes to use: missing or empty lists fall back to the defaults, so an order is never left without a rule. */
+export function kindCodes(codes?: Partial<PartKindCodes> | null): PartKindCodes {
+  const pick = (k: keyof PartKindCodes) => (Array.isArray(codes?.[k]) && codes![k]!.length ? codes![k]! : DEFAULT_PART_KIND_CODES[k]);
+  return { rework: pick('rework'), table: pick('table'), spare: pick('spare') };
+}
+
+const startsWithAny = (s: string, prefixes: string[]) => prefixes.some(p => s.startsWith(p));
+
+export function isReworkOrder(orderNumber: string, codes?: Partial<PartKindCodes> | null): boolean {
+  return startsWithAny(orderNumber, kindCodes(codes).rework);
+}
+
+export function classifyKinds(jobs: Job[], codes?: Partial<PartKindCodes> | null): Map<string, PartKind> {
+  const c = kindCodes(codes);
   const tableSalesOrders = new Set<string>();
-  for (const j of jobs) if (j.orderNumber.startsWith('60000') && j.masterOrder.startsWith('60000') && j.salesOrder) tableSalesOrders.add(noZeros(j.salesOrder));
+  for (const j of jobs) if (startsWithAny(j.orderNumber, c.table) && startsWithAny(j.masterOrder, c.table) && j.salesOrder) tableSalesOrders.add(noZeros(j.salesOrder));
   const out = new Map<string, PartKind>();
   for (const j of jobs) {
     const order = j.orderNumber;
     const master = j.masterOrder;
     let kind: PartKind = 'module';
-    if (order.startsWith('80000')) kind = 'rework';
-    else if (order.startsWith('60000') && master.startsWith('60000')) kind = 'table';
-    else if (order.startsWith('30000')) kind = master.startsWith('30000') && j.salesOrder && tableSalesOrders.has(noZeros(j.salesOrder)) ? 'table' : 'spare';
+    if (startsWithAny(order, c.rework)) kind = 'rework';
+    else if (startsWithAny(order, c.table) && startsWithAny(master, c.table)) kind = 'table';
+    else if (startsWithAny(order, c.spare)) kind = startsWithAny(master, c.spare) && j.salesOrder && tableSalesOrders.has(noZeros(j.salesOrder)) ? 'table' : 'spare';
     out.set(j.id, kind);
   }
   return out;
 }
+
+/** "80000" or "80000 / 81000", for help texts */
+export const prefixText = (prefixes: string[]) => prefixes.map(p => `${p}*`).join(' / ');
 
 /** Tables and spares are planned from a start and a finish time the user chooses, per sales order. */
 export interface PartGroup {

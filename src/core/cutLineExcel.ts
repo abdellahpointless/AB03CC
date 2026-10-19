@@ -80,7 +80,7 @@ function cutSheet(wb: Workbook, name: string, title: string, sub: string, steps:
   ws.getCell('A2').value = sub;
   ws.getCell('A2').font = { size: 11, color: { argb: 'FF475569' } };
   merge(ws, 2, 1, 7);
-  ws.getCell('A3').value = `Cut from top to bottom. Sizes are in mm, the longest first, Z last; FH sizes already have the +3 mm (not on Z). Write how many you cut in the "Cut" box. On the computer: set column A to ${ON} and the line turns green.`;
+  ws.getCell('A3').value = `Cut from top to bottom. Sizes are in mm, the longest first, Z last; sizes already include the material's extra mm where one is set (not on Z). Write how many you cut in the "Cut" box. On the computer: set column A to ${ON} and the line turns green.`;
   ws.getCell('A3').font = { size: 10, italic: true, color: { argb: 'FF64748B' } };
   ws.getCell('A3').alignment = { wrapText: true, vertical: 'middle' };
   ws.getRow(3).height = 30;
@@ -126,7 +126,7 @@ function cutSheet(wb: Workbook, name: string, title: string, sub: string, steps:
       const matRow = r;
       const mr = ws.getRow(r);
       checkCell(mr.getCell(1));
-      mr.getCell(2).value = `${m.material}  —  ${m.qty} pcs${m.material === 'FH' ? '   (sizes +3 mm, not Z)' : ''}`;
+      mr.getCell(2).value = `${m.material}  —  ${m.qty} pcs${m.allowance ? `   (sizes +${m.allowance} mm, not Z)` : ''}`;
       merge(ws, r, 2, 7);
       mr.getCell(1).fill = fill(tone(m.material, 38));
       mr.getCell(1).font = { size: 14, color: { argb: 'FFFFFFFF' } };

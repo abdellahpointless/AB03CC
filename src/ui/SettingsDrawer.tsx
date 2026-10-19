@@ -8,6 +8,8 @@ import { useStore } from '../state/store';
 import { Badge, Button, Field, NumberInput, Segmented, Toggle, inputCls } from './kit';
 import { MachinesEditor } from './MachinesEditor';
 import { useImport } from './useImport';
+import { DEFAULT_PART_KIND_CODES, parsePrefixes, prefixText, type PartKindCodes } from '../core/partKinds';
+import { DEFAULT_CUT_ALLOWANCES } from '../core/carpenter/dims';
 
 type Tab = 'machines' | 'materials' | 'time' | 'rules' | 'parttimes' | 'carpenter' | 'efficiency';
 const TABS: Array<[Tab, string]> = [
@@ -344,6 +346,7 @@ function RulesTab({ s, set }: TabProps) {
           </div>
         </Field>
       </Section>
+      <PartKindsSection s={s} set={set} />
       <Section title="Out-of-scope ERP machines" hint="Jobs the ERP assigned to these machines are listed under Exceptions and not planned. Comma separated.">
         <input
           className={inputCls}
@@ -353,6 +356,114 @@ function RulesTab({ s, set }: TabProps) {
         />
       </Section>
     </>
+  );
+}
+
+function PartKindsSection({ s, set }: TabProps) {
+  const codes = s.partKindCodes;
+  const rows: Array<[keyof PartKindCodes, string, string]> = [
+    ['rework', 'Rework', 'Top priority, ahead of every rule; not counted as a finished module.'],
+    ['table', 'Tables', 'Order and master order start with one of these (or a spare prefix with the sales order of a table).'],
+    ['spare', 'Spare parts', 'Order starts with one of these and is not a table.'],
+  ];
+  const changed = (Object.keys(DEFAULT_PART_KIND_CODES) as Array<keyof PartKindCodes>).some(k => codes[k].join(',') !== DEFAULT_PART_KIND_CODES[k].join(','));
+  return (
+    <Section
+      title="Kinds of parts (order number prefixes)"
+      hint="The start of the order number tells what a part is. Every other order is a module part. Several prefixes per kind: separate them with commas. An empty box goes back to the default."
+    >
+      <div className="grid gap-2">
+        {rows.map(([k, label, hint]) => (
+          <Field key={k} label={label} hint={`${hint} Default ${prefixText(DEFAULT_PART_KIND_CODES[k])}.`}>
+            <input
+              className={`${inputCls} mono`}
+              key={codes[k].join('|')}
+              defaultValue={codes[k].join(', ')}
+              placeholder={DEFAULT_PART_KIND_CODES[k].join(', ')}
+              onBlur={e => {
+                const v = parsePrefixes(e.target.value);
+                set({ partKindCodes: { ...codes, [k]: v.length ? v : DEFAULT_PART_KIND_CODES[k] } });
+              }}
+              onKeyDown={e => e.key === 'Enter' && (e.target as HTMLInputElement).blur()}
+            />
+          </Field>
+        ))}
+      </div>
+      {changed && (
+        <Button size="sm" className="mt-2" onClick={() => set({ partKindCodes: structuredClone(DEFAULT_PART_KIND_CODES) })}>
+          <RotateCcw className="h-3.5 w-3.5" /> Defaults
+        </Button>
+      )}
+    </Section>
+  );
+}
+
+function AllowancesSection({ s, set }: TabProps) {
+  const [mat, setMat] = useState('');
+  const [mm, setMm] = useState<number | undefined>(3);
+  const entries = Object.entries(s.cutAllowances).sort(([a], [b]) => a.localeCompare(b));
+  const put = (next: Record<string, number>) => set({ cutAllowances: next });
+  return (
+    <Section
+      title="Extra size to saw, per material"
+      hint="The carpenter saws this many mm more on the two sizes that are not Z (the CNC squares the part before milling). It is added to the cut list, the printed sheets and the scan. Default: FH +3 mm."
+    >
+      <div className="grid gap-1.5">
+        {entries.length === 0 && <p className="text-xs text-slate-500">No extra size: every part is sawn at its drawing size.</p>}
+        {entries.map(([m, v]) => (
+          <div key={m} className="flex items-center gap-2 text-xs">
+            <span className="mono w-24 font-semibold text-white">{m}</span>
+            <div className="w-24">
+              <NumberInput value={v} min={0} step={0.5} onChange={n => n !== undefined && put({ ...s.cutAllowances, [m]: n })} />
+            </div>
+            <span className="text-slate-400">mm on X and Y</span>
+            <button
+              className="ml-auto rounded p-1 text-slate-400 hover:bg-slate-800 hover:text-rose-300"
+              title={`Remove ${m}`}
+              onClick={() => {
+                const next = { ...s.cutAllowances };
+                delete next[m];
+                put(next);
+              }}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <div className="w-32">
+          <input
+            list="allowance-materials"
+            className={`${inputCls} mono`}
+            placeholder="Material"
+            value={mat}
+            onChange={e => setMat(e.target.value.toUpperCase())}
+          />
+        </div>
+        <datalist id="allowance-materials">
+          {MATERIAL_TYPES.map(m => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+        <div className="w-24">
+          <NumberInput value={mm} min={0} step={0.5} onChange={setMm} />
+        </div>
+        <Button
+          size="sm"
+          disabled={!mat.trim() || mm === undefined}
+          onClick={() => {
+            put({ ...s.cutAllowances, [mat.trim()]: mm ?? 0 });
+            setMat('');
+          }}
+        >
+          <Plus className="h-3.5 w-3.5" /> Add
+        </Button>
+        <Button size="sm" className="ml-auto" onClick={() => put({ ...DEFAULT_CUT_ALLOWANCES })}>
+          <RotateCcw className="h-3.5 w-3.5" /> Defaults
+        </Button>
+      </div>
+    </Section>
   );
 }
 
@@ -454,6 +565,7 @@ function CarpenterTab({ s, set }: TabProps) {
           <p className="text-xs text-slate-400">No list loaded. Use Import in the top bar: the file is recognised by its columns.</p>
         )}
       </Section>
+      <AllowancesSection s={s} set={set} />
       <Section
         title="What counts as cut?"
         hint="A part leaves the carpenter list when it reaches the CNC workload, so every part still in the list is still at the carpenter. The website's Cutted Status is set for whole orders at once, not per part. The workload's own counters (Sub Order Count − Cutting Count) are checked too, for parts the list does not show."

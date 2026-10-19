@@ -51,6 +51,25 @@ describe('carpenter cut list', () => {
     const [thin] = buildCutItems([part('C', '9', 'ZUSATZPLATTE FH/2310117/20X28X10', '103434 - FH8221 20x1000x1000 B1400')], { settings: s.carpenter });
     expect(thin.cut).toEqual([20, 31, 13]);
   });
+  it('takes the extra size per material from the settings', () => {
+    expect(s.cutAllowances).toEqual({ FH: 3 });
+    const own = buildCutItems(parts, { settings: s.carpenter, allowances: { FH: 5, ALU: 1 } });
+    expect(own[0].cut).toEqual([105, 155, 40]);
+    expect(own[0].allowance).toBe(5);
+    expect(own[1].cut).toEqual([25, 15, 36]); // ALU now +1 on the two sizes that are not Z (15 is Z here)
+    expect(own[2].allowance).toBeUndefined();
+    const none = buildCutItems(parts, { settings: s.carpenter, allowances: {} });
+    expect(none[0].cut).toEqual([100, 150, 40]);
+    expect(none[0].allowance).toBeUndefined();
+    const line = buildCutLine(own, [], { inProduction: () => false, minutes: s.carpenter });
+    expect(line.steps[0].materials.find(m => m.material === 'FH')!.allowance).toBe(5);
+  });
+  it('keeps saved settings without the new fields working', () => {
+    const old = mergeSettings({ settingsVersion: 5 } as never);
+    expect(old.cutAllowances).toEqual({ FH: 3 });
+    expect(old.partKindCodes).toEqual({ rework: ['80000'], table: ['60000'], spare: ['30000'] });
+    expect(mergeSettings({ ...defaultSettings(), partKindCodes: { rework: [], table: ['61000'], spare: ['30000'] } }).partKindCodes.rework).toEqual(['80000']);
+  });
   it('numbers one sheet line per size and scans material by material, the size with most pieces first', () => {
     const more = [
       ...parts,

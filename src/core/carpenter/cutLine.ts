@@ -67,6 +67,8 @@ export interface LineMaterial {
   bladeChange: boolean;
   boards: LineBoard[];
   qty: number;
+  /** extra mm on X and Y already in these sizes (0 when none) */
+  allowance?: number;
 }
 export interface LineStep {
   index: number;
@@ -259,7 +261,8 @@ function makeStep(index: number, rule: CutStepRule | null, title: string, mine: 
       minutes += m.stockChangeMin;
       for (const s of b.strips) minutes += m.stripChangeMin + new Set(s.parts.map(p => p.length)).size * m.lengthChangeMin + s.qty * m.minutesPerPiece;
     }
-    return { ...g, bladeChange };
+    const allowance = Math.max(0, ...g.boards.flatMap(b => b.strips.flatMap(s => s.parts.map(p => p.item.allowance ?? 0))));
+    return { ...g, bladeChange, allowance };
   });
   const pickQty = picks.reduce((s, p) => s + p.qty, 0);
   minutes += pickQty * m.premadeMinutes;

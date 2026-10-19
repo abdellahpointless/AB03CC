@@ -3,7 +3,7 @@ import { demoCarpenterParts, demoJobs } from '../demo';
 import { defaultSettings } from '../defaults';
 import { budgetFor } from '../optimizer/budget';
 import { analyzeEmergency } from '../emergency';
-import { buildGroups, classifyKinds } from '../partKinds';
+import { buildGroups, classifyKinds, parsePrefixes } from '../partKinds';
 import type { Job, PlanResult, PlannerSettings, PriorityRule } from '../types';
 import { isEligible, planProduction } from './plan';
 import { SimContext } from './simulate';
@@ -316,6 +316,16 @@ describe('part kinds, tables and spares', () => {
     expect(kinds.get('x-300000000010')).toBe('spare');
     expect(kinds.get('x-800000000001')).toBe('rework');
     expect(buildGroups(jobs, kinds).map(g => [g.kind, g.jobIds.length])).toEqual([['spare', 2], ['table', 3]]);
+  });
+
+  it('uses the order-number prefixes from the settings', () => {
+    const jobs = tableJobs();
+    // tables are no longer 60000: they fall back to modules; 80000 rework is now a module, 30000 stays spare
+    const kinds = classifyKinds(jobs, { rework: ['81000'], table: ['61000'], spare: ['30000', '60000'] });
+    expect(kinds.get('x-800000000001')).toBe('module');
+    expect(kinds.get('x-600000000001')).toBe('spare');
+    expect(kinds.get('x-300000000010')).toBe('spare');
+    expect(parsePrefixes(' 80000, 81000;x 80000 ')).toEqual(['80000', '81000']);
   });
 
   it('counts rework, spares and tables on their own, never as finished modules', () => {

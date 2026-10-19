@@ -61,8 +61,9 @@ export function CarpenterView() {
       materialAliases: settings.materialAliases,
       history,
       cutColumn: settings.carpenterCutColumn,
+      allowances: settings.cutAllowances,
     });
-  }, [carpenterParts, jobs, cs.materialTokens, cs.doneWorkOrders, cs.sawGroups, settings.materialAliases, settings.carpenterCutColumn]);
+  }, [carpenterParts, jobs, cs.materialTokens, cs.doneWorkOrders, cs.sawGroups, settings.materialAliases, settings.carpenterCutColumn, settings.cutAllowances]);
 
   // boxes in production = the sales orders the CNC plan makes (an End rule may leave some of the workload out)
   const producing = useMemo(() => {
@@ -172,7 +173,7 @@ export function CarpenterView() {
               <b className="mono">{sizeText(next.length, next.width, next.z, ' × ')}</b> <span className="mono text-slate-300">×{next.qty}</span>
             </span>
             <span className="text-xs text-slate-400">
-              board Z {next.z} · strip {next.width} mm · cut {next.length} mm{next.material === 'FH' ? ' · +3 mm included' : ''}
+              board Z {next.z} · strip {next.width} mm · cut {next.length} mm{next.parts[0]?.item.allowance ? ` · +${next.parts[0].item.allowance} mm included` : ''}
             </span>
           </div>
         )}
@@ -453,7 +454,7 @@ const StepSection = memo(function StepSection({
                   <div className="flex items-baseline gap-2 px-4 pt-3">
                     <span className="text-lg font-semibold text-white">{m.material}</span>
                     <span className="text-xs text-slate-400">
-                      {m.qty} pcs{m.material === 'FH' && ' · sizes include +3 mm (not Z)'}
+                      {m.qty} pcs{m.allowance ? ` · sizes include +${m.allowance} mm (not Z)` : ''}
                     </span>
                   </div>
                   <div className="space-y-2 p-3">

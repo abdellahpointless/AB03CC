@@ -4,7 +4,7 @@
  */
 import type { CarpenterCutColumn, CarpenterPart, CarpenterSettings, CutItem, CutItemStatus, StockKind } from '../types';
 import { isPartCut } from '../parse/carpenter';
-import { FH_ALLOWANCE_MM, piecesPerBlank, resolveCut, withAllowance, zIndexOf } from './dims';
+import { DEFAULT_CUT_ALLOWANCES, piecesPerBlank, resolveCut, withAllowance, zIndexOf } from './dims';
 import { learnPartNames, materialContext, resolveMaterial, type MaterialOptions } from './material';
 import { alertBlocks, stockCatalog, type StockInfo } from './stock';
 import { MATERIAL_BY_CODE } from './vocab';
@@ -22,6 +22,8 @@ export interface BuildCutItemsOptions {
   knownNames?: Set<string>;
   /** what marks a row as done (settings.carpenterCutColumn); default 'in_list': only the parts ticked in the app */
   cutColumn?: CarpenterCutColumn;
+  /** extra mm per material on the two sizes that are not Z (settings.cutAllowances); default FH: 3 */
+  allowances?: Record<string, number>;
 }
 
 /** Saw group of a material code: the user's map, else the material's family, else 'other'. */
@@ -42,6 +44,7 @@ const TURNING_NAME = /\b(SWITCH\s*PIN|SCHALTSTIFT|BOLT|BOLZEN)\b/i;
 
 export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions = {}): CutItem[] {
   const sawGroups = opts.settings?.sawGroups ?? {};
+  const allowances = opts.allowances ?? DEFAULT_CUT_ALLOWANCES;
   const done = new Set((opts.settings?.doneWorkOrders ?? []).map(s => String(s).trim()));
   const catalog = stockCatalog(parts);
   const matOpts: MaterialOptions = {
@@ -65,8 +68,8 @@ export function buildCutItems(parts: CarpenterPart[], opts: BuildCutItemsOptions
     const alert = ctx.alert;
     const eff: StockInfo | null = ctx.replacement ?? ctx.desc ?? ctx.box;
     const zi = written ? zIndexOf(written, eff?.thickness ?? null) : undefined;
-    // FH: the carpenter saws 3 mm more on the two sizes that are not Z (the CNC squares the part before milling)
-    const allowance = written && mat.material === 'FH' ? FH_ALLOWANCE_MM : 0;
+    // e.g. FH: the carpenter saws 3 mm more on the two sizes that are not Z (the CNC squares the part before milling)
+    const allowance = written && mat.material ? Math.max(0, Number(allowances[mat.material]) || 0) : 0;
     const cut = written && allowance ? withAllowance(written, zi!, allowance) : written;
     const stockKind: StockKind = eff?.kind ?? 'unknown';
     // the saw cuts the bar: its material decides the saw, the part's material when the bar's is unknown

@@ -2,7 +2,7 @@ import { Table2, Wrench } from 'lucide-react';
 import { useMemo, useState } from 'react';
 import { formatDuration } from '../core/calendar';
 import { partKey } from '../core/parse/partTimes';
-import { buildGroups, classifyKinds, type PartGroup } from '../core/partKinds';
+import { buildGroups, classifyKinds, prefixText, type PartGroup } from '../core/partKinds';
 import { useStore } from '../state/store';
 import { Badge, Button, Empty, Segmented, inputCls } from './kit';
 
@@ -12,7 +12,8 @@ type Filter = 'all' | 'table' | 'spare';
 export function TablesView() {
   const { jobs, plan, settings, partTimes, updateSettings } = useStore();
   const [filter, setFilter] = useState<Filter>('all');
-  const groups = useMemo(() => buildGroups(jobs, classifyKinds(jobs)), [jobs]);
+  const codes = settings.partKindCodes;
+  const groups = useMemo(() => buildGroups(jobs, classifyKinds(jobs, codes)), [jobs, codes]);
   const byId = useMemo(() => new Map(jobs.map(j => [j.id, j])), [jobs]);
 
   const minutesOf = (g: PartGroup) =>
@@ -39,7 +40,7 @@ export function TablesView() {
         <div>
           <h2 className="text-lg font-extrabold uppercase tracking-wide text-white">Tables &amp; spare parts</h2>
           <p className="mt-0.5 max-w-3xl text-xs text-slate-400">
-            Tables (order and master order 60000*, or 30000* with the sales order of a table) and spare parts (30000*) are kept together per sales order and are not planned automatically.
+            Tables (order and master order {prefixText(codes.table)}, or {prefixText(codes.spare)} with the sales order of a table) and spare parts ({prefixText(codes.spare)}) are kept together per sales order and are not planned automatically.
             Choose when a group should start and when it must be finished. The planner then places its parts so that the module parts are delayed as little as possible.
           </p>
         </div>

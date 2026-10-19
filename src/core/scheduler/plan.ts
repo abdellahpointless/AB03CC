@@ -21,7 +21,7 @@ import type {
   WindowReport,
 } from '../types';
 import { isEligible, refusal } from './eligibility';
-import { classifyKinds, emergencyJobIds, groupKey } from '../partKinds';
+import { classifyKinds, emergencyJobIds, groupKey, isReworkOrder, type PartKindCodes } from '../partKinds';
 import { classifyJobs, improveQueues, partitionByTier } from './improve';
 import { insertWindowJobs, type WindowJob } from './windows';
 import { SimContext, simulateQueue, step, type MachineState, type QueueSim } from './simulate';
@@ -165,7 +165,7 @@ export function planProduction(
   }
 
   /* ---- kinds of work, emergencies, table and spare windows ------------- */
-  const kinds = classifyKinds(jobs);
+  const kinds = classifyKinds(jobs, settings.partKindCodes);
   const emergencyIds = emergencyJobIds(jobs, settings.emergencies ?? []);
   const windows = new Map<string, { release: number; due: number }>();
   for (const [key, w] of Object.entries(settings.partWindows ?? {})) {
@@ -181,7 +181,7 @@ export function planProduction(
     jobs.map(j => j.masterOrder),
     settings.carpenterCutColumn,
     settings.simulatedUncutMasterOrders,
-    carpenterCounters(jobs),
+    carpenterCounters(jobs, settings.partKindCodes),
   );
   const carpenterOf = (mo: string): CarpenterMoInfo | undefined => carpenter.map[normalizeMo(mo)];
   const carpenterBlocked = (mo: string) => Boolean(carpenterOf(mo)?.hasOpenParts);
@@ -844,9 +844,9 @@ function lexLess(a: number[], b: number[]) {
 /* ------------------------------------------------------------------ */
 
 /** Per master order, the parts still at the carpenter by the workload's own counters (same on every row of the order). */
-export function carpenterCounters(jobs: Job[]): Record<string, number> {
+export function carpenterCounters(jobs: Job[], codes?: Partial<PartKindCodes> | null): Record<string, number> {
   const out: Record<string, number> = {};
-  for (const j of jobs) if (j.atCarpenter !== undefined && !j.isRework && !j.orderNumber.startsWith('80000')) out[j.masterOrder] = Math.max(out[j.masterOrder] ?? 0, j.atCarpenter);
+  for (const j of jobs) if (j.atCarpenter !== undefined && !j.isRework && !isReworkOrder(j.orderNumber, codes)) out[j.masterOrder] = Math.max(out[j.masterOrder] ?? 0, j.atCarpenter);
   return out;
 }
 

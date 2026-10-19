@@ -1,6 +1,6 @@
 /** Domain types shared by the parsers, the scheduler (worker) and the UI. */
 
-import type { PartKind } from './partKinds';
+import type { PartKind, PartKindCodes } from './partKinds';
 
 export type Id = string;
 
@@ -387,6 +387,10 @@ export interface PlannerSettings {
   timelineEvents: TimelineEvent[];
 
   carpenterCutColumn: CarpenterCutColumn;
+  /** mm the carpenter saws more on the two sizes that are not Z, per material (default FH: 3) */
+  cutAllowances: Record<string, number>;
+  /** what an order is, from how its order numbers start (default rework 80000, table 60000, spare 30000) */
+  partKindCodes: PartKindCodes;
   carpenterDelayMode: CarpenterDelayMode;
   carpenterMaxDelayHours: number;
   simulatedUncutMasterOrders: string[];

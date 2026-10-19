@@ -224,6 +224,8 @@ export function zIndexOf(cut: Dims3, thickness: number | null): number {
 
 /** FH is sawn this much bigger on the two sizes that are not Z, so the CNC can square it before milling (the board's Z is right). */
 export const FH_ALLOWANCE_MM = 3;
+/** default extra mm per material (settings.cutAllowances) */
+export const DEFAULT_CUT_ALLOWANCES: Record<string, number> = { FH: FH_ALLOWANCE_MM };
 
 /** The size to saw: the allowance added to every size except Z. */
 export function withAllowance(cut: Dims3, zi: number, mm: number): Dims3 {

@@ -196,27 +196,46 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
     return { c: (col && cands.find((c) => colorOf(c.material) === col)) || cands[0], need };
   }
   const finalOf = (c) => (c && c.rt ? CAT.find((x) => x.type === c.rt && x.size === c.rs) || c : c);
-  // {rule} to change, {skip: reason} or {skip: null} when the row is already right
+  // The rule: Description De gives the material type (by its number). When the replacement table has no Replace for
+  // that type, the row is skipped. Otherwise the Z of the part in the Nc Description (the last number of the part
+  // size, e.g. 75X78X8 -> 8) picks the board of that type (that size, or the next bigger one); Keep -> skip,
+  // Replace -> change to the table's Type + Size. Bars (INOX) are picked by the part's section.
+  // Returns {rule} to change, or {skip: reason}.
   function decide(desc, ncText) {
     const cur = byRef.get(refOf(desc));
     if (!cur) return { skip: 'material not in the Change Material window' };
+    const rows = CAT.filter((c) => c.type === cur.type);
+    if (!rows.some((c) => c.rt)) return { skip: 'no change for ' + cur.type };
     const nc = parseNc(ncText);
-    let type = cur.type;
-    let base = cur;
-    const nt = nc && NC_TYPES.find(([, re]) => re.test(nc.n3.toUpperCase()));
-    // already replaced (e.g. an EPO part now on POM): size it as the original material, then replace again
-    if (nt && nt[0] !== cur.type && replacedInto(nt[0]).has(cur.type)) { type = nt[0]; base = null; }
-    let c = cur;
+    if (!nc) return { skip: 'no size in the Nc Description' };
+    let row = null;
     let need = '';
-    if (nc) {
-      const r = fitting(type, nc, base);
-      if (r.err) return { skip: r.err };
-      if (!r.keep) { c = r.c; need = r.need; }
+    if (BARS.has(cur.type)) {
+      const p = [...nc.part].sort((a, b) => a - b);
+      const sec = [p[1], p[0]];
+      need = 'section ' + fmt(sec[0]) + 'x' + fmt(sec[1]);
+      const fits = rows.filter((c) => sectionOf(c) && sectionOf(c)[0] >= sec[0] - 0.01 && sectionOf(c)[1] >= sec[1] - 0.01);
+      if (!fits.length) return { skip: 'no ' + cur.type + ' bar for ' + need };
+      const area = (c) => sectionOf(c)[0] * sectionOf(c)[1];
+      const best = Math.min(...fits.map(area));
+      const cands = fits.filter((c) => area(c) === best);
+      row = cands.find((c) => c.ref === cur.ref) || cands[0];
+    } else {
+      const z = nc.part[2];
+      need = 'Z ' + fmt(z);
+      const boards = rows.filter((c) => thickOf(c) !== null);
+      const fits = boards.filter((c) => thickOf(c) >= z - 0.01);
+      if (!fits.length) return { skip: 'no ' + cur.type + ' board for ' + need };
+      const th = Math.min(...fits.map(thickOf));
+      const cands = fits.filter((c) => thickOf(c) === th);
+      row = cands.find((c) => c.ref === cur.ref) || cands.find((c) => c.rt) || cands[0];
     }
-    const f = finalOf(c);
-    if (f.ref === cur.ref) return { skip: null };
-    return { rule: { now: cur.type + ' · ' + cur.size, desc: String(desc).trim(), type: f.type, size: f.size, material: f.material, newRef: f.ref, via: c !== f ? c.type + ' · ' + c.size : '', need, n3: nc ? nc.n3 : '(no size in the NC description)' } };
+    if (!row.rt) return { skip: 'keep: ' + cur.type + ' ' + row.size };
+    const f = finalOf(row);
+    if (f.ref === cur.ref) return { skip: 'already ' + f.type + ' ' + f.size };
+    return { rule: { now: cur.type + ' · ' + cur.size, desc: String(desc).trim(), type: f.type, size: f.size, material: f.material, newRef: f.ref, via: row.type + ' · ' + row.size, need, n3: nc.n3 } };
   }
+
   const load = () => { try { return new Set(JSON.parse(localStorage.getItem(KEY_DONE)) || []); } catch (e) { return new Set(); } };
   const done = load();
   const remember = (k) => { done.add(k); try { localStorage.setItem(KEY_DONE, JSON.stringify([...done])); } catch (e) { /* private window */ } };
@@ -230,7 +249,7 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
   panel.innerHTML = '<div style="display:flex;align-items:center;padding:10px 12px;border-bottom:1px solid #334155"><b>Carpenter material changer</b><button data-x class="cx-b" style="margin-left:auto">✕</button></div>'
     + '<div style="padding:10px 12px;display:flex;flex-direction:column;gap:8px;overflow:auto">'
     + '<div>Size from the <b>Nc Description</b>, material type from <b>Description De</b>, then your Keep / Replace table. ChangeType <b>' + CHANGE_TYPE + '</b>. Rows already right are skipped.</div>'
-    + '<div style="display:flex;gap:6px;flex-wrap:wrap"><button data-a="check" class="cx-b">Check (changes nothing)</button><button data-a="start" class="cx-b go">Start</button><button data-a="stop" class="cx-b">Stop</button><button data-a="csv" class="cx-b" title="Every row the script would change, with the NC line and the reason (Excel)">Download the list</button><button data-a="forget" class="cx-b" title="Forget which rows were already changed in this browser">Forget done rows</button></div>'
+    + '<div style="display:flex;gap:6px;flex-wrap:wrap"><button data-a="check" class="cx-b">Check (changes nothing)</button><button data-a="one" class="cx-b" title="Change only the first row, step by step, to test">Do 1 row</button><button data-a="start" class="cx-b go">Start</button><button data-a="stop" class="cx-b">Stop</button><button data-a="csv" class="cx-b" title="Every row the script would change, with the NC line and the reason (Excel)">Download the list</button><button data-a="forget" class="cx-b" title="Forget which rows were already changed in this browser">Forget done rows</button></div>'
     + '<div data-now style="background:#1e3a8a;border:1px solid #3b82f6;border-radius:8px;padding:8px 10px">Ready.</div>'
     + '<pre data-log style="margin:0;white-space:pre-wrap;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:6px;max-height:40vh;overflow:auto;font:11px ui-monospace,monospace"></pre></div>';
   const st = document.createElement('style');
@@ -289,13 +308,19 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
       const key = keyOf(item, f);
       if (done.has(key)) continue;
       const d = decide(item[f.mat], item[f.nc]);
-      if (!d.rule) { const why = d.skip || 'already right'; skipped.set(why, (skipped.get(why) || 0) + 1); continue; }
+      if (!d.rule) { const why = String(d.skip || 'already right').replace(/^(keep|already): .*/, (m) => m); skipped.set(why, (skipped.get(why) || 0) + 1); continue; }
       out.push({ i, item, rule: d.rule, key });
     }
     return out;
   }
 
   /* ------------------------------------------------------------------ the window */
+  let verbose = false;
+  const step = (m) => { if (verbose) log('    · ' + m); };
+  const press = (el) => {
+    el.scrollIntoView({ block: 'center' });
+    for (const ty of ['pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click']) el.dispatchEvent(new MouseEvent(ty, { bubbles: true, cancelable: true, view: window }));
+  };
   const visibleDialog = () => [...document.querySelectorAll('.s-CarpenterChangeMaterialsDialog')]
     .filter((d) => d.offsetParent !== null && d.querySelector('input[name="Type"]')).pop();
   const chosenOf = (input) => { const c = document.getElementById('s2id_' + input.id); return c ? c.querySelector('.select2-chosen') : null; };
@@ -344,28 +369,43 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
   }
 
   async function changeOne(job) {
-    const { slick, btnCol } = gridParts();
+    const { slick, f } = gridParts();
     slick.scrollRowIntoView(job.i);
-    const cell = await waitFor(() => {
-      const n = btnCol >= 0 ? slick.getCellNode(job.i, btnCol) : null;
-      const row = n ? n.parentElement : null;
-      return (n && n.querySelector('.btn-change-mat')) || (row && row.querySelector('.btn-change-mat'));
-    }, 3000);
-    if (!cell) return 'could not find the Change Material button';
-    cell.click();
-    const dlg = await waitFor(visibleDialog, 10000);
+    const ncols = slick.getColumns().length;
+    const wo = String(job.item[f.wo] || '');
+    // the row's Change Material button: look through the drawn cells of this row (the button column has no name)
+    const btn = await waitFor(() => {
+      for (let c = 0; c < ncols; c++) {
+        let n = null;
+        try { n = slick.getCellNode(job.i, c); } catch (e) { n = null; }
+        if (n && n.parentElement) { const b = n.parentElement.querySelector('span.btn-change-mat, .btn-change-mat'); if (b) return b; }
+      }
+      // fallback: the drawn row that shows this work order
+      const row = [...document.querySelectorAll('.slick-row')].find((r) => wo && r.textContent.includes(wo));
+      return row && row.querySelector('span.btn-change-mat, .btn-change-mat');
+    }, 4000);
+    if (!btn) return 'could not find the Change Material button of this row';
+    step('pressing Change Material');
+    press(btn);
+    let dlg = await waitFor(visibleDialog, 6000);
+    if (!dlg) { const icon = btn.querySelector('i'); if (icon) press(icon); else btn.click(); dlg = await waitFor(visibleDialog, 8000); }
     if (!dlg) return 'the window did not open';
+    step('window open');
     const inp = (n) => dlg.querySelector('input[name="' + n + '"]');
     if (!(await choose(inp('ChangeType'), CHANGE_TYPE))) { closeDialog(dlg); return 'could not set ChangeType ' + CHANGE_TYPE; }
+    step('ChangeType ' + CHANGE_TYPE);
     if (!(await choose(inp('Type'), job.rule.type))) { closeDialog(dlg); return 'could not choose Type ' + job.rule.type; }
+    step('Type ' + job.rule.type);
     await waitFor(() => !txt(chosenOf(inp('Size'))) || txt(chosenOf(inp('Size'))) === '--select--', 1000);
     if (!(await choose(inp('Size'), job.rule.size))) { closeDialog(dlg); return 'could not choose Size ' + job.rule.size; }
+    step('Size ' + job.rule.size);
     const mat = inp('MaterialId');
     const got = await waitFor(() => { const t = txt(chosenOf(mat)); return refOf(t) === job.rule.newRef ? t : null; }, 6000);
     if (!got) { const t = txt(chosenOf(mat)); closeDialog(dlg); return 'the window filled in "' + t + '", not ' + job.rule.material + ': not saved'; }
     // Save
     const save = (dlg.closest('.ui-dialog') || dlg).querySelector('.save-and-close-button');
     if (!save) { closeDialog(dlg); return 'no Save button'; }
+    step('Save: ' + txt(chosenOf(mat)));
     save.click();
     const closed = await waitFor(() => { answerConfirm(); return !visibleDialog() || visibleDialog() !== dlg || dlg.offsetParent === null; }, 15000, 100);
     if (!closed) {
@@ -413,6 +453,21 @@ window.__cncMaterialChanger = async function carpenterMaterialChanger() {
   };
   panel.querySelector('[data-a="stop"]').onclick = () => { stopped = true; now('Stopping after this row…'); };
   panel.querySelector('[data-a="forget"]').onclick = () => { if (confirm('Forget the ' + done.size + ' rows already changed in this browser? They are checked again by their material.')) { done.clear(); localStorage.removeItem(KEY_DONE); log('Forgotten.'); } };
+  panel.querySelector('[data-a="one"]').onclick = async () => {
+    if (running) return;
+    running = true; verbose = true;
+    try {
+      await showAllRows();
+      const job = toChange()[0];
+      if (!job) log('Nothing to change.');
+      else {
+        log('Test on ' + job.item[gridParts().f.wo] + ': ' + job.rule.now + ' (' + job.rule.need + ') → ' + job.rule.type + ' · ' + job.rule.size);
+        const err = await changeOne(job);
+        if (err) log('✗ ' + err); else { remember(job.key); log('✓ changed. Look at the row: does Description De show ' + job.rule.material + '?'); }
+      }
+    } catch (e) { log('✗ ' + e.message); }
+    running = false; verbose = false;
+  };
   panel.querySelector('[data-a="start"]').onclick = async () => {
     if (running) return;
     running = true; stopped = false;

@@ -296,6 +296,10 @@
           <button data-a="skip" class="cnc-b" style="display:none">Skip this part</button>
           <button data-a="skipsize" class="cnc-b" style="display:none">Skip this size</button>
         </div>
+        <div style="border-top:1px solid #334155;padding-top:8px"><b>Change materials</b> <span style="color:#94a3b8">rows whose material is replaced (temporary changes, from the replacement table)</span></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <button data-a="matchange" class="cnc-b" style="background:#7c3aed;border-color:#a78bfa;font-weight:600">Change materials…</button>
+        </div>
         <div data-now style="display:none;background:#1e3a8a;border:1px solid #3b82f6;border-radius:8px;padding:8px 10px;font-size:13px;line-height:1.4"></div>
         <pre data-log style="margin:0;white-space:pre-wrap;background:#020617;border:1px solid #1e293b;border-radius:6px;padding:6px;max-height:220px;overflow:auto;font:11px ui-monospace,monospace"></pre>
       </div>`;
@@ -759,6 +763,10 @@
       else if (a === 'scan') guard(() => scan(false));
       else if (a === 'scanresume') guard(() => scan(true));
       else if (a === 'again' || a === 'skip' || a === 'skipsize') scanChoice = a;
+      else if (a === 'matchange') {
+        if (window.__cncMaterialChanger) window.__cncMaterialChanger();
+        else log('The material changer is not in this copy of the script: copy the script again from the planner (Scripts).', 'bad');
+      }
       else if (a === 'describe') {
         const v = vp();
         const r = v && [...v.querySelectorAll('.slick-row')].sort((x, y) => parseFloat(x.style.top) - parseFloat(y.style.top))[0];

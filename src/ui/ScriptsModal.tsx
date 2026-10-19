@@ -1,8 +1,10 @@
 import { SquareTerminal } from 'lucide-react';
 import helperSource from '../../tools/shop-helper/helper.js?raw';
+import changerSource from '../../tools/shop-helper/material-changer.js?raw';
 import { CopyBox, Modal } from './kit';
 
-export const HELPER_CODE: string = helperSource;
+/** One script for the website: the shop helper, with the material changer behind its "Change materials" button. */
+export const HELPER_CODE: string = 'window.__cncBundle = true;\n' + changerSource + '\n' + helperSource;
 
 /** The short form for a bookmark: comments and indentation dropped, wrapped as a javascript: address. */
 export const liteOf = (c: string) =>
@@ -25,7 +27,7 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
           <SquareTerminal className="h-4 w-4 text-sky-400" /> Shop website scripts
         </span>
       }
-      subtitle="One script for the company website: on CNC Workload it ticks, sends and orders every machine's boxes; on the carpenter list it refreshes every row."
+      subtitle="One script for the company website: on CNC Workload it ticks, sends and orders every machine's boxes; on the carpenter list it refreshes rows, guides the scan and changes materials."
     >
       <div className="space-y-4 text-xs text-slate-300">
         <ol className="list-decimal space-y-1 pl-5 text-slate-400">
@@ -42,6 +44,10 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
           <li>
             Scanning the cut parts: in this app open Carpenter → "Scan the cut parts", copy the scan order, paste it into the script's <b className="text-slate-200">Scan</b> box on the carpenter list and press{' '}
             <b className="text-slate-200">Start scanning</b>. It goes material by material, the size with most pieces first. For each part it shows the size, the line of the printed sheet and how many pieces go in the box, presses Finish on the right work order, picks the material and waits: type the box code and press OK.
+          </li>
+          <li>
+            Changing materials: on the carpenter list press <b className="text-slate-200">Change materials…</b> in the script's panel, then <b className="text-slate-200">Check</b> (changes nothing) and{' '}
+            <b className="text-slate-200">Start</b>. It takes the size each part needs from the Nc Description and the material type from Description De, picks the right board or bar, applies the replacement table, and where that differs from Description De it opens Change Material, sets ChangeType Temporary, the Type and the Size, checks the material the window fills in, and saves. Check lists every change first (Download the list); rows already right are skipped.
           </li>
         </ol>
         <CopyBox label="Full script (console)" text={HELPER_CODE} rows={6} />

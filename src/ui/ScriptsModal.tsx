@@ -47,7 +47,7 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
           </li>
           <li>
             Changing materials: on the carpenter list press <b className="text-slate-200">Change materials…</b> in the script's panel, then <b className="text-slate-200">Check</b> (changes nothing) and{' '}
-            <b className="text-slate-200">Start</b>. It takes the size each part needs from the Nc Description and the material type from Description De, picks the right board or bar, applies the replacement table, and where that differs from Description De it opens Change Material, sets ChangeType Temporary, the Type and the Size, checks the material the window fills in, and saves. Check lists every change first (Download the list); rows already right are skipped.
+            <b className="text-slate-200">Start</b> (or <b className="text-slate-200">Do 1 row</b> first to test). For each row it reads the material type from Description De; types with no replacement in the table (POM, ALU, PCGF, MS…) are skipped. Otherwise it takes the thickness (Z, the last number of the part size) from the Nc Description, finds that board in the replacement table and, if it says Replace, opens that row's Change Material, waits for the Changed Component panel to load, checks the Component is the row's material, sets ChangeType Temporary, the Type and the Size, checks the material filled in, saves and waits for the list to reload. Rows marked Keep are left alone.
           </li>
         </ol>
         <CopyBox label="Full script (console)" text={HELPER_CODE} rows={6} />

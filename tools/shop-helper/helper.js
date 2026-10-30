@@ -923,10 +923,14 @@
       return null;
     };
   }
+  /** the part each machine is making: the first row of its list when the run began. It stays there, first, whatever the plan says */
+  let running = {};
+  const isRunPart = (run, ord, box) => (run.ord && ord ? run.ord === ord : !!(run.box && box) && run.box === box.padStart(4, '0'));
   const mineOf = machine => {
-    const mine = readPlan().filter(p => p.machine === machine).sort((a, b) => a.seq - b.seq);
-    if (!mine.length) throw new Error('Paste the plan first and choose a machine.');
-    return mine;
+    const all = readPlan().filter(p => p.machine === machine);
+    if (!all.length) throw new Error('Paste the plan first and choose a machine.');
+    // a part some machine is making is never sent, looked for or ordered anywhere else
+    return all.filter(p => !Object.values(running).some(r => isRunPart(r, p.order, p.box))).sort((a, b) => a.seq - b.seq);
   };
 
   /** reads the whole list once: which of the machine's boxes are on the page, which are ticked, and which others are ticked */
@@ -1397,29 +1401,8 @@
    */
   async function openWorkload(machine, emptyOk) {
     machineTotal = null;
-    if (workloadDialog()) {
-      closeWorkload();
-      await waitFor(() => !workloadDialog(), 4000, 100);
-      await sleep(300);
-    }
-    if (emptyOk && statusDialog()) {
-      closeStatus();
-      await waitFor(() => !statusDialog(), 4000, 100);
-      await sleep(300);
-    }
-    let st = statusDialog();
-    if (!st) {
-      const btn = q('a, button, span, div, li').filter(visible).find(e => /^machines workload$/i.test(norm(e.textContent)) && e.children.length <= 2);
-      if (!btn) throw new Error('Could not find the "Machines workload" button.');
-      press(btn);
-      await waitFor(() => statusDialog() || listOpen(), 20000, 200);
-      st = statusDialog();
-      if (!st) {
-        if (listOpen()) return listOpen(); // a site that opens the parts list straight away
-        throw new Error('After "Machines workload", neither the "Machine Staus" list nor a parts list opened.');
-      }
-      await sleep(400);
-    }
+    const st = await openStatus(emptyOk);
+    if (!st) return listOpen(); // a site that opens the parts list straight away
     const row = await waitFor(() => q('.slick-row', st).find(r => q('.slick-cell', r).some(c => machineName(c.textContent) === machine)), 8000, 200);
     if (!row && emptyOk) return null; // a machine with nothing on it may not be listed at all
     if (!row) throw new Error(`${machine} is not in the "Machine Staus" list.`);
@@ -1471,6 +1454,59 @@
     }
     throw new Error(`Could not open the list of ${machine} from "Machine Staus". Open it by hand once and tell me what you click.`);
   }
+  /** "Machines workload" -> the "Machine Staus" list (fresh: opened again, for new totals); null when a parts list opened instead */
+  async function openStatus(fresh) {
+    if (workloadDialog()) {
+      closeWorkload();
+      await waitFor(() => !workloadDialog(), 4000, 100);
+      await sleep(300);
+    }
+    if (fresh && statusDialog()) {
+      closeStatus();
+      await waitFor(() => !statusDialog(), 4000, 100);
+      await sleep(300);
+    }
+    let st = statusDialog();
+    if (!st) {
+      const btn = q('a, button, span, div, li').filter(visible).find(e => /^machines workload$/i.test(norm(e.textContent)) && e.children.length <= 2);
+      if (!btn) throw new Error('Could not find the "Machines workload" button.');
+      press(btn);
+      await waitFor(() => statusDialog() || listOpen(), 20000, 200);
+      st = statusDialog();
+      if (!st) {
+        if (listOpen()) return null;
+        throw new Error('After "Machines workload", neither the "Machine Staus" list nor a parts list opened.');
+      }
+      await sleep(400);
+    }
+    return st;
+  }
+
+  /** every machine the "Machine Staus" list shows with parts on it */
+  async function siteMachines() {
+    const st = await openStatus(true);
+    if (!st) return [];
+    const heads = q('.slick-header-column', st).filter(visible).map(h => norm(h.textContent));
+    const nameAt = heads.findIndex(h => /machine\s*name/i.test(h));
+    const boxAt = heads.findIndex(h => /total\s*box/i.test(h));
+    const out = [];
+    if (nameAt >= 0) {
+      scope = st;
+      try {
+        await scan(row => {
+          const cell = i => norm(row.querySelector('.slick-cell.l' + i)?.textContent ?? '');
+          const name = machineName(cell(nameAt));
+          if (name && (boxAt < 0 || parseInt(cell(boxAt).replace(/\D/g, ''), 10) > 0) && !out.includes(name)) out.push(name);
+        });
+      } finally {
+        scope = DOC;
+      }
+    }
+    closeStatus();
+    await sleep(300);
+    return out;
+  }
+
   function closeWorkload() {
     const d = workloadDialog();
     if (!d) return;
@@ -1576,8 +1612,11 @@
     log(`Safety check passed: order ${order} is back in the CNC Workload list${now ? ` (machine: ${now})` : ', on no machine'}. Taking the other parts off.`, 'ok');
   }
 
-  /** takes every part off one machine on the site (its parts list ends up empty); returns the orders taken off */
-  async function clearMachine(machine, st) {
+  /**
+   * the first row of a machine's list is the part its operator is making: it is noted in st.running and stays, first.
+   * lookOnly: only that; otherwise every other part is taken off the machine. Returns the orders taken off.
+   */
+  async function clearMachine(machine, st, lookOnly) {
     const removed = [];
     let dlg = await openWorkload(machine, true);
     if (!dlg) return removed;
@@ -1591,17 +1630,28 @@
     }
     if (machineTotal !== null && rows > machineTotal)
       throw Object.assign(new Error(`STOPPED FOR SAFETY: ${machine}'s list shows ${rows} parts, but "Machine Staus" says it has ${machineTotal}. The list may hold other machines' parts too, so nothing was taken off. Open that list, press "Describe page" and send me the result.`), { safety: true });
+    let runKey = null;
     for (let guard = 0; guard < 3000 && !stop; guard++) {
       scope = dlg;
       try {
-        const keyIdx = columnIndex(/^order\s*number/i) ?? columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
+        const ordIdx = columnIndex(/^order\s*number/i);
+        const boxIdx = columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
+        const keyIdx = ordIdx ?? boxIdx;
         if (keyIdx === null) throw new Error('The parts list has no Order Number or Box Code column.');
         const vp = slickViewport();
         if (vp) vp.scrollTop = 0;
         await sleep(150);
         // an empty list may only be reloading: look twice before calling it done
-        let row = rowsNow()[0];
-        if (!row) row = (await waitFor(() => rowsNow()[0], 1500, 150)) || null;
+        const top = rowsNow()[0] || (await waitFor(() => rowsNow()[0], 1500, 150));
+        if (!top) break;
+        if (runKey === null) {
+          runKey = cellText(top, keyIdx);
+          st.running[machine] = { ord: ordIdx !== null ? cellText(top, ordIdx) : '', box: boxIdx !== null ? cellText(top, boxIdx).padStart(4, '0') : '' };
+          keep({ auto: st });
+          if (lookOnly) break;
+        }
+        const other = () => rowsNow().find(rw => cellText(rw, keyIdx) !== runKey);
+        const row = other() || (await waitFor(other, 1500, 150));
         if (!row) break;
         removed.push(await removeRow(row, keyIdx, `${machine}, order ${cellText(row, keyIdx)}`));
         if (removed.length % 10 === 0) log(`${machine}: ${removed.length} parts taken off so far…`);
@@ -1626,8 +1676,9 @@
   /** one machine's parts list on the site against the plan: what is missing, what does not belong, and the order */
   async function checkMachine(machine) {
     const mine = mineOf(machine);
+    const run = running[machine];
     const dlg = await openWorkload(machine, true);
-    if (!dlg) return { machine, missing: mine, extras: [], orderOk: true };
+    if (!dlg) return { machine, missing: mine, extras: [], orderOk: true, runOk: true, run };
     scope = dlg;
     try {
       const boxIdx = columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
@@ -1636,17 +1687,20 @@
       const rows = await readWorkload(machine, boxIdx, ordIdx);
       // more rows than the machine has: the list holds other parts too, so nothing is taken off it
       const unsure = total !== null && rows.length > total;
+      // the part the machine is making is never taken off, and it must be the first row
+      const runAt = run ? rows.findIndex(r => isRunPart(run, r.ord, r.text)) : -1;
       const seen = new Set();
       const present = [];
       const extras = [];
-      for (const r of rows) {
+      rows.forEach((r, i) => {
+        if (i === runAt) return;
         if (r.p && !seen.has(r.p)) {
           seen.add(r.p);
           present.push(r.p);
         } else extras.push(r.ord || r.text); // not in this machine's plan, or there twice
-      }
+      });
       const want = mine.filter(p => seen.has(p));
-      return { machine, missing: mine.filter(p => !seen.has(p)), extras, orderOk: present.every((p, i) => p === want[i]), unsure };
+      return { machine, missing: mine.filter(p => !seen.has(p)), extras, orderOk: present.every((p, i) => p === want[i]), runOk: runAt <= 0, runFirst: runAt === 0, run, unsure };
     } finally {
       scope = DOC;
     }
@@ -1672,6 +1726,38 @@
       scope = DOC;
     }
     log(`${m}: took off ${r.extras.length} part(s) that are not in its plan.`, 'ok');
+  }
+
+  /** in the open list of a machine, the part it is making must be the first row: any row above it is moved under it (in the same order) */
+  async function runningToTop(machine) {
+    const run = running[machine];
+    const dlg = workloadDialog();
+    if (!run || !dlg) return;
+    scope = dlg;
+    try {
+      const boxIdx = columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
+      const ordIdx = columnIndex(/^order\s*number/i);
+      const hit = {};
+      const isRun = rw => (isRunPart(run, ordIdx !== null ? cellText(rw, ordIdx) : '', boxIdx !== null ? cellText(rw, boxIdx) : '') ? hit : null);
+      let last = null;
+      for (let moved = 0; !stop; moved++) {
+        const at = await rowOf(hit, isRun, true);
+        if (!at) return; // made and gone
+        const above = rowsNow().filter(rw => parseFloat(rw.style.top) < parseFloat(at.style.top)).pop();
+        if (!above) {
+          if (moved) log(`${machine}: order ${run.ord || run.box}, the part it is making, is its first row again.`, 'ok');
+          return;
+        }
+        const key = cellText(above, ordIdx ?? boxIdx);
+        if (key === last) return log(`${machine}: ${key} would not move under order ${run.ord || run.box}, the part it is making. Put that part back at the top of the list by hand.`, 'bad');
+        last = key;
+        await dragUnder(above, boxIdx ?? ordIdx, () => rowOf(hit, isRun, true));
+        await sleep(900);
+        await waitFor(() => slickViewport() && slickViewport().querySelector('.slick-row'), 8000, 150);
+      }
+    } finally {
+      scope = DOC;
+    }
   }
 
   /** sends a machine the parts of its plan that are missing from its list (those still in the CNC Workload list) */
@@ -1708,11 +1794,11 @@
         if (stop) return log('Stopped during the double check.', 'warn');
         const r = await checkMachine(m);
         const missing = r.missing.filter(p => !notOnSite.has(p));
-        const ok = !missing.length && !r.extras.length && r.orderOk;
+        const ok = !missing.length && !r.extras.length && r.orderOk && r.runOk;
         log(
           ok
-            ? `${m}: all ${mineOf(m).length - r.missing.length} parts there, in plan order.`
-            : `${m}: ${missing.length} missing, ${r.extras.length} not in its plan, ${r.orderOk ? 'order right' : 'order WRONG'}.`,
+            ? `${m}: all ${mineOf(m).length - r.missing.length} parts there, in plan order${r.runFirst ? `, under order ${r.run.ord || r.run.box} (being made)` : ''}.`
+            : `${m}: ${missing.length} missing, ${r.extras.length} not in its plan, ${r.orderOk ? 'order right' : 'order WRONG'}${r.runOk ? '' : `, order ${r.run.ord || r.run.box} (being made) is NOT the first row`}.`,
           ok ? 'ok' : 'warn',
         );
         if (!ok) bad.push({ ...r, missing });
@@ -1734,8 +1820,11 @@
       }
       for (const r of bad) {
         if (stop) return log('Stopped during the double check.', 'warn');
-        if (!r.missing.length && r.orderOk) continue;
-        if (await openWorkload(r.machine, true)) await doOrder(r.machine);
+        if (!r.missing.length && r.orderOk && r.runOk) continue;
+        if (await openWorkload(r.machine, true)) {
+          await runningToTop(r.machine);
+          await doOrder(r.machine);
+        }
       }
     }
     closeWorkload();
@@ -1743,7 +1832,7 @@
     closeStatus();
     if (notOnSite.size) log(`Not on the website, so not planned (already made, or not in the CNC Workload list): ${[...notOnSite].map(p => `${p.machine} ${p.box || p.order}`).join(', ')}.`, 'bad');
     if (bad.length) {
-      for (const r of bad) log(`STILL WRONG on ${r.machine}: ${[r.missing.length ? `missing ${r.missing.map(p => p.box || p.order).join(', ')}` : '', r.extras.length ? `not in its plan ${r.extras.join(', ')}` : '', r.orderOk ? '' : 'order not as planned'].filter(Boolean).join('; ')}.`, 'bad');
+      for (const r of bad) log(`STILL WRONG on ${r.machine}: ${[r.missing.length ? `missing ${r.missing.map(p => p.box || p.order).join(', ')}` : '', r.extras.length ? `not in its plan ${r.extras.join(', ')}` : '', r.orderOk ? '' : 'order not as planned', r.runOk ? '' : `order ${r.run.ord || r.run.box} (being made) is not the first row`].filter(Boolean).join('; ')}.`, 'bad');
       return false;
     }
     log(`Double check passed: every part of the plan is on its machine, in plan order${notOnSite.size ? ' (apart from the parts not on the website)' : ''}.`, 'ok');
@@ -1768,7 +1857,7 @@
         armedFor = label;
         btn.textContent = onlyCheck
           ? `Press again: check ${machines.length} machines against the plan and fix them`
-          : `Press again to start: empty ${machines.length} machines, then send ${plan.length} parts (${machines.join(', ')})`;
+          : `Press again to start: empty ${machines.length} machines (each keeps the part it is making), then send ${plan.length} parts (${machines.join(', ')})`;
         setTimeout(() => (btn.textContent = label), 10000);
         return;
       }
@@ -1785,8 +1874,11 @@
     const machines = [...new Set(readPlan().map(p => p.machine))];
     if (!machines.length) throw new Error('Paste the plan first (the Copy button in the planner, or columns A to D of Plan_All).');
     let st = resume ? stored().auto : null;
-    // a brand new planning: every machine of the Excel is emptied first, whatever it had before
-    if (!st) st = onlyCheck ? { phase: 'verify', i: 0, machines, checkOnly: true } : { phase: 'clear', i: 0, machines, probed: false };
+    // a brand new planning: every machine of the Excel is emptied first, apart from the part it is making
+    // (the double-check on its own only reads what every machine is making)
+    if (!st) st = { phase: 'clear', i: 0, machines, probed: false, checkOnly: !!onlyCheck };
+    st.running = st.running || {};
+    running = st.running;
     auto = true;
     keep({ auto: st });
     $('[data-act=autoresume]').style.display = 'none';
@@ -1795,13 +1887,27 @@
         log('Working in the second window. Leave it alone until I say done; its reloads do not stop me.', 'ok');
         await workReady();
       } else log('Working in this tab: when it reloads, run the helper again and it carries on by itself.', 'warn');
-      while (st.phase === 'clear' && st.i < st.machines.length) {
+      // every machine on the site first: the first row of its list is being made, so that part stays there, first
+      if (st.phase === 'clear' && !st.site) {
+        const site = await siteMachines();
+        if (!site.length) log('Could not read the machines in the "Machine Staus" list: only the machines of the plan are looked at.', 'warn');
+        st = { ...st, site: [...st.machines, ...site.filter(m => !st.machines.includes(m))] };
+        keep({ auto: st });
+      }
+      while (st.phase === 'clear' && st.i < st.site.length) {
         if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
-        const m = st.machines[st.i];
-        log(`${m}: taking off every part it has now…`);
-        const gone = await clearMachine(m, st);
+        const m = st.site[st.i];
+        const empty = !st.checkOnly && st.machines.includes(m);
+        if (empty) log(`${m}: taking off every part apart from the one it is making…`);
+        const gone = await clearMachine(m, st, !empty);
         if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
-        log(`${m}: ${gone.length ? `${gone.length} part${gone.length === 1 ? '' : 's'} taken off, its list is empty` : 'nothing on it'}.`, 'ok');
+        const run = st.running[m];
+        const planned = run && readPlan().find(p => isRunPart(run, p.order, p.box));
+        const making = run
+          ? `it is making order ${run.ord || run.box}${planned ? (planned.machine === m ? ` (plan #${planned.seq} here)` : ` (the plan has it on ${planned.machine} #${planned.seq}, so it is not sent there)`) : ''}: that part stays its first`
+          : '';
+        if (empty) log(`${m}: ${gone.length} part${gone.length === 1 ? '' : 's'} taken off${run ? `; ${making}` : ', its list is empty'}.`, 'ok');
+        else if (run) log(`${m}${st.machines.includes(m) ? '' : ' (not in the plan, left alone)'}: ${making}.`);
         st = { ...st, i: st.i + 1 };
         keep({ auto: st });
       }
@@ -1809,8 +1915,8 @@
         closeWorkload();
         await sleep(300);
         closeStatus();
-        await refreshMain();
-        st = { ...st, phase: 'send', i: 0 };
+        if (!st.checkOnly) await refreshMain();
+        st = { ...st, phase: st.checkOnly ? 'verify' : 'send', i: 0 };
         keep({ auto: st });
       }
       while (st.phase === 'send' && st.i < st.machines.length) {
@@ -1855,9 +1961,11 @@
         const m = st.machines[st.i];
         for (let attempt = 1; ; attempt++) {
           try {
-            await openWorkload(m);
-            log(`${m}: putting its list in plan order…`);
-            await doOrder(m);
+            if (await openWorkload(m, true)) {
+              await runningToTop(m);
+              log(`${m}: putting its list in plan order…`);
+              await doOrder(m);
+            }
             break;
           } catch (e) {
             if (attempt >= 3 || stop) throw e;
@@ -1889,6 +1997,7 @@
       throw e;
     } finally {
       auto = false;
+      running = {};
       // the other buttons work on this tab again; "Continue the full run" picks the second window up again
       DOC = document;
       WIN = window;
@@ -1988,8 +2097,8 @@
   }
   if (saved.auto && saved.auto.machines) {
     $('[data-act=autoresume]').style.display = '';
-    const step = { clear: 'emptying the machines', send: 'sending', order: 'ordering', verify: 'double-checking' }[saved.auto.phase] || saved.auto.phase;
-    const where = `${step}, ${saved.auto.i} of ${saved.auto.machines.length} machines done`;
+    const step = { clear: saved.auto.checkOnly ? 'reading what the machines are making' : 'emptying the machines', send: 'sending', order: 'ordering', verify: 'double-checking' }[saved.auto.phase] || saved.auto.phase;
+    const where = `${step}, ${saved.auto.i} of ${(saved.auto.phase === 'clear' && saved.auto.site ? saved.auto.site : saved.auto.machines).length} machines done`;
     log(`A full run was interrupted (${where}). It carries on in 5 seconds; press Stop to cancel.`, 'warn');
     setTimeout(() => {
       if (!stop && !busy) guard(() => runAll(true));

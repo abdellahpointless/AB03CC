@@ -49,16 +49,6 @@ export const DEFAULT_MACHINES: MachineConfig[] = [
   },
 ];
 
-export const DEFAULT_OUT_OF_SCOPE = [
-  'MASTER',
-  'ROUTER - 1',
-  'LASER - 1',
-  'DMG - 1',
-  'HAAS - 3',
-  'HAAS - 4',
-  'LATHE - 1',
-];
-
 /**
  * Extra minutes per piece. They start at zero because the estimate (NC x 2.8) already contains
  * the usual overhead; add an offset only for something it does not cover.
@@ -249,9 +239,7 @@ export function defaultSettings(): PlannerSettings {
     calendar: defaultCalendar(),
     materialOffsets: { ...DEFAULT_MATERIAL_OFFSETS },
     priorityRules: structuredClone(RULE_PRESETS.finishModule.rules),
-    outOfScopeMachines: [...DEFAULT_OUT_OF_SCOPE],
     materialAliases: {},
-    keepErpAssignments: true,
     excludeMasterOrders30000: true,
     syncToleranceMin: 10,
     restartJobOnEvent: false,
@@ -318,6 +306,8 @@ export function mergeSettings(saved: Partial<PlannerSettings> | null | undefined
     merged.carpenterCutColumn = 'in_list';
     merged.settingsVersion = SETTINGS_VERSION;
   }
+  // every plan now starts from scratch: the ERP machine of a part and the out-of-scope list no longer exist
+  for (const k of ['outOfScopeMachines', 'keepErpAssignments']) delete (merged as unknown as Record<string, unknown>)[k];
   if (!(merged.estimateMultiplier > 0)) merged.estimateMultiplier = DEFAULT_ESTIMATE_MULTIPLIER;
   if (!merged.cutAllowances || typeof merged.cutAllowances !== 'object') merged.cutAllowances = { ...base.cutAllowances };
   merged.partKindCodes = kindCodes(merged.partKindCodes);

@@ -20,11 +20,10 @@ export function MachinesEditor({ s, set }: { s: PlannerSettings; set: SetFn }) {
 
   // the workload as the planner sees it: blocked parts left out, material aliases applied
   const parts = useMemo(() => {
-    const out = new Set(s.outOfScopeMachines);
     return jobs
-      .filter(j => !j.blocked && !(j.erpMachine && out.has(j.erpMachine)))
+      .filter(j => !j.blocked)
       .map(j => (s.materialAliases[j.materialType] ? { ...j, materialType: s.materialAliases[j.materialType] } : j));
-  }, [jobs, s.materialAliases, s.outOfScopeMachines]);
+  }, [jobs, s.materialAliases]);
   const ctx = useMemo(() => new SimContext(s, s.machines, partTimes), [s, partTimes]);
   const check = useMemo(() => {
     const takes = new Map<string, number>();
@@ -73,7 +72,7 @@ export function MachinesEditor({ s, set }: { s: PlannerSettings; set: SetFn }) {
       <section>
         <h3 className="text-xs font-bold uppercase tracking-wider text-white">Who makes what</h3>
         <p className="mb-3 mt-0.5 text-[11px] text-slate-400">
-          Every rule is hard: a part goes only to a machine that takes its material, its size and its part type. The ERP machine is kept only when that machine takes the part; drag and drop on the Gantt follows the same rules. The machine name must match the ERP machine name.
+          Every rule is hard: a part goes only to a machine that takes its material, its size and its part type. Where the ERP had a part before does not count: every plan starts from scratch. A part no machine takes shows up in the red box next to the Gantt, where you pick a machine for it. Use the website's machine names, so the shop helper can send the plan there.
         </p>
         <div className="overflow-x-auto rounded-lg border border-slate-800">
           <table className="w-full min-w-[640px] text-xs">
@@ -131,7 +130,7 @@ export function MachinesEditor({ s, set }: { s: PlannerSettings; set: SetFn }) {
       <section className="rounded-lg border border-dashed border-slate-700 p-3">
         <div className="mb-2 text-[11px] font-semibold text-slate-300">Add a machine</div>
         <div className="flex flex-wrap gap-2">
-          <input className={`${inputCls} min-w-[200px] flex-1`} placeholder="Name as in the ERP, e.g. HAAS - 6" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
+          <input className={`${inputCls} min-w-[200px] flex-1`} placeholder="Name as on the website, e.g. HAAS - 6" value={newName} onChange={e => setNewName(e.target.value)} onKeyDown={e => e.key === 'Enter' && add()} />
           <select className={`${inputCls} w-48`} value={copyFrom} onChange={e => setCopyFrom(e.target.value)}>
             <option value="">Start empty</option>
             {s.machines.map(m => (

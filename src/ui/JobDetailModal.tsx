@@ -74,7 +74,6 @@ export function JobDetailModal({ jobId, onClose }: { jobId: string; onClose: () 
               <Lock className="mr-1 h-2.5 w-2.5" /> pinned
             </Badge>
           )}
-          {item.erpLocked && <Badge className="border-slate-600 text-slate-300">ERP assigned</Badge>}
           {item.isLate && <Badge className="border-rose-700 text-rose-300">past due</Badge>}
           {item.closesBox && <Badge className="border-emerald-700 text-emerald-300">closes box</Badge>}
         </span>

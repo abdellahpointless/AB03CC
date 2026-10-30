@@ -129,7 +129,7 @@ export function EmergencyModal({ onClose }: { onClose: () => void }) {
         {result && (
           <section className="rounded-xl border border-rose-800/70 bg-rose-950/20 p-4">
             {result.planned === 0 ? (
-              <p className="text-amber-300">None of these {matching} parts can be planned (on hold, out of scope or no machine can take them).</p>
+              <p className="text-amber-300">None of these {matching} parts can be planned (on hold, or no machine takes them).</p>
             ) : (
               <>
                 <div className="text-[11px] font-bold uppercase tracking-wider text-rose-300">Even with the best possible planning</div>

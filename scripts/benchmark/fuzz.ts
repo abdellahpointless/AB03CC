@@ -39,7 +39,6 @@ for (let r = 0; r < runs; r++) {
   s.restartJobOnEvent = chance(0.3);
   for (const m of s.machines) if (m.backupMaterials?.length) m.useBackupMaterials = chance(0.3);
   if (chance(0.3)) { const m = pick(s.machines); m.size = { basis: chance(0.5) ? 'nc' : 'planned', min: chance(0.3) ? 5 + rng.int(20) : null, max: chance(0.7) ? 8 + rng.int(40) : null }; }
-  s.keepErpAssignments = chance(0.8);
   if (chance(0.4)) {
     s.calendar.breakMode = chance(0.5) ? 'stop' : 'run';
     s.calendar.breaks = [{ id: 'b1', label: 'coffee', start: `${String(7 + rng.int(4)).padStart(2, '0')}:${pick(['00', '15', '30', '45'])}`, minutes: 10 + rng.int(20) }];

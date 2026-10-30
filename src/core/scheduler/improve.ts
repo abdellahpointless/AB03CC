@@ -9,8 +9,8 @@ import type { SimContext } from './simulate';
 import type { WindowJob } from './windows';
 import { moduleWeights, type ModuleFacts } from './weights';
 
-/** More classes than this are merged into the last one. */
-export const MAX_TIERS = 8;
+/** More classes than this are merged into the last one (each class is searched on its own, so they cost time). */
+export const MAX_TIERS = 64;
 
 export interface JobClasses {
   /** priority class of every job: 0 is planned first, a machine runs its class 0 parts before any class 1 part ... */
@@ -72,7 +72,7 @@ export interface ImproveInput {
   queues: Record<string, Job[]>;
   /** table and spare parts and the class each one is planned in; their start and finish are hard limits */
   windows?: Array<WindowJob & { tier: number }>;
-  /** jobs that must stay on the machine they are on (ERP assignments, user pins) */
+  /** jobs that must stay on the machine they are on (user pins) */
   tied: Set<string>;
   settings: PlannerSettings;
   ctx: SimContext;

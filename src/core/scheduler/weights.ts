@@ -53,8 +53,9 @@ export function moduleWeights(mods: ModuleFacts[], rules: PriorityRule[], carpen
   // filter levels, most important first
   const levelIds = [...new Set(active.filter(r => FILTER_TYPES.includes(r.type)).map(r => r.level))].sort((a, b) => a - b);
   const levels = levelIds.map(l => active.filter(r => r.level === l && FILTER_TYPES.includes(r.type)));
-  const classOf = mods.map(m => levels.reduce((acc, rs, i) => acc + (rs.some(r => jobMatchesRule(m.lead, r)) ? 2 ** (levels.length - 1 - i) : 0), 0));
-  const distinct = [...new Set(classOf)].sort((a, b) => b - a); // most important class first
+  // one digit per level, most important first ("10" = picked on level 1 only): compared like numbers, any number of levels
+  const classOf = mods.map(m => levels.map(rs => (rs.some(r => jobMatchesRule(m.lead, r)) ? '1' : '0')).join(''));
+  const distinct = [...new Set(classOf)].sort().reverse(); // most important class first
   const tierRank = new Map(distinct.map((c, i) => [c, i]));
 
   // production date

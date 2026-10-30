@@ -7,7 +7,7 @@ export interface EmergencyAnalysis {
   salesOrder: string;
   schedule: number | null;
   customer: string;
-  /** parts of the order that can be planned, and parts that cannot (on hold, out of scope, no machine) */
+  /** parts of the order that can be planned, and parts that cannot (on hold, or no machine takes them) */
   planned: number;
   unplannable: number;
   /** best case: the parts alone on empty machines, planned by the optimizer */

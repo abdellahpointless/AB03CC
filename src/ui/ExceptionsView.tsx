@@ -5,25 +5,17 @@ import { useStore } from '../state/store';
 import { useMachineRules } from './useMachineRules';
 import { Badge, Empty, MaterialBadge, inputCls } from './kit';
 
-type Tab = 'manual30000' | 'blocked' | 'noEligibleMachine' | 'erpRefused' | 'outOfScope' | 'unpickedWarehouse' | 'leftOut';
+type Tab = 'manual30000' | 'blocked' | 'leftOut';
 
 const TABS: Array<{ id: Tab; label: string; tone: string; help: string; assign: boolean }> = [
   { id: 'manual30000', label: 'Tables & spares waiting', tone: 'text-blue-300', assign: true, help: 'Table and spare parts are planned from a start and a finish you choose: open the Tables & Spares tab. Until then they are listed here. You can also pick a machine for one part: it is then planned and pinned there.' },
-  { id: 'blocked', label: 'Blocked jobs', tone: 'text-rose-300', assign: false, help: 'On hold in the ERP (production status 11) or flagged as discontinued. They are not planned.' },
-  { id: 'noEligibleMachine', label: 'No eligible machine', tone: 'text-amber-300', assign: true, help: 'No active machine accepts this part (material, size limit or part type). Change a machine in the Variable Editor, map the material to another one (material aliases), or force a machine here: that overrides its rules for this one part.' },
-  { id: 'erpRefused', label: 'ERP machine refused', tone: 'text-orange-300', assign: false, help: 'The ERP put these parts on a machine whose rules (materials, size limit, part types) do not allow them. They ARE planned, on a machine that takes them. Change the machine rules in the Variable Editor if the ERP is right.' },
-  { id: 'outOfScope', label: 'Out-of-scope centers', tone: 'text-violet-300', assign: false, help: 'Assigned in the ERP to a machine this planner does not schedule (router, laser, lathe, MASTER…).' },
+  { id: 'blocked', label: 'Blocked jobs', tone: 'text-rose-300', assign: false, help: 'On hold in the ERP (production status 11) or flagged as discontinued. They are not planned. Parts that no machine takes are not here: they are in the red box next to the Gantt.' },
   { id: 'leftOut', label: 'Left out by End', tone: 'text-rose-300', assign: true, help: 'An End rule in the Priority Rules plans only the parts the rules above it pick. These are the rest of the workload: they are not planned. Remove the End to plan them again, or pick a machine for one part here: it is then planned and pinned there.' },
-  { id: 'unpickedWarehouse', label: 'Missing warehouse pick', tone: 'text-sky-300', assign: false, help: 'Material has not been picked from the warehouse yet. These jobs ARE planned; check the pick before releasing them to the machine.' },
 ];
 
-function reasonFor(tab: Tab, j: Job, refusals: Record<string, string>): string {
+function reasonFor(tab: Tab, j: Job): string {
   switch (tab) {
     case 'blocked': return j.blockedReason || 'On hold';
-    case 'noEligibleMachine': return refusals[j.id] ?? `No machine takes ${j.materialType}`;
-    case 'erpRefused': return refusals[j.id] ?? `ERP machine ${j.erpMachine} does not take it`;
-    case 'outOfScope': return `ERP machine: ${j.erpMachine}`;
-    case 'unpickedWarehouse': return 'Warehouse pick date missing';
     case 'leftOut': return 'Not picked by the rules above End';
     default: return 'Waiting for a start and a finish';
   }
@@ -75,7 +67,7 @@ export function ExceptionsView() {
                   <td className="mono px-3 text-sky-300">{j.matnr}</td>
                   <td className="mono px-3 text-slate-300">{formatDuration(j.ncMinutes * j.qty)}</td>
                   <td className="max-w-[220px] truncate px-3 text-slate-400">{j.customer}</td>
-                  <td className="px-3"><Badge className="border-slate-700 text-slate-300">{reasonFor(tab, j, plan.refusals ?? {})}</Badge></td>
+                  <td className="px-3"><Badge className="border-slate-700 text-slate-300">{reasonFor(tab, j)}</Badge></td>
                   {def.assign && (
                     <td className="px-3 py-1.5">
                       <select

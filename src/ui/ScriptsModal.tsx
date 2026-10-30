@@ -27,7 +27,7 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
           <SquareTerminal className="h-4 w-4 text-sky-400" /> Shop website scripts
         </span>
       }
-      subtitle="One script for the company website: on CNC Workload it ticks, sends and orders every machine's boxes; on the carpenter list it refreshes rows, guides the scan and changes materials."
+      subtitle="One script for the company website: on CNC Workload it empties the machines, sends and orders every machine's boxes, then checks them all; on the carpenter list it refreshes rows, guides the scan and changes materials."
     >
       <div className="space-y-4 text-xs text-slate-300">
         <ol className="list-decimal space-y-1 pl-5 text-slate-400">
@@ -36,7 +36,10 @@ export function ScriptsModal({ onClose }: { onClose: () => void }) {
           </li>
           <li>Open the website page, press F12, open Console, paste the script and press Enter (or click the bookmark below).</li>
           <li>
-            Paste the plan into the panel and press <b className="text-slate-200">Do everything</b> twice: it sends each machine its parts and puts every machine's list in plan order.
+            Paste the plan into the panel and press <b className="text-slate-200">Do everything</b> twice. First it empties every machine named in the plan with the red bin on each row of its list, so the planning starts from scratch. After the first part it checks that part went back to the CNC Workload list and stops if it did not. It also stops before touching a list that shows more parts than "Machine Staus" says the machine has. Then it sends each machine its parts, puts every list in plan order and always double-checks at the end. A part that is missing, on the wrong machine or out of order is fixed, and anything it cannot fix is listed in red. Machines not in the plan are left alone.
+          </li>
+          <li>
+            <b className="text-slate-200">Double-check</b> (press it twice) runs only that last check against the plan, and fixes what it finds.
           </li>
           <li>
             On the carpenter list the same script shows <b className="text-slate-200">Refresh them all</b>: rows that already have a PDF or NC file are left alone.

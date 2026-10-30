@@ -5,6 +5,7 @@ import { budgetFor } from '../optimizer/budget';
 import { analyzeEmergency } from '../emergency';
 import { buildGroups, classifyKinds, parsePrefixes } from '../partKinds';
 import type { Job, PlanResult, PlannerSettings, PriorityRule } from '../types';
+import { decidingRule, jobMatchesRule } from '../priority';
 import { isEligible, planProduction } from './plan';
 import { SimContext } from './simulate';
 import { moduleWeights, type ModuleFacts } from './weights';
@@ -97,7 +98,7 @@ describe('modules-first planner', () => {
       for (const it of items) {
         expect(seen.has(it.job.id)).toBe(false);
         seen.add(it.job.id);
-        if (!it.erpLocked && !it.userLocked) expect(isEligible(it.job, machine, s, ctx)).toBe(true);
+        if (!it.userLocked) expect(isEligible(it.job, machine, s, ctx)).toBe(true);
         expect(it.startMinute - it.setupBefore).toBeGreaterThanOrEqual(prevEnd);
         prevEnd = it.endMinute;
       }
@@ -127,10 +128,27 @@ describe('modules-first planner', () => {
     expect(shape(again)).toEqual(shape(fast));
   });
 
-  it('keeps ERP-assigned parts on the machine ERP gave them (the optimizer chooses their place in its queue)', () => {
-    const tied = Object.values(fast.queues).flat().filter(i => i.erpLocked);
-    expect(tied.length).toBeGreaterThan(0);
-    for (const [machineId, items] of Object.entries(fast.queues)) expect(items.filter(i => i.erpLocked).every(i => i.job.erpMachine === machineId)).toBe(true);
+  it('starts from scratch: where the ERP had a part, and its warehouse pick, change nothing', () => {
+    const s = base({ priorityRules: finishOnly, planningMode: 'classic' });
+    const shape = (p: PlanResult) => Object.fromEntries(Object.entries(p.queues).map(([m, q]) => [m, q.map(i => i.job.id)]));
+    const clean = jobs.map(j => ({ ...j, erpMachine: null, warehousePickDate: '2026-10-01' }));
+    const messy = jobs.map((j, i) => ({ ...j, erpMachine: ['DMG - 1', 'MASTER', 'HAAS - 1', 'LASER - 1'][i % 4], warehousePickDate: null }));
+    const a = planProduction(clean, s);
+    const b = planProduction(messy, s);
+    expect(shape(b)).toEqual(shape(a));
+    expect(Object.keys(b.exceptions).sort()).toEqual(['blocked', 'leftOut', 'manual30000', 'noEligibleMachine']);
+    expect(Object.values(b.queues).flat().some(i => i.job.erpMachine === 'DMG - 1')).toBe(true);
+  });
+
+  it('lists a part no machine takes, and plans it where the user puts it', () => {
+    const s = base({ priorityRules: finishOnly, planningMode: 'classic' });
+    const odd = { ...jobs.find(j => !j.blocked && !j.masterOrder.startsWith('30000') && !j.masterOrder.startsWith('60000'))!, id: 'odd', orderNumber: 'odd', materialType: 'GOLD' };
+    const before = planProduction([...jobs, odd], s);
+    expect(before.exceptions.noEligibleMachine.map(j => j.id)).toContain('odd');
+    expect(before.refusals.odd).toBeTruthy();
+    const after = planProduction([...jobs, odd], s, { odd: { machine: 'HAAS - 1', forced: true } });
+    expect(after.exceptions.noEligibleMachine.map(j => j.id)).not.toContain('odd');
+    expect(after.queues['HAAS - 1'].some(i => i.job.id === 'odd' && i.userLocked)).toBe(true);
   });
 
   it('shows the fast plan first, then reports progress up to 100% and returns the optimized plan', () => {
@@ -145,22 +163,6 @@ describe('modules-first planner', () => {
     expect(progress[progress.length - 1]).toBe(1);
     expect([...progress].sort((a, b) => a - b)).toEqual(progress);
     expect(sumMo(plan)).toBeLessThan(sumMo(classic));
-  });
-
-  it('keeps the ERP machine only when that machine takes the part; the others are planned where they are allowed', () => {
-    const s = base({ priorityRules: finishOnly });
-    const haas1 = s.machines.find(m => m.id === 'HAAS - 1')!;
-    const tiedJobs = jobs.map(j => ({ ...j, erpMachine: 'HAAS - 1', blocked: false }));
-    const p = planProduction(tiedJobs, s);
-    const ctx = new SimContext(s, s.machines, {});
-    const placed = Object.values(p.queues).flat();
-    expect(placed.length).toBeGreaterThan(0);
-    for (const it of placed) {
-      expect(isEligible(it.job, s.machines.find(m => m.id === it.machineId)!, s, ctx)).toBe(true);
-      if (isEligible(it.job, haas1, s, ctx)) expect(it.machineId).toBe('HAAS - 1');
-    }
-    expect(p.exceptions.erpRefused.length).toBeGreaterThan(0);
-    for (const j of p.exceptions.erpRefused) expect(p.refusals[j.id]).toMatch(/^ERP machine HAAS - 1: /);
   });
 
   it('never lets a part break a size limit or a material rule, whatever the ERP says', () => {
@@ -439,6 +441,57 @@ describe('emergency orders', () => {
     const full = planProduction(jobs, s);
     const finish = Math.max(...Object.values(full.queues).flat().filter(i => i.emergency).map(i => i.endMinute));
     expect(a.finishMinute).toBeLessThanOrEqual(finish);
+  });
+});
+
+describe('rules inside rules, and any number of levels', () => {
+  const job = (over: Partial<Job>): Job => ({ ...jobs[0], ...over });
+  const so = (values: string[], children?: PriorityRule[]): PriorityRule => ({ id: `so-${values[0]}`, type: 'sales_order', level: 1, enabled: true, name: 'so', values, children });
+  const sched = (n: number, children?: PriorityRule[]): PriorityRule => ({ id: `sc-${n}`, type: 'schedule', level: 1, enabled: true, name: 'sc', scheduleMode: 'single', scheduleSingle: n, children });
+
+  it('picks only the parts that match the rule and a rule inside it, as deep as it goes', () => {
+    const rule = so(['SO1'], [sched(100)]);
+    expect(jobMatchesRule(job({ salesOrder: 'SO1', scheduleNo: 100 }), rule)).toBe(true);
+    expect(jobMatchesRule(job({ salesOrder: 'SO1', scheduleNo: 90 }), rule)).toBe(false);
+    expect(jobMatchesRule(job({ salesOrder: 'SO2', scheduleNo: 100 }), rule)).toBe(false);
+    // two rules inside: either one will do
+    expect(jobMatchesRule(job({ salesOrder: 'SO1', scheduleNo: 90 }), so(['SO1'], [sched(100), sched(90)]))).toBe(true);
+    // deeper: sales order › schedule › material
+    const deep = so(['SO1'], [sched(100, [{ id: 'm', type: 'material_type', level: 1, enabled: true, name: 'm', values: ['POM'] }])]);
+    expect(jobMatchesRule(job({ salesOrder: 'SO1', scheduleNo: 100, materialType: 'POM' }), deep)).toBe(true);
+    expect(jobMatchesRule(job({ salesOrder: 'SO1', scheduleNo: 100, materialType: 'ALU' }), deep)).toBe(false);
+    // a rule inside that is switched off does not count
+    expect(jobMatchesRule(job({ salesOrder: 'SO1', scheduleNo: 90 }), so(['SO1'], [{ ...sched(100), enabled: false }]))).toBe(true);
+    expect(decidingRule(job({ salesOrder: 'SO1', scheduleNo: 100 }), [rule], { partsLeft: {} }, 1)).toBe('Level 1: Sales order SO1 › Schedule 100');
+  });
+
+  it('plans that schedule of that sales order first, and its other schedules with the rest', () => {
+    const mos = [...new Set(jobs.filter(j => !j.blocked).map(j => j.masterOrder))];
+    // every master order gets one sales order and one schedule: SO1/100, SO1/90 and SO2/100 in turn
+    const tag = new Map(mos.map((mo, i) => [mo, [['SO1', 100], ['SO1', 90], ['SO2', 100]][i % 3] as [string, number]]));
+    const tagged = jobs.map(j => ({ ...j, salesOrder: tag.get(j.masterOrder)?.[0] ?? j.salesOrder, scheduleNo: tag.get(j.masterOrder)?.[1] ?? j.scheduleNo }));
+    const rules: PriorityRule[] = [so(['SO1'], [sched(100)]), ...finishOnly.map(r => ({ ...r, level: 2 }))];
+    const first = (j: Job) => j.salesOrder === 'SO1' && j.scheduleNo === 100;
+    for (const mode of ['classic', 'modules_first'] as const) {
+      const p = planProduction(tagged, base({ priorityRules: rules, planningMode: mode }));
+      let seen = 0;
+      for (const items of Object.values(p.queues)) {
+        const ranks = items.map(i => (first(i.job) ? 0 : 1));
+        expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
+        seen += ranks.filter(r => r === 0).length;
+      }
+      expect(seen).toBeGreaterThan(0);
+      const other = Object.values(p.queues).flat().find(i => i.job.salesOrder === 'SO1' && i.job.scheduleNo === 90)!;
+      expect(other.decidingRule).not.toContain('Sales order');
+    }
+  });
+
+  it('keeps any number of levels in order, like digits', () => {
+    const facts = (customer: string): ModuleFacts => ({ key: customer, lead: job({ customer }), parts: 3, carpenterBlocked: false });
+    const rules: PriorityRule[] = Array.from({ length: 12 }, (_, i) => ({ id: `c${i}`, type: 'customer', level: i + 1, enabled: true, name: 'c', values: [`C${i + 1}`] }));
+    const { tiers } = moduleWeights([...Array.from({ length: 12 }, (_, i) => facts(`C${i + 1}`)), facts('none')], rules, 'off');
+    expect(tiers).toEqual([...tiers].sort((a, b) => a - b));
+    expect(new Set(tiers).size).toBe(13);
   });
 });
 

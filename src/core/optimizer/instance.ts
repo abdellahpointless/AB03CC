@@ -22,7 +22,7 @@ export interface Instance {
   elig: Uint8Array;
   /** machines a job may run on */
   eligList: Int8Array[];
-  /** machine index a job is tied to (ERP assignment / user pin), or -1 */
+  /** machine index a job is tied to (user pin), or -1 */
   fixed: Int16Array;
   /** tied jobs per machine: they stay at the head of that machine's queue */
   head: Int32Array[];

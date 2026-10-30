@@ -333,9 +333,8 @@ function RulesTab({ s, set }: TabProps) {
           </div>
         )}
       </Section>
-      <Section title="Assignment rules">
+      <Section title="Disruptions">
         <div className="grid gap-2">
-          <Toggle checked={s.keepErpAssignments} onChange={v => set({ keepErpAssignments: v })} label="Keep ERP machine assignments" hint="Jobs already assigned to one of your machines in the ERP stay on that machine; the optimizer chooses where in its queue they run." />
           <Toggle checked={s.restartJobOnEvent} onChange={v => set({ restartJobOnEvent: v })} label="Restart a job hit by a disruption" hint="Off: the job pauses and resumes after the disruption." />
         </div>
       </Section>
@@ -347,14 +346,6 @@ function RulesTab({ s, set }: TabProps) {
         </Field>
       </Section>
       <PartKindsSection s={s} set={set} />
-      <Section title="Out-of-scope ERP machines" hint="Jobs the ERP assigned to these machines are listed under Exceptions and not planned. Comma separated.">
-        <input
-          className={inputCls}
-          key={s.outOfScopeMachines.join('|')}
-          defaultValue={s.outOfScopeMachines.join(', ')}
-          onBlur={e => set({ outOfScopeMachines: e.target.value.split(',').map(x => x.trim()).filter(Boolean) })}
-        />
-      </Section>
     </>
   );
 }

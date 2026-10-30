@@ -190,10 +190,7 @@ export function planProduction(
   const exceptions: PlanResult['exceptions'] = {
     blocked: [],
     noEligibleMachine: [],
-    outOfScope: [],
     manual30000: [],
-    unpickedWarehouse: [],
-    erpRefused: [],
     leftOut: [],
   };
   // an End rule: only what the rules above it pick is planned (emergencies and parts placed by hand stay)
@@ -201,11 +198,11 @@ export function planProduction(
   const refusals: Record<string, string> = {};
   // why no active machine takes a part (the first machine's reason, or the closest one's)
   const whyNoMachine = (job: Job) => active.map(m => refusal(job, m, settings, ctx)).find(Boolean) ?? 'no active machine';
-  const lockedBy = new Map<string, 'user' | 'erp'>();
+  // only the user pins parts: where the ERP had a part before does not count, every plan starts from scratch
+  const lockedBy = new Set<string>();
   const lockedQueues: Record<string, Job[]> = {};
   active.forEach(m => (lockedQueues[m.id] = []));
   const free: Job[] = [];
-  const outOfScope = new Set(settings.outOfScopeMachines);
 
   const reworkParts: Job[] = [];
   for (const job of jobs) {
@@ -217,26 +214,20 @@ export function planProduction(
       exceptions.blocked.push(job);
       continue;
     }
-    if (job.erpMachine && outOfScope.has(job.erpMachine)) {
-      exceptions.outOfScope.push(job);
-      continue;
-    }
     const lock = locks[job.id];
     if (picked && !picked(job) && !emergencyIds.has(job.id) && !(lock?.machine && activeIds.has(lock.machine))) {
       exceptions.leftOut!.push(job);
       continue;
     }
-    if (!job.warehousePickDate) exceptions.unpickedWarehouse.push(job);
-
     if (lock?.machine && activeIds.has(lock.machine)) {
-      lockedBy.set(job.id, 'user');
+      lockedBy.add(job.id);
       lockedQueues[lock.machine].push(job);
       continue;
     }
 
     const kind = kinds.get(job.id);
     if ((kind === 'table' || kind === 'spare') && !emergencyIds.has(job.id)) {
-      // tables and spares wait for a start and a finish chosen by the user; the ERP machine does not decide them
+      // tables and spares wait for a start and a finish chosen by the user
       const key = groupKey(kind, job);
       const win = windows.get(key);
       if (!win) {
@@ -252,17 +243,6 @@ export function planProduction(
       ctx.release.set(job.id, win.release);
       continue;
     }
-    if (settings.keepErpAssignments && job.erpMachine && activeIds.has(job.erpMachine)) {
-      // the ERP machine is kept only when its rules allow the part; otherwise the part is planned like any other
-      const why = refusal(job, active.find(m => m.id === job.erpMachine)!, settings, ctx);
-      if (!why) {
-        lockedBy.set(job.id, 'erp');
-        lockedQueues[job.erpMachine].push(job);
-        continue;
-      }
-      exceptions.erpRefused.push(job);
-      refusals[job.id] = `ERP machine ${job.erpMachine}: ${why}`;
-    }
     free.push(job);
   }
 
@@ -272,7 +252,7 @@ export function planProduction(
   const watchCarpenter = settings.carpenterDelayMode !== 'off';
   const partsLeft: Record<string, number> = {};
   const carpenterLeft: Record<string, number> = {};
-  // every part of the module still to make here, also the ones the ERP or the user already put on a machine
+  // every part of the module still to make here, also the ones the user already put on a machine
   for (const j of [...free, ...Object.values(lockedQueues).flat()]) if (kinds.get(j.id) !== 'rework' && !j.isRework) partsLeft[j.masterOrder] = (partsLeft[j.masterOrder] ?? 0) + 1;
   if (watchCarpenter)
     for (const mo of Object.keys(partsLeft)) {
@@ -331,7 +311,7 @@ export function planProduction(
   /* ---- assignment ------------------------------------------------------ */
   const queues: Record<string, Job[]> = {};
   const tails: Record<string, MachineState> = {};
-  const finalLocked = new Set(lockedBy.keys());
+  const finalLocked = new Set(lockedBy);
   for (const m of active) {
     queues[m.id] = [...lockedQueues[m.id]];
     const state: MachineState = { t: 0, prev: null };
@@ -496,7 +476,9 @@ export function planProduction(
     /* ---- rework parts: own blocks, placed before/after the part they were dropped next to ---- */
     for (const rw of reworkParts) {
       const plan = reworkPlacement.get(rw.id)!;
-      let machineId = plan.machineId;
+      // a rework part with no machine of its own goes where the user put it (the red box next to the Gantt)
+      const pinned = locks[rw.id]?.machine;
+      let machineId = plan.machineId ?? (pinned && activeIds.has(pinned) ? pinned : undefined);
       if (!machineId) {
         const options = active.filter(m => isEligible(rw, m, settings, ctx));
         if (options.length === 0) {
@@ -576,8 +558,7 @@ export function planProduction(
           decidingRule: st.job.isRework ? 'Rework: placed by you' : decidingRule(st.job, rules, rankCtx, rankFor(st.job)),
           isLate,
           closesBox,
-          userLocked: lockedBy.get(st.job.id) === 'user',
-          erpLocked: lockedBy.get(st.job.id) === 'erp',
+          userLocked: lockedBy.has(st.job.id),
           manualDuration: ctx.manualDuration.has(st.job.id),
           manualStart: ctx.manualStart.has(st.job.id),
           carpenterOpen: blockedByCarpenter,

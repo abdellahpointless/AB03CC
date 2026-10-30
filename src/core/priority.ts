@@ -22,9 +22,22 @@ export function valueMatches(jobValue: string, target: string): boolean {
   return za !== '' && za === stripZeros(b);
 }
 
-/** Does a "filter" style rule (sales order, schedule, customer, material) select this job? */
+/** The filter rules inside a rule that count: switched on, and of a filter type. */
+export const innerRules = (rule: PriorityRule): PriorityRule[] => (rule.children ?? []).filter(c => c.enabled && FILTER_TYPES.includes(c.type));
+
+/**
+ * Does a "filter" style rule (sales order, schedule, customer, material) select this job? A rule with rules inside it
+ * picks only the parts that also match one of them (and so on, as deep as the rules go): a sales order with a schedule
+ * inside picks that sales order's parts of that schedule only.
+ */
 export function jobMatchesRule(job: Job, rule: PriorityRule): boolean {
-  if (!rule.enabled) return false;
+  if (!rule.enabled || !ownMatch(job, rule)) return false;
+  const inner = innerRules(rule);
+  return !inner.length || inner.some(c => jobMatchesRule(job, c));
+}
+
+/** The rule's own condition, without the rules inside it. */
+export function ownMatch(job: Job, rule: PriorityRule): boolean {
   const values = rule.values ?? [];
   switch (rule.type) {
     case 'sales_order':
@@ -129,24 +142,27 @@ const leftText = (job: Job, ctx: RankContext) => {
   return `${left} ${left === 1 ? 'part' : 'parts'} left${carp ? `, ${carp} still at the carpenter` : ''}`;
 };
 
+/** What a matching filter rule says about the job, with the rules inside it that matched too: "Sales order X › Schedule 100". */
+function matchText(job: Job, rule: PriorityRule): string {
+  const own =
+    rule.type === 'sales_order'
+      ? `Sales order ${job.salesOrder}`
+      : rule.type === 'customer'
+        ? `Customer ${job.customer}`
+        : rule.type === 'material_type'
+          ? `Material ${job.materialType}`
+          : rule.scheduleMode === 'range'
+            ? `Schedule ${rule.scheduleMin ?? '*'}-${rule.scheduleMax ?? '*'}`
+            : `Schedule ${job.scheduleNo}`;
+  const inner = innerRules(rule).find(c => jobMatchesRule(job, c));
+  return inner ? `${own} › ${matchText(job, inner)}` : own;
+}
+
 /** Human readable "why is this job here" label. */
 export function decidingRule(job: Job, rules: PriorityRule[], ctx: RankContext, rank: number): string {
   for (const [level, levelRules] of levelsOf(rules)) {
     for (const rule of levelRules) {
-      if (FILTER_TYPES.includes(rule.type) && jobMatchesRule(job, rule)) {
-        switch (rule.type) {
-          case 'sales_order':
-            return `Level ${level}: Sales order ${job.salesOrder}`;
-          case 'customer':
-            return `Level ${level}: Customer ${job.customer}`;
-          case 'material_type':
-            return `Level ${level}: Material ${job.materialType}`;
-          default:
-            return rule.scheduleMode === 'range'
-              ? `Level ${level}: Schedule ${rule.scheduleMin ?? '*'}-${rule.scheduleMax ?? '*'}`
-              : `Level ${level}: Schedule ${job.scheduleNo}`;
-        }
-      }
+      if (FILTER_TYPES.includes(rule.type) && jobMatchesRule(job, rule)) return `Level ${level}: ${matchText(job, rule)}`;
     }
     for (const rule of levelRules) {
       if (rule.type === 'finish_master_order') return `Level ${level}: Finish full module (${leftText(job, ctx)})`;

@@ -58,6 +58,6 @@ describe('machines limited to part types', () => {
     const target = s.machines.find(m => m.allowedMaterials.includes('ALU'))!;
     target.partTypes = { restricted: true, allowed: { 'top plate': { small: true, big: false } } };
     const p = planProduction(jobs, s, {}, [], times);
-    for (const it of p.queues[target.id] ?? []) expect(it.erpLocked || it.userLocked).toBe(true); // every part here is a big top plate
+    expect(p.queues[target.id] ?? []).toEqual([]); // every part is a big top plate, which this machine may not make
   });
 });

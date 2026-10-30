@@ -58,7 +58,7 @@ console.log(`optimizer (${settings.planningEffort} effort): ${ms} ms, sum of mas
 console.log({ jobs: k.plannedJobs, measured: k.measuredJobs, estimated: k.estimatedJobs, hours: k.plannedHours, changeover: k.changeoverMinutes, saved: k.setupSavedMinutes, makespan: k.makespanMinutes, sumMo: k.sumMoCompletion, sync: `${k.synchronizedMos}/${k.totalMos}`, late: k.overdueJobs, carpenterWaiting: k.waitingOnCarpenter });
 for (const [id, q] of Object.entries(plan.queues)) console.log(id.padEnd(10), String(q.length).padStart(4), 'jobs  finish', k.finishPerMachine[id], ' util', k.utilizationPerMachine[id] + '%');
 const ex = plan.exceptions;
-console.log('exceptions:', { blocked: ex.blocked.length, noEligible: ex.noEligibleMachine.length, outOfScope: ex.outOfScope.length, manual30000: ex.manual30000.length, unpicked: ex.unpickedWarehouse.length });
+console.log('exceptions:', { blocked: ex.blocked.length, notPlaced: ex.noEligibleMachine.length, manual30000: ex.manual30000.length, leftOut: ex.leftOut?.length ?? 0 });
 
 // ---- invariants ----
 const problems: string[] = [];
@@ -74,10 +74,9 @@ for (const [id, q] of Object.entries(subject.queues)) {
     if (it.startMinute < prevEnd) problems.push(`${name}: overlap on ${id} at ${it.job.id}`);
     prevEnd = it.endMinute;
     if (!it.userLocked && !isEligible(it.job, machine, settings, ctx)) problems.push(`${name}: ineligible ${it.job.id} on ${id}`);
-    if (it.erpLocked && it.job.erpMachine !== id) problems.push(`${name}: ERP lock broken ${it.job.id}`);
   }
 }
-const expected = jobs.length - ex.blocked.length - ex.outOfScope.length - ex.manual30000.length - ex.noEligibleMachine.length;
+const expected = jobs.length - ex.blocked.length - ex.manual30000.length - ex.noEligibleMachine.length - (ex.leftOut?.length ?? 0);
 if (seen.size !== expected) problems.push(`${name}: scheduled ${seen.size} but expected ${expected}`);
 }
 console.log(problems.length ? `PROBLEMS:\n${problems.slice(0, 20).join('\n')}` : 'all invariants hold');

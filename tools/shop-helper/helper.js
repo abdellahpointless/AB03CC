@@ -147,14 +147,15 @@
 
   /* ------------------------------------------------------------ the plan text */
 
-  const MACHINE = /^(?:fanuc|haas)\s*-\s*\d$/i;
+  // any machine of the Excel: FANUC - 1, HAAS - 5, DMG - 1, MASTER, LASER - 1 …
+  const MACHINE = /^[a-z][a-z0-9]*(?:\s+[a-z0-9]+)*(?:\s*-\s*\d+)?$/i;
   /** the rows copied from the planner's Excel export: Machine, Sequence, Box Code, Order Number */
   function parsePlan(text) {
     const out = [];
     for (const line of text.split(/\r?\n/)) {
       const cells = line.split(/\t|;|,(?=\S)/).map(norm).filter(Boolean);
       if (cells.length < 2) continue;
-      const machine = cells.find(c => MACHINE.test(c));
+      const machine = MACHINE.test(cells[0]) && !/^machine$/i.test(cells[0]) ? cells[0] : null;
       if (!machine) continue; // header line or something else
       const seq = cells.map(Number).find(n => Number.isInteger(n) && n > 0 && n < 1000);
       const order = cells.find(c => /^\d{9,}$/.test(c));
@@ -808,7 +809,8 @@
         <label style="color:#94a3b8"><input type="checkbox" data-one> one at a time, in order</label>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-        <button data-act="all" class="cnc-b" style="background:#15803d;border-color:#22c55e;font-weight:600">Do everything: send all machines + order</button>
+        <button data-act="all" class="cnc-b" style="background:#15803d;border-color:#22c55e;font-weight:600">Do everything: empty the machines, send, order, double-check</button>
+        <button data-act="verify" class="cnc-b" title="Reads every machine's list, compares it with the plan and fixes what is wrong (also done at the end of every full run)">Double-check</button>
         <button data-act="autoresume" class="cnc-b" style="display:none;background:#b45309;border-color:#f59e0b">Continue the full run</button>
         <button data-act="stop" class="cnc-b">Stop</button>
       </div>
@@ -1053,7 +1055,7 @@
       for (const sel of prefer) if ((field = dialog.querySelector(sel))) break;
       field =
         field ||
-        [...dialog.querySelectorAll('span, div, a, input')].filter(visible).find(e => /^([-–\s]*(select|choose)[-–\s.]*|(fanuc|haas)\s*-\s*\d)$/i.test(norm(e.textContent || e.value || e.placeholder))) ||
+        [...dialog.querySelectorAll('span, div, a, input')].filter(visible).find(e => /^([-–\s]*(select|choose)[-–\s.]*|[a-z]+\s*-\s*\d+|master)$/i.test(norm(e.textContent || e.value || e.placeholder))) ||
         dialog.querySelector('input, span[class*="select"]');
       if (!field) throw new Error('Could not find the machine list in the box.');
       press(field);
@@ -1197,7 +1199,7 @@
     const rows = [];
     await scan(row => {
       const p = match(row);
-      rows.push({ p, top: parseFloat(row.style.top) || rows.length, text: boxIdx !== null ? cellText(row, boxIdx) : '' });
+      rows.push({ p, top: parseFloat(row.style.top) || rows.length, text: boxIdx !== null ? cellText(row, boxIdx) : '', ord: ordIdx !== null ? cellText(row, ordIdx) : '' });
     });
     return rows.sort((a, b) => a.top - b.top);
   }
@@ -1341,9 +1343,11 @@
       return null;
     }
   };
+  // the page the work window had before it was (re)opened: never worked on, it is about to be replaced
+  let staleDoc = null;
   const workDocReady = () => {
     const d = popDoc();
-    return d && d.readyState === 'complete' && d.querySelector('.slick-viewport .slick-row') ? d : null;
+    return d && d !== staleDoc && d.readyState === 'complete' && d.querySelector('.slick-viewport .slick-row') ? d : null;
   };
   async function workReady() {
     const d = await waitFor(workDocReady, 60000, 250);
@@ -1366,6 +1370,8 @@
     } catch {
       work = null;
     }
+    // a work window left open by an earlier run reloads now: wait for its new page, not the old one
+    staleDoc = popDoc();
     return !!work;
   }
   function leaveWork(close) {
@@ -1383,11 +1389,22 @@
     const d = workloadDialog();
     return d && d.querySelector('.slick-row') ? d : null;
   };
-  /** opens the parts list of one machine: "Machines workload", then that machine in the "Machine Staus" list */
-  async function openWorkload(machine) {
+  /** how many boxes "Machine Staus" said the last machine opened has (null = not shown) */
+  let machineTotal = null;
+  /**
+   * opens the parts list of one machine: "Machines workload", then that machine in the "Machine Staus" list.
+   * emptyOk: a machine without parts gives null instead of an error (the totals are then read fresh, never from an old list).
+   */
+  async function openWorkload(machine, emptyOk) {
+    machineTotal = null;
     if (workloadDialog()) {
       closeWorkload();
       await waitFor(() => !workloadDialog(), 4000, 100);
+      await sleep(300);
+    }
+    if (emptyOk && statusDialog()) {
+      closeStatus();
+      await waitFor(() => !statusDialog(), 4000, 100);
       await sleep(300);
     }
     let st = statusDialog();
@@ -1404,6 +1421,7 @@
       await sleep(400);
     }
     const row = await waitFor(() => q('.slick-row', st).find(r => q('.slick-cell', r).some(c => machineName(c.textContent) === machine)), 8000, 200);
+    if (!row && emptyOk) return null; // a machine with nothing on it may not be listed at all
     if (!row) throw new Error(`${machine} is not in the "Machine Staus" list.`);
     const cells = q('.slick-cell', row);
     const nameCell = cells.find(c => machineName(c.textContent) === machine);
@@ -1414,6 +1432,9 @@
     };
     const boxCell = at(/total\s*box/i);
     const timeCell = at(/total\s*time/i);
+    const total = boxCell ? parseInt(norm(boxCell.textContent).replace(/\D/g, ''), 10) : NaN;
+    machineTotal = Number.isFinite(total) ? total : null;
+    if (emptyOk && machineTotal === 0) return null;
     const dbl = el => {
       const V = el.ownerDocument.defaultView;
       el.dispatchEvent(new V.MouseEvent('dblclick', { bubbles: true, cancelable: true, view: V }));
@@ -1425,11 +1446,17 @@
       ['its name', nameCell && (nameCell.querySelector('a') || nameCell), press],
       ['a double click on its row', nameCell, dbl],
     ];
+    // the list of a machine that may be empty counts as open once its grid is there (and had a moment to fill)
+    const opened = async () => {
+      const d = await waitFor(() => listOpen() || (emptyOk && workloadDialog() && workloadDialog().querySelector('.slick-viewport') ? workloadDialog() : null), 5000, 150);
+      if (d && emptyOk && !listOpen()) return (await waitFor(listOpen, 3000, 150)) || d;
+      return d;
+    };
     for (const [what, el, act] of tries) {
       if (!el) continue;
       const before = new Set(q(DIALOGS).filter(visible));
       act(el);
-      const d = await waitFor(listOpen, 5000, 150);
+      const d = await opened();
       if (d) {
         log(`${machine}: its list opened from ${what} in "Machine Staus".`);
         await sleep(500);
@@ -1456,34 +1483,310 @@
     if (x) press(x);
   }
 
+  /* ------------------------------------------------------------ take everything off a machine, and the double check */
+
+  // the bin at the start of every row of a machine's parts list: it takes the part off the machine
+  const BIN_SEL = '.fa-trash, .fa-trash-o, .fa-trash-alt, [class*="trash"], [class*="delete"], [title*="elete"], [title*="emove"], img[src*="trash"], img[src*="delete"]';
+  /** what to click for a row's bin: the icon first (what a person hits), then the link or button around it */
+  function binsOf(row) {
+    const out = [];
+    for (const el of q(BIN_SEL, row).reverse()) {
+      if (!out.includes(el)) out.push(el);
+      const outer = el.closest('a, button, .inline-action');
+      if (outer && row.contains(outer) && !out.includes(outer)) out.push(outer);
+    }
+    return out;
+  }
+  const okButton = d => q('button, a, input[type="button"], input[type="submit"]', d).filter(visible).find(b => /^(yes|ok|evet|tamam|ja|oui|s[ií]|delete|remove|sil)$/i.test(norm(b.textContent || b.value)));
+  const BOXES = `${DIALOGS}, [role="alertdialog"], .bootbox, .jconfirm-box, .swal2-popup, .e-dialog, .k-window`;
+  /** the site's "are you sure?" box after a bin: a box that was not there before, with a Yes / OK */
+  const binConfirm = before => q(BOXES).filter(visible).find(d => !before.has(d) && !d.closest('#cnc-helper') && d !== workloadDialog() && d !== statusDialog() && okButton(d));
+  const rowsNow = () => {
+    const vp = slickViewport();
+    return vp ? [...vp.querySelectorAll('.slick-row')].sort((a, b) => parseFloat(a.style.top) - parseFloat(b.style.top)) : [];
+  };
+
+  /** presses a row's bin in the open parts list (answering the site's "are you sure?") and waits until the row is gone */
+  async function removeRow(row, keyIdx, label) {
+    const key = cellText(row, keyIdx);
+    if (!key) throw new Error(`Could not read the row of ${label}.`);
+    const still = () => rowsNow().some(r => cellText(r, keyIdx) === key);
+    const tries = binsOf(row);
+    if (!tries.length) throw new Error(`No bin found on the row of ${label}. Open that machine's list, press "Describe page" and send me the result.`);
+    for (const el of tries) {
+      if (!el.isConnected || !still()) break;
+      const before = new Set(q(BOXES).filter(visible));
+      press(el);
+      const asked = await waitFor(() => binConfirm(before) || (!still() ? 'gone' : null), 6000, 100);
+      if (asked && asked !== 'gone') {
+        press(okButton(asked));
+        await waitFor(() => !visible(asked), 5000, 100);
+      }
+      if (await waitFor(() => !still(), asked ? 10000 : 1500, 150)) return key;
+    }
+    // some lists only change when they are refreshed
+    const refresh = q('.refresh-button, .fa-refresh', scope).filter(visible)[0];
+    if (refresh) {
+      press(refresh.closest('.tool-button, a, button') || refresh);
+      if (await waitFor(() => !still(), 6000, 200)) return key;
+    }
+    throw new Error(`${label} would not leave the list after its bin was pressed. Open that machine's list, press "Describe page" and send me the result.`);
+  }
+
+  /** the CNC Workload list again, as the site has it now */
+  async function refreshMain() {
+    const notInDialog = el => !el.closest(DIALOGS);
+    const btn = q('.refresh-button').filter(visible).find(notInDialog) || q('.fa-refresh').filter(visible).filter(notInDialog).map(i => i.closest('.tool-button, a, button') || i)[0];
+    if (btn) press(btn);
+    else if (work) {
+      // no refresh button: the work window loads the page again
+      const before = DOC;
+      WIN.location.reload();
+      await waitFor(() => popDoc() && popDoc() !== before, 15000, 200);
+      await workReady();
+    }
+    await sleep(900);
+    await waitFor(() => slickViewport() && slickViewport().querySelector('.slick-row') && pageInfo(), 30000, 200);
+    await sleep(400);
+  }
+
+  /** the first part ever taken off a machine must be back in the CNC Workload list, without that machine: else we stop */
+  async function probeRemoval(machine, order) {
+    closeWorkload();
+    await sleep(300);
+    closeStatus();
+    await sleep(500);
+    await refreshMain();
+    await showAll(log);
+    const ordIdx = columnIndex(/^order\s*number/i);
+    const macIdx = columnIndex(/^machine$/i);
+    let found = null;
+    if (ordIdx !== null)
+      await scan(row => {
+        if (cellText(row, ordIdx) === order) {
+          found = row;
+          return 'done';
+        }
+      });
+    // a safety stop ends the run for good: "Continue the full run" must not press another bin
+    const halt = msg => Object.assign(new Error(msg), { safety: true });
+    if (!found) throw halt(`STOPPED FOR SAFETY: order ${order}, taken off ${machine} with the bin, is no longer in the CNC Workload list. The bin may do more than take a part off a machine. Nothing else was taken off: check order ${order} on the website and tell me what happened.`);
+    const now = macIdx !== null ? machineName(cellText(found, macIdx)) : '';
+    if (now === machine) throw halt(`STOPPED FOR SAFETY: order ${order} still shows ${machine} after its bin was pressed. Nothing else was taken off. Tell me what the bin does on the website.`);
+    log(`Safety check passed: order ${order} is back in the CNC Workload list${now ? ` (machine: ${now})` : ', on no machine'}. Taking the other parts off.`, 'ok');
+  }
+
+  /** takes every part off one machine on the site (its parts list ends up empty); returns the orders taken off */
+  async function clearMachine(machine, st) {
+    const removed = [];
+    let dlg = await openWorkload(machine, true);
+    if (!dlg) return removed;
+    // only a list that holds just this machine's parts is emptied: never more rows than "Machine Staus" says it has
+    scope = dlg;
+    let rows = 0;
+    try {
+      await scan(() => void rows++);
+    } finally {
+      scope = DOC;
+    }
+    if (machineTotal !== null && rows > machineTotal)
+      throw Object.assign(new Error(`STOPPED FOR SAFETY: ${machine}'s list shows ${rows} parts, but "Machine Staus" says it has ${machineTotal}. The list may hold other machines' parts too, so nothing was taken off. Open that list, press "Describe page" and send me the result.`), { safety: true });
+    for (let guard = 0; guard < 3000 && !stop; guard++) {
+      scope = dlg;
+      try {
+        const keyIdx = columnIndex(/^order\s*number/i) ?? columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
+        if (keyIdx === null) throw new Error('The parts list has no Order Number or Box Code column.');
+        const vp = slickViewport();
+        if (vp) vp.scrollTop = 0;
+        await sleep(150);
+        // an empty list may only be reloading: look twice before calling it done
+        let row = rowsNow()[0];
+        if (!row) row = (await waitFor(() => rowsNow()[0], 1500, 150)) || null;
+        if (!row) break;
+        removed.push(await removeRow(row, keyIdx, `${machine}, order ${cellText(row, keyIdx)}`));
+        if (removed.length % 10 === 0) log(`${machine}: ${removed.length} parts taken off so far…`);
+      } finally {
+        scope = DOC;
+      }
+      if (!st.probed) {
+        await probeRemoval(machine, removed[removed.length - 1]);
+        st.probed = true;
+        keep({ auto: st });
+        dlg = await openWorkload(machine, true);
+        if (!dlg) break;
+      }
+      if (!workloadDialog()) {
+        dlg = await openWorkload(machine, true);
+        if (!dlg) break;
+      }
+    }
+    return removed;
+  }
+
+  /** one machine's parts list on the site against the plan: what is missing, what does not belong, and the order */
+  async function checkMachine(machine) {
+    const mine = mineOf(machine);
+    const dlg = await openWorkload(machine, true);
+    if (!dlg) return { machine, missing: mine, extras: [], orderOk: true };
+    scope = dlg;
+    try {
+      const boxIdx = columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
+      const ordIdx = columnIndex(/^order\s*number/i);
+      const total = machineTotal;
+      const rows = await readWorkload(machine, boxIdx, ordIdx);
+      // more rows than the machine has: the list holds other parts too, so nothing is taken off it
+      const unsure = total !== null && rows.length > total;
+      const seen = new Set();
+      const present = [];
+      const extras = [];
+      for (const r of rows) {
+        if (r.p && !seen.has(r.p)) {
+          seen.add(r.p);
+          present.push(r.p);
+        } else extras.push(r.ord || r.text); // not in this machine's plan, or there twice
+      }
+      const want = mine.filter(p => seen.has(p));
+      return { machine, missing: mine.filter(p => !seen.has(p)), extras, orderOk: present.every((p, i) => p === want[i]), unsure };
+    } finally {
+      scope = DOC;
+    }
+  }
+
+  /** takes off a machine what does not belong on it (not in its plan, or there twice) */
+  async function takeOffExtras(r) {
+    if (!r.extras.length) return;
+    const m = r.machine;
+    if (r.unsure) return log(`${m}: its list shows more parts than "Machine Staus" says it has, so nothing is taken off it. Not in its plan: ${r.extras.join(', ')}.`, 'bad');
+    const dlg = await openWorkload(m, true);
+    if (!dlg) return;
+    scope = dlg;
+    try {
+      const keyIdx = columnIndex(/^order\s*number/i) ?? columnIndex(/^box\s*code/i) ?? columnIndex(/^bo/i);
+      for (const key of r.extras) {
+        if (stop) return;
+        const hit = {};
+        const row = await rowOf(hit, rw => (cellText(rw, keyIdx) === key ? hit : null), true);
+        if (row) await removeRow(row, keyIdx, `${m}, order ${key}`);
+      }
+    } finally {
+      scope = DOC;
+    }
+    log(`${m}: took off ${r.extras.length} part(s) that are not in its plan.`, 'ok');
+  }
+
+  /** sends a machine the parts of its plan that are missing from its list (those still in the CNC Workload list) */
+  async function sendMissing(r, notOnSite) {
+    if (!r.missing.length) return;
+    const m = r.machine;
+    closeWorkload();
+    await sleep(300);
+    closeStatus();
+    await sleep(300);
+    let s = await survey(m);
+    if (s.others) {
+      await untickAll();
+      s = await survey(m);
+    }
+    const here = r.missing.filter(p => s.found.has(p));
+    r.missing.filter(p => !s.found.has(p)).forEach(p => notOnSite.add(p));
+    if (!here.length) return;
+    const t = await tickMachine(m, here, s);
+    if (t.ticked) {
+      await sendTicked(m, t.ticked);
+      log(`${m}: sent ${t.ticked} missing part(s).`, 'ok');
+    }
+  }
+
+  /** the double check, always done at the end: every machine's list against the plan, fixed and checked again */
+  async function verifyAll(machines) {
+    const notOnSite = new Set();
+    let bad = [];
+    for (let round = 1; round <= 3; round++) {
+      log(round === 1 ? 'Double check: reading every machine\'s list and comparing it with the plan…' : `Double check, round ${round}: checking again after the fixes…`);
+      bad = [];
+      for (const m of machines) {
+        if (stop) return log('Stopped during the double check.', 'warn');
+        const r = await checkMachine(m);
+        const missing = r.missing.filter(p => !notOnSite.has(p));
+        const ok = !missing.length && !r.extras.length && r.orderOk;
+        log(
+          ok
+            ? `${m}: all ${mineOf(m).length - r.missing.length} parts there, in plan order.`
+            : `${m}: ${missing.length} missing, ${r.extras.length} not in its plan, ${r.orderOk ? 'order right' : 'order WRONG'}.`,
+          ok ? 'ok' : 'warn',
+        );
+        if (!ok) bad.push({ ...r, missing });
+      }
+      closeWorkload();
+      await sleep(300);
+      closeStatus();
+      if (!bad.length) break;
+      if (round === 3) break;
+      // first take off every machine what does not belong (a part on the wrong machine goes back to the list), then send
+      // what is missing, then put the lists in plan order
+      for (const r of bad) {
+        if (stop) return log('Stopped during the double check.', 'warn');
+        await takeOffExtras(r);
+      }
+      for (const r of bad) {
+        if (stop) return log('Stopped during the double check.', 'warn');
+        await sendMissing(r, notOnSite);
+      }
+      for (const r of bad) {
+        if (stop) return log('Stopped during the double check.', 'warn');
+        if (!r.missing.length && r.orderOk) continue;
+        if (await openWorkload(r.machine, true)) await doOrder(r.machine);
+      }
+    }
+    closeWorkload();
+    await sleep(300);
+    closeStatus();
+    if (notOnSite.size) log(`Not on the website, so not planned (already made, or not in the CNC Workload list): ${[...notOnSite].map(p => `${p.machine} ${p.box || p.order}`).join(', ')}.`, 'bad');
+    if (bad.length) {
+      for (const r of bad) log(`STILL WRONG on ${r.machine}: ${[r.missing.length ? `missing ${r.missing.map(p => p.box || p.order).join(', ')}` : '', r.extras.length ? `not in its plan ${r.extras.join(', ')}` : '', r.orderOk ? '' : 'order not as planned'].filter(Boolean).join('; ')}.`, 'bad');
+      return false;
+    }
+    log(`Double check passed: every part of the plan is on its machine, in plan order${notOnSite.size ? ' (apart from the parts not on the website)' : ''}.`, 'ok');
+    return true;
+  }
+
   /** a click on "Do everything" or "Continue the full run": the work window has to be opened inside the click */
+  const ALL_LABEL = 'Do everything: empty the machines, send, order, double-check';
+  const CHECK_LABEL = 'Double-check';
   let armed = 0;
-  function startAll(resume) {
+  let armedFor = '';
+  /** onlyCheck: the "Double-check" button (the check and its fixes only), else the full run */
+  function startAll(resume, onlyCheck) {
     if (busy) return;
     if (!resume) {
       const machines = [...new Set(readPlan().map(p => p.machine))];
       if (!machines.length) return log('Paste the plan first (the Copy button in the planner, or columns A to D of Plan_All).', 'warn');
-      const btn = $('[data-act=all]');
-      if (Date.now() - armed > 10000) {
+      const btn = $(onlyCheck ? '[data-act=verify]' : '[data-act=all]');
+      const label = onlyCheck ? CHECK_LABEL : ALL_LABEL;
+      if (Date.now() - armed > 10000 || armedFor !== label) {
         armed = Date.now();
-        btn.textContent = `Press again to start: ${plan.length} parts to ${machines.join(', ')}`;
-        setTimeout(() => (btn.textContent = 'Do everything: send all machines + order'), 10000);
+        armedFor = label;
+        btn.textContent = onlyCheck
+          ? `Press again: check ${machines.length} machines against the plan and fix them`
+          : `Press again to start: empty ${machines.length} machines, then send ${plan.length} parts (${machines.join(', ')})`;
+        setTimeout(() => (btn.textContent = label), 10000);
         return;
       }
       armed = 0;
-      btn.textContent = 'Do everything: send all machines + order';
+      btn.textContent = label;
     }
     if (!openWork()) {
       return log('The browser blocked the work window. Click the blocked pop-up sign at the right end of the address bar, choose "Always allow pop-ups" for this site, then press the button again.', 'err');
     }
-    guard(() => runAll(resume));
+    guard(() => runAll(resume, onlyCheck));
   }
 
-  async function runAll(resume) {
+  async function runAll(resume, onlyCheck) {
     const machines = [...new Set(readPlan().map(p => p.machine))];
     if (!machines.length) throw new Error('Paste the plan first (the Copy button in the planner, or columns A to D of Plan_All).');
     let st = resume ? stored().auto : null;
-    if (!st) st = { phase: 'send', i: 0, machines };
+    // a brand new planning: every machine of the Excel is emptied first, whatever it had before
+    if (!st) st = onlyCheck ? { phase: 'verify', i: 0, machines, checkOnly: true } : { phase: 'clear', i: 0, machines, probed: false };
     auto = true;
     keep({ auto: st });
     $('[data-act=autoresume]').style.display = 'none';
@@ -1492,6 +1795,24 @@
         log('Working in the second window. Leave it alone until I say done; its reloads do not stop me.', 'ok');
         await workReady();
       } else log('Working in this tab: when it reloads, run the helper again and it carries on by itself.', 'warn');
+      while (st.phase === 'clear' && st.i < st.machines.length) {
+        if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
+        const m = st.machines[st.i];
+        log(`${m}: taking off every part it has now…`);
+        const gone = await clearMachine(m, st);
+        if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
+        log(`${m}: ${gone.length ? `${gone.length} part${gone.length === 1 ? '' : 's'} taken off, its list is empty` : 'nothing on it'}.`, 'ok');
+        st = { ...st, i: st.i + 1 };
+        keep({ auto: st });
+      }
+      if (st.phase === 'clear') {
+        closeWorkload();
+        await sleep(300);
+        closeStatus();
+        await refreshMain();
+        st = { ...st, phase: 'send', i: 0 };
+        keep({ auto: st });
+      }
       while (st.phase === 'send' && st.i < st.machines.length) {
         if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
         const m = st.machines[st.i];
@@ -1551,11 +1872,20 @@
       closeWorkload();
       await sleep(400);
       closeStatus();
-      keep({ auto: null, last: { msg: 'full run finished', at: nowText() } });
-      log(`All done: every machine got its parts and its list is in plan order.${work ? ' You can close the second window.' : ''}`, 'ok');
+      if (st.phase === 'order') {
+        st = { ...st, phase: 'verify', i: 0 };
+        keep({ auto: st });
+      }
+      // always: the double check of every machine against the plan
+      const good = await verifyAll(st.machines);
+      if (stop) return log('Stopped. Press "Continue the full run" to go on.', 'warn');
+      keep({ auto: null, last: { msg: good ? 'double check passed' : 'double check found problems', at: nowText() } });
+      const done = st.checkOnly ? 'All done: every machine is checked against the plan' : 'All done: every machine was emptied, got its parts, and its list is in plan order (checked)';
+      log(good ? `${done}.${work ? ' You can close the second window.' : ''}` : 'Finished, but the double check found the problems listed in red above.', good ? 'ok' : 'bad');
       leaveWork(false);
     } catch (e) {
-      $('[data-act=autoresume]').style.display = '';
+      if (e && e.safety) keep({ auto: null });
+      else $('[data-act=autoresume]').style.display = '';
       throw e;
     } finally {
       auto = false;
@@ -1618,6 +1948,7 @@
     else if (act === 'record') toggleRecord();
     else if (act === 'all') startAll(false);
     else if (act === 'autoresume') startAll(true);
+    else if (act === 'verify') startAll(false, true);
     else if (act === 'stop') stop = true;
   });
   // drag by the title
@@ -1657,12 +1988,13 @@
   }
   if (saved.auto && saved.auto.machines) {
     $('[data-act=autoresume]').style.display = '';
-    const where = saved.auto.phase === 'send' ? `sending, ${saved.auto.i} of ${saved.auto.machines.length} machines done` : `ordering, ${saved.auto.i} of ${saved.auto.machines.length} machines done`;
+    const step = { clear: 'emptying the machines', send: 'sending', order: 'ordering', verify: 'double-checking' }[saved.auto.phase] || saved.auto.phase;
+    const where = `${step}, ${saved.auto.i} of ${saved.auto.machines.length} machines done`;
     log(`A full run was interrupted (${where}). It carries on in 5 seconds; press Stop to cancel.`, 'warn');
     setTimeout(() => {
       if (!stop && !busy) guard(() => runAll(true));
       else keep({ auto: null });
     }, 5000);
   }
-  log(saved.plan ? 'Ready. "Do everything" sends every machine its parts and then orders every list.' : 'Ready. Paste the plan above, then press "Do everything" (or work one machine at a time).');
+  log(saved.plan ? 'Ready. "Do everything" empties every machine of the plan, sends each its parts, orders every list and double-checks it all.' : 'Ready. Paste the plan above, then press "Do everything" (or work one machine at a time).');
 })();

@@ -1,13 +1,13 @@
-import { AlertOctagon, Clock, Siren, Gauge, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
+import { AlertOctagon, Clock, Siren, Gauge, GripVertical, Hammer, History, Lock, Maximize2, Pencil, Search, Flag, ZoomIn, ZoomOut } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { WorkCalendar, breakWindows, formatClock, formatDuration, planStartOffset } from '../core/calendar';
 import { startNow } from '../core/defaults';
-import type { ScheduledJob, TimelineEvent } from '../core/types';
+import type { Job, ScheduledJob, TimelineEvent } from '../core/types';
 import { swatchFor, type ColorMode } from '../lib/colors';
 import { timeBasisNote } from '../lib/timeBasis';
 import { useStore } from '../state/store';
 import { useMachineRules } from './useMachineRules';
-import { Button, Segmented, TimeMark } from './kit';
+import { Button, MaterialBadge, Segmented, TimeMark, inputCls } from './kit';
 import { EVENT_TYPES, EventPopup, type EventDraft } from './EventPopup';
 import { KpiBar } from './KpiBar';
 
@@ -20,7 +20,7 @@ const STRIP_H = 18;
 const SNAP = 5;
 
 export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: ScheduledJob) => void; onCarpenter: () => void }) {
-  const { plan, previousPlan, settings, setLock, updateSettings, notify, saveEvent, removeEvent } = useStore();
+  const { plan, previousPlan, settings, locks, setLock, updateSettings, notify, saveEvent, removeEvent } = useStore();
   const whyNot = useMachineRules();
   const [draft, setDraft] = useState<EventDraft | null>(null);
   const [drag, setDrag] = useState<{ lane: string; a: number; b: number } | null>(null);
@@ -153,9 +153,21 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
     setDraft(null);
   };
 
+  // parts no machine takes: the user decides where they go (picked in the red box, or dragged onto a machine)
+  // (a part the user just placed leaves the box at once; the plan catches up a moment later)
+  const unplaced = plan.exceptions.noEligibleMachine.filter(j => !locks[j.id]?.machine);
+  const place = (job: Job, machineId: string) => {
+    if (settings.machines.find(m => m.id === machineId)?.isDown) return notify(`Box ${job.boxCode} cannot go to ${machineId}: the machine is down.`, 'error');
+    const why = whyNot(job, machineId);
+    setLock(job.id, { machine: machineId, forced: why ? true : undefined });
+    notify(`Box ${job.boxCode} placed on ${machineId}${why ? ' (against its machine rules)' : ''}. Reset it from the job details to undo.`, 'ok');
+  };
+
   const onDrop = (machineId: string, jobId: string | null) => {
     setDragOver(null);
     if (!jobId) return;
+    const waiting = unplaced.find(j => j.id === jobId);
+    if (waiting) return place(waiting, machineId);
     const current = Object.values(plan.queues)
       .flat()
       .find(i => i.job.id === jobId);
@@ -263,7 +275,8 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
       </div>
 
       {draft && <div className="fixed inset-0 z-40 bg-slate-950/60 backdrop-blur-sm" onMouseDown={() => setDraft(null)} />}
-      <div className={`overflow-hidden rounded-xl border bg-slate-950 ${draft ? 'relative z-50 border-blue-500 shadow-2xl' : 'border-slate-800'}`}>
+      <div className="flex flex-col gap-3 xl:flex-row xl:items-start">
+      <div className={`min-w-0 flex-1 overflow-hidden rounded-xl border bg-slate-950 ${draft ? 'relative z-50 border-blue-500 shadow-2xl' : 'border-slate-800'}`}>
         <div ref={scroller} className="max-h-[calc(100vh-290px)] min-h-[360px] overflow-auto">
           <div style={{ width: width + LABEL_W, minWidth: '100%' }}>
             {/* ruler */}
@@ -452,6 +465,8 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
           </div>
         </div>
       </div>
+      {unplaced.length > 0 && <UnplacedBox jobs={unplaced} refusals={plan.refusals ?? {}} onPlace={place} />}
+      </div>
 
       {draft && (
         <EventPopup
@@ -466,6 +481,58 @@ export function GanttView({ onSelect, onCarpenter }: { onSelect: (item: Schedule
       <Legend mode={colorMode} multiplier={settings.estimateMultiplier} hasBreaks={breaks.length > 0} />
       {tip && <Tooltip tip={tip} />}
     </div>
+  );
+}
+
+/** The parts no machine takes, next to the Gantt: the user picks a machine for each (or drags it onto one). */
+function UnplacedBox({ jobs, refusals, onPlace }: { jobs: Job[]; refusals: Record<string, string>; onPlace: (job: Job, machineId: string) => void }) {
+  const { settings } = useStore();
+  const whyNot = useMachineRules();
+  return (
+    <aside className="anim-fade-up flex max-h-[calc(100vh-290px)] min-h-[200px] w-full shrink-0 flex-col overflow-hidden rounded-xl border-2 border-rose-600 bg-rose-950/40 xl:w-80" aria-label="Parts that did not fit">
+      <div className="border-b border-rose-800/70 px-3 py-2.5">
+        <div className="flex items-center gap-2 text-xs font-bold uppercase tracking-wide text-rose-200">
+          <AlertOctagon className="h-4 w-4 text-rose-400" /> {jobs.length} part{jobs.length === 1 ? '' : 's'} did not fit
+        </div>
+        <p className="mt-1 text-[11px] leading-snug text-rose-200/80">No machine takes {jobs.length === 1 ? 'it' : 'them'} under its rules. Pick where each part goes, or drag it onto a machine: it is planned and pinned there.</p>
+      </div>
+      <ul className="flex-1 space-y-2 overflow-y-auto p-2">
+        {jobs.map(j => (
+          <li
+            key={j.id}
+            draggable
+            onDragStart={e => (e.dataTransfer.setData('text/plain', j.id), (e.dataTransfer.effectAllowed = 'move'))}
+            className="cursor-grab rounded-lg border border-rose-800/80 bg-slate-950/80 p-2 text-xs active:cursor-grabbing"
+          >
+            <div className="flex items-center justify-between gap-2">
+              <span className="flex items-center gap-1.5 font-bold text-white">
+                <GripVertical className="h-3.5 w-3.5 text-slate-500" />
+                Box {j.boxCode} <MaterialBadge material={j.materialType} />
+              </span>
+              <span className="mono text-[10px] text-slate-400">{formatDuration(j.ncMinutes * j.qty)} NC</span>
+            </div>
+            <div className="mono mt-1 truncate text-[10px] text-slate-400">
+              MO {j.masterOrder} · {j.matnr}
+            </div>
+            <div className="mt-1 text-[10px] leading-snug text-rose-300">{refusals[j.id] ?? `No machine takes ${j.materialType}`}</div>
+            <select
+              className={`${inputCls} mt-2 w-full`}
+              value=""
+              onChange={e => e.target.value && onPlace(j, e.target.value)}
+              aria-label={`Machine for box ${j.boxCode}`}
+            >
+              <option value="">Put it on…</option>
+              {settings.machines.map(m => (
+                <option key={m.id} value={m.id} disabled={m.isDown} title={whyNot(j, m.id) ?? undefined}>
+                  {m.name}
+                  {m.isDown ? ' (down)' : whyNot(j, m.id) ? ' (against its rules)' : ''}
+                </option>
+              ))}
+            </select>
+          </li>
+        ))}
+      </ul>
+    </aside>
   );
 }
 

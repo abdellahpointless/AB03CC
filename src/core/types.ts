@@ -158,6 +158,11 @@ export interface PriorityRule {
   scheduleMax?: number | null;
   direction?: 'lowest_first' | 'highest_first'; // waiting / finish module
   dateDirection?: 'closest_first' | 'furthest_first'; // production date
+  /**
+   * filter rules only: rules inside this one. A part matches only when it matches this rule AND one of these (each can
+   * hold rules of its own, as deep as needed): a sales order with a schedule inside picks that schedule of that order.
+   */
+  children?: PriorityRule[];
 }
 
 export type TimelineEventType =
@@ -376,9 +381,9 @@ export interface PlannerSettings {
   calendar: CalendarSettings;
   materialOffsets: Record<string, number>; // extra time in percent of the planned time
   priorityRules: PriorityRule[];
-  outOfScopeMachines: string[];
+  /** how many priority levels the rules page shows (rules can sit on any of them); at least 4 */
+  priorityLevels?: number;
   materialAliases: Record<string, string>; // e.g. "ALU B" -> "ALU"
-  keepErpAssignments: boolean;
   excludeMasterOrders30000: boolean;
   /** @deprecated settings v3 and older (now per machine: `useBackupMaterials`) */
   allowHaas5Overflow?: boolean;
@@ -490,7 +495,6 @@ export interface ScheduledJob {
   isLate: boolean;
   closesBox: boolean;
   userLocked: boolean;
-  erpLocked: boolean;
   manualDuration: boolean;
   manualStart: boolean;
   carpenterOpen: boolean;
@@ -589,16 +593,13 @@ export interface PlanResult {
   waitingOnCarpenter: WaitingOnCarpenter[];
   exceptions: {
     blocked: Job[];
+    /** no active machine takes the part: shown next to the Gantt, where the user picks a machine for it */
     noEligibleMachine: Job[];
-    outOfScope: Job[];
     manual30000: Job[];
-    unpickedWarehouse: Job[];
-    /** the ERP put the part on a machine whose rules refuse it: planned on a machine that takes it instead */
-    erpRefused: Job[];
     /** not picked by the rules above an End rule: not planned */
     leftOut?: Job[];
   };
-  /** why a machine refused a part (ERP machine refused, or no machine takes it), by job id */
+  /** why no machine takes a part, by job id */
   refusals: Record<string, string>;
   kpis: PlanKpis;
   /** per table / spare group that was given a start and a finish */

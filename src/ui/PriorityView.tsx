@@ -1,7 +1,7 @@
-import { CalendarClock, Hourglass, Layers, Plus, Tag, Trash2, Users, Hash, Boxes, X, OctagonX } from 'lucide-react';
+import { CalendarClock, Hourglass, Layers, Plus, Tag, Trash2, Users, Hash, Boxes, X, OctagonX, Minus } from 'lucide-react';
 import { useMemo, useState, type DragEvent } from 'react';
 import { RULE_PRESETS } from '../core/defaults';
-import { FILTER_TYPES, endSelector, jobMatchesRule, ruleTypeLabel } from '../core/priority';
+import { FILTER_TYPES, endSelector, jobMatchesRule, ownMatch, ruleTypeLabel } from '../core/priority';
 import type { Job, PriorityRule, PriorityRuleType } from '../core/types';
 import { useStore } from '../state/store';
 import { Badge, Button, NumberInput, Segmented, inputCls } from './kit';
@@ -19,10 +19,11 @@ const TRAY: Array<{ type: PriorityRuleType; icon: React.ReactNode; desc: string;
 
 const LEVEL_TITLES = ['Highest dispatch tier', 'Secondary dispatch tier', 'Tertiary dispatch tier', 'Fourth dispatch tier'];
 
-function impact(rule: PriorityRule, jobs: Job[]): string {
+/** `jobs` = the parts the rules around this one already pick (all parts for a rule on a level) */
+function impact(rule: PriorityRule, jobs: Job[], nested: boolean): string {
   if (FILTER_TYPES.includes(rule.type)) {
     const n = jobs.filter(j => jobMatchesRule(j, rule)).length;
-    return `${n} job${n === 1 ? '' : 's'} match in loaded data`;
+    return `${n} job${n === 1 ? '' : 's'} match${nested ? ' together with the rules around it' : ' in loaded data'}`;
   }
   const mos = new Set(jobs.map(j => j.masterOrder)).size;
   return `ranks ${mos} master orders`;
@@ -72,34 +73,54 @@ function ValueEditor({ rule, suggestions, onChange }: { rule: PriorityRule; sugg
   );
 }
 
+const schedulesIn = (jobs: Job[]) => [...new Set(jobs.map(j => j.scheduleNo).filter((n): n is number => n !== null))].sort((a, b) => a - b);
+
 function RuleCard({
   rule,
   rules,
   jobs,
+  scope,
   levelCount,
+  nested = false,
   onChange,
   onRemove,
 }: {
   rule: PriorityRule;
   rules: PriorityRule[];
   jobs: Job[];
+  /** the parts the rules around this one pick (all parts on a level) */
+  scope: Job[];
   levelCount: number;
+  /** a rule inside another rule: no level of its own, not dragged */
+  nested?: boolean;
   onChange: (p: Partial<PriorityRule>) => void;
   onRemove: () => void;
 }) {
   const suggestions = useMemo(() => {
-    const pick = (f: (j: Job) => string) => [...new Set(jobs.map(f).filter(Boolean))].sort();
+    const pick = (f: (j: Job) => string) => [...new Set(scope.map(f).filter(Boolean))].sort();
     if (rule.type === 'sales_order') return pick(j => j.salesOrder);
     if (rule.type === 'customer') return pick(j => j.customer);
     if (rule.type === 'material_type') return pick(j => j.materialType);
     return [];
-  }, [jobs, rule.type]);
+  }, [scope, rule.type]);
+  const isFilter = FILTER_TYPES.includes(rule.type);
+  // the parts this rule's own condition keeps: what the rules inside it choose from
+  const inner = useMemo(() => (isFilter ? scope.filter(j => ownMatch(j, rule)) : scope), [isFilter, scope, rule]);
+  const schedules = useMemo(() => (rule.type === 'schedule' ? schedulesIn(scope) : []), [rule.type, scope]);
+  const children = rule.children ?? [];
+  const addChild = (type: PriorityRuleType) => {
+    const t = TRAY.find(x => x.type === type)!;
+    // a schedule inside a rule starts on the first schedule its parts have
+    const first = type === 'schedule' ? schedulesIn(inner)[0] : undefined;
+    const start = first !== undefined ? { scheduleMode: 'single' as const, scheduleSingle: first } : {};
+    onChange({ children: [...children, { id: `${type}-${Date.now().toString(36)}`, type, level: rule.level, enabled: true, name: ruleTypeLabel(type), ...t.make(), ...start } as PriorityRule] });
+  };
 
   return (
     <div
-      draggable
-      onDragStart={(e: DragEvent) => e.dataTransfer.setData('application/x-rule-id', rule.id)}
-      className={`anim-fade-up rounded-lg border p-3 ${rule.type === 'end' ? 'bg-rose-950/30' : 'bg-slate-950/70'} ${rule.enabled ? (rule.type === 'end' ? 'border-rose-700/70' : 'border-slate-700') : 'border-slate-800 opacity-60'}`}
+      draggable={!nested}
+      onDragStart={nested ? undefined : (e: DragEvent) => e.dataTransfer.setData('application/x-rule-id', rule.id)}
+      className={`anim-fade-up rounded-lg border p-3 ${rule.type === 'end' ? 'bg-rose-950/30' : nested ? 'bg-slate-900/80' : 'bg-slate-950/70'} ${rule.enabled ? (rule.type === 'end' ? 'border-rose-700/70' : 'border-slate-700') : 'border-slate-800 opacity-60'}`}
     >
       <div className="flex flex-wrap items-center gap-2">
         <input
@@ -108,17 +129,19 @@ function RuleCard({
           className="mono min-w-[200px] flex-1 bg-transparent text-xs font-bold text-white outline-none"
           aria-label="Rule name"
         />
-        <Badge className="border-slate-600 text-slate-300">{ruleTypeLabel(rule.type)}</Badge>
-        <label className="flex items-center gap-1 text-[11px] text-slate-400">
-          Level
-          <select className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[11px] text-white" value={rule.level} onChange={e => onChange({ level: Number(e.target.value) })}>
-            {Array.from({ length: levelCount }, (_, i) => i + 1).map(l => (
-              <option key={l} value={l}>
-                {l}
-              </option>
-            ))}
-          </select>
-        </label>
+        <Badge className="border-slate-600 text-slate-300">{nested ? `and ${ruleTypeLabel(rule.type)}` : ruleTypeLabel(rule.type)}</Badge>
+        {!nested && (
+          <label className="flex items-center gap-1 text-[11px] text-slate-400">
+            Level
+            <select className="rounded border border-slate-700 bg-slate-900 px-1 py-0.5 text-[11px] text-white" value={rule.level} onChange={e => onChange({ level: Number(e.target.value) })}>
+              {Array.from({ length: levelCount }, (_, i) => i + 1).map(l => (
+                <option key={l} value={l}>
+                  {l}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         <label className="flex items-center gap-1 text-[11px] text-slate-400">
           <input type="checkbox" checked={rule.enabled} onChange={e => onChange({ enabled: e.target.checked })} className="accent-emerald-500" />
           Active
@@ -152,6 +175,16 @@ function RuleCard({
                 <NumberInput className="w-24" value={rule.scheduleMax ?? undefined} onChange={v => onChange({ scheduleMax: v ?? null })} placeholder="to" />
               </>
             )}
+            {schedules.length > 0 && (
+              <span className="flex flex-wrap items-center gap-1 text-[11px] text-slate-500">
+                In these parts:
+                {schedules.slice(0, 16).map(n => (
+                  <button key={n} onClick={() => onChange({ scheduleMode: 'single', scheduleSingle: n })} className="mono rounded border border-slate-700 px-1.5 text-slate-300 hover:border-blue-500 hover:text-white">
+                    {n}
+                  </button>
+                ))}
+              </span>
+            )}
           </div>
         )}
         {(rule.type === 'waiting' || rule.type === 'finish_master_order') && (
@@ -181,7 +214,39 @@ function RuleCard({
           </div>
         )}
       </div>
-      {rule.type !== 'end' && <p className="mono mt-2 text-[10px] text-slate-500">● {impact(rule, jobs)}</p>}
+      {rule.type !== 'end' && <p className="mono mt-2 text-[10px] text-slate-500">● {impact(rule, scope, nested)}</p>}
+      {isFilter && (
+        <div className={`mt-2 space-y-2 ${children.length ? 'border-l-2 border-blue-700/60 pl-3' : ''}`}>
+          {children.length > 0 && <p className="text-[11px] text-slate-400">Only the parts that also match {children.length === 1 ? 'the rule' : 'one of the rules'} inside:</p>}
+          {children.map((c, i) => (
+            <RuleCard
+              key={c.id}
+              nested
+              rule={c}
+              rules={rules}
+              jobs={jobs}
+              scope={inner}
+              levelCount={levelCount}
+              onChange={p => onChange({ children: children.map((x, k) => (k === i ? { ...x, ...p } : x)) })}
+              onRemove={() => onChange({ children: children.filter((_, k) => k !== i) })}
+            />
+          ))}
+          <select
+            className="rounded border border-dashed border-slate-600 bg-slate-900 px-2 py-1 text-[11px] text-slate-300 hover:border-blue-500"
+            value=""
+            onChange={e => e.target.value && addChild(e.target.value as PriorityRuleType)}
+            aria-label="Add a rule inside this rule"
+            title="Combine rules: a sales order with a schedule inside picks only that schedule of that sales order"
+          >
+            <option value="">＋ Add a rule inside…</option>
+            {FILTER_TYPES.map(t => (
+              <option key={t} value={t}>
+                {ruleTypeLabel(t)}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
     </div>
   );
 }
@@ -208,11 +273,13 @@ function EndInfo({ rule, rules, jobs }: { rule: PriorityRule; rules: PriorityRul
 export function PriorityView() {
   const { settings, updateSettings, jobs, plan } = useStore();
   const rules = settings.priorityRules;
-  const levelCount = Math.max(4, ...rules.map(r => r.level));
+  const levelCount = Math.max(1, settings.priorityLevels ?? 4, ...rules.map(r => r.level));
   const [overLevel, setOverLevel] = useState<number | null>(null);
   const endLevel = Math.min(Infinity, ...rules.filter(r => r.enabled && r.type === 'end').map(r => r.level));
 
   const setRules = (next: PriorityRule[]) => updateSettings({ priorityRules: next });
+  // an empty level goes; the levels under it move up one
+  const removeLevel = (level: number) => updateSettings({ priorityRules: rules.map(r => (r.level > level ? { ...r, level: r.level - 1 } : r)), priorityLevels: levelCount - 1 });
   const patchRule = (id: string, p: Partial<PriorityRule>) => setRules(rules.map(r => (r.id === id ? { ...r, ...p } : r)));
   const addRule = (type: PriorityRuleType, level: number) => {
     const t = TRAY.find(x => x.type === type)!;
@@ -234,7 +301,8 @@ export function PriorityView() {
         <div>
           <h2 className="text-lg font-extrabold uppercase tracking-wide text-white">Priority matrix</h2>
           <p className="mt-0.5 max-w-3xl text-xs text-slate-400">
-            A master order matching a level-1 rule is finished before the ones that don't; level 2 decides among the rest, and so on, like digits in a number. Several rules can share a level.
+            A master order matching a level-1 rule is finished before the ones that don't; level 2 decides among the rest, and so on, like digits in a number. Several rules can share a level, and you can add as many levels as you need.
+            Put a rule inside another to combine them: a sales order with a schedule inside picks only that schedule of that sales order; its other schedules wait for a later rule.
             Ranking rules fine-tune the rest: production date gives closer dates a slight edge, while finishing the cheapest orders first is what the optimizer does anyway.
             Drag cards between levels or use the buttons. Changes re-plan automatically.
           </p>
@@ -263,7 +331,7 @@ export function PriorityView() {
       <div className="grid gap-4 lg:grid-cols-[340px_1fr]">
         <aside className="h-fit space-y-2 rounded-xl border border-slate-800 bg-slate-900/60 p-4">
           <h3 className="text-xs font-bold uppercase tracking-wider text-white">Rule tray</h3>
-          <p className="text-[11px] text-slate-400">Drag a card onto a level, or click L1–L4.</p>
+          <p className="text-[11px] text-slate-400">Drag a card onto a level, or click its level number.</p>
           {TRAY.map(t => (
             <div
               key={t.type}
@@ -276,8 +344,8 @@ export function PriorityView() {
                   <span className="text-blue-400">{t.icon}</span>
                   {ruleTypeLabel(t.type)}
                 </span>
-                <span className="flex gap-1">
-                  {[1, 2, 3, 4].map(l => (
+                <span className="flex flex-wrap justify-end gap-1">
+                  {Array.from({ length: levelCount }, (_, i) => i + 1).map(l => (
                     <button key={l} onClick={() => addRule(t.type, l)} className="mono h-5 w-6 rounded border border-slate-600 text-[10px] text-slate-300 hover:bg-blue-600 hover:text-white">
                       L{l}
                     </button>
@@ -311,19 +379,27 @@ export function PriorityView() {
                   <span className="ml-auto text-[11px] text-slate-500">
                     {inLevel.length} rule{inLevel.length === 1 ? '' : 's'}
                   </span>
+                  {inLevel.length === 0 && levelCount > 1 && (
+                    <Button size="sm" onClick={() => removeLevel(level)} title="Remove this empty level (the levels under it move up)">
+                      <Minus className="h-3.5 w-3.5" /> Remove level
+                    </Button>
+                  )}
                 </div>
                 {inLevel.length === 0 ? (
                   <div className="rounded-lg border border-dashed border-slate-700 py-6 text-center text-xs text-slate-500">Drop a rule here</div>
                 ) : (
                   <div className="space-y-2">
                     {inLevel.map(r => (
-                      <RuleCard key={r.id} rule={r} rules={rules} jobs={jobs} levelCount={levelCount} onChange={p => patchRule(r.id, p)} onRemove={() => setRules(rules.filter(x => x.id !== r.id))} />
+                      <RuleCard key={r.id} rule={r} rules={rules} jobs={jobs} scope={jobs} levelCount={levelCount} onChange={p => patchRule(r.id, p)} onRemove={() => setRules(rules.filter(x => x.id !== r.id))} />
                     ))}
                   </div>
                 )}
               </section>
             );
           })}
+          <Button onClick={() => updateSettings({ priorityLevels: levelCount + 1 })}>
+            <Plus className="h-3.5 w-3.5" /> Add a level
+          </Button>
           {plan && (
             <p className="text-[11px] text-slate-500">
               Current plan: {plan.kpis.plannedJobs} jobs, {plan.kpis.synchronizedMos}/{plan.kpis.totalMos} modules finish together, {plan.kpis.makespanMinutes} min makespan.

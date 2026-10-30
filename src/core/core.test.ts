@@ -236,11 +236,11 @@ describe('scheduler', () => {
         seen.add(it.job.id);
         expect(it.startMinute).toBeGreaterThanOrEqual(end);
         end = it.endMinute;
-        if (!it.erpLocked) expect(isEligible(it.job, machine, s, ctx)).toBe(true);
+        if (!it.userLocked) expect(isEligible(it.job, machine, s, ctx)).toBe(true);
       }
     }
     const ex = plan.exceptions;
-    expect(seen.size + ex.blocked.length + ex.outOfScope.length + ex.manual30000.length + ex.noEligibleMachine.length).toBe(jobs.length);
+    expect(seen.size + ex.blocked.length + ex.manual30000.length + ex.noEligibleMachine.length).toBe(jobs.length);
   });
 
   it('is deterministic', () => {

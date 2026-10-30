@@ -63,7 +63,9 @@ export function Header({
   onReport: () => void;
   onEmergency: () => void;
 }) {
-  const { jobs, planning, improving, replanNow, clearData, report, settings } = useStore();
+  const { jobs, planning, improving, replanNow, clearData, report, settings, plan } = useStore();
+  // parts no machine takes: they wait in the red box next to the Gantt for the user to place them
+  const unplaced = plan?.exceptions.noEligibleMachine.length ?? 0;
   const urgent = settings.emergencies.filter(e => e.applied).length;
   const progress = useProgress();
   const busy = planning || improving;
@@ -71,7 +73,7 @@ export function Header({
   const hasData = jobs.length > 0;
 
   // sliding highlight behind the active tab (transform + width, so it never counts as a layout shift)
-  const { container: nav, setItem, pill } = usePill<View>(view, [hasData, exceptionCount]);
+  const { container: nav, setItem, pill } = usePill<View>(view, [hasData, exceptionCount, unplaced]);
 
   // publish the header height, so the Gantt can size itself to the space under it
   const header = useRef<HTMLElement>(null);
@@ -118,6 +120,11 @@ export function Header({
               >
                 {t.icon}
                 {t.label}
+                {t.id === 'gantt' && unplaced > 0 && (
+                  <span className="mono ml-1 rounded bg-rose-600 px-1.5 py-0.5 text-[10px] text-white" title={`${unplaced} part${unplaced === 1 ? '' : 's'} did not fit: pick a machine in the red box next to the Gantt`}>
+                    {unplaced}
+                  </span>
+                )}
                 {t.id === 'exceptions' && exceptionCount > 0 && (
                   <span className="mono ml-1 rounded bg-amber-500/20 px-1.5 py-0.5 text-[10px] text-amber-300">{exceptionCount}</span>
                 )}
